@@ -39,7 +39,8 @@ export class TradeLinkApiApplication {
     ctx: ServerRequestContext,
     data: T,
     statusCode = 200,
-    pagination?: ServerResponsePayload['body']['pagination']
+    pagination?: ServerResponsePayload['body']['pagination'],
+    extraHeaders?: Record<string, string>
   ): ServerResponsePayload<T> {
     const isGet = ctx.method === 'GET';
     return {
@@ -56,6 +57,7 @@ export class TradeLinkApiApplication {
         'X-Data-Source': this.repo.isProductionDatabaseConnected
           ? 'POSTGRESQL_PRISMA'
           : 'ISOLATED_SANDBOX_STORE',
+        ...(extraHeaders ?? {}),
       },
       body: {
         success: true,
@@ -124,9 +126,26 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, buildOpenApiSpecification());
     }
 
-    // 2A. Inscription Visiteur (Argon2id + OTP + Interdiction d'inscription publique ADMIN)
+    // 2A. Inscription Visiteur (Argon2id + OTP + Conditions Générales + Interdiction d'inscription publique ADMIN/COMPTABLE/SUPPORT)
     if (method === 'POST' && path === '/api/v1/auth/register') {
-      const { email, password, fullName, companyName, taxId, country, requestedRole } = ctx.body;
+      const {
+        email,
+        password,
+        fullName,
+        firstName,
+        lastName,
+        companyName,
+        taxId,
+        country,
+        phone,
+        businessAddress,
+        city,
+        postalCode,
+        requestedRole,
+        termsAccepted,
+        privacyAccepted,
+      } = ctx.body;
+
       if (!email || !password || !companyName) {
         throw new AppError(
           400,
@@ -134,22 +153,31 @@ export class TradeLinkApiApplication {
           'email, password et companyName sont obligatoires.'
         );
       }
+
       const created = this.services.registerVisitorAccount({
         email: String(email),
         password: String(password),
-        fullName: String(fullName ?? companyName),
+        fullName: fullName ? String(fullName) : undefined,
+        firstName: firstName ? String(firstName) : undefined,
+        lastName: lastName ? String(lastName) : undefined,
         companyName: String(companyName),
-        taxId: String(taxId ?? 'ICE-PENDING'),
+        taxId: taxId ? String(taxId) : 'ICE-PENDING',
         country: String(country ?? 'Maroc'),
+        phone: phone ? String(phone) : undefined,
+        businessAddress: businessAddress ? String(businessAddress) : undefined,
+        city: city ? String(city) : undefined,
+        postalCode: postalCode ? String(postalCode) : undefined,
         requestedRole: requestedRole ? String(requestedRole) : 'CLIENT',
+        termsAccepted: termsAccepted !== undefined ? Boolean(termsAccepted) : undefined,
+        privacyAccepted: privacyAccepted !== undefined ? Boolean(privacyAccepted) : undefined,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
       });
       return this.ok(ctx, created, 201);
     }
 
-    // 2B. Vérification OTP (6 chiffres, expiration 10 min, max 5 essais, transition Visiteur -> Client)
-    if (method === 'POST' && path === '/api/v1/auth/verify-otp') {
+    // 2B. Vérification OTP Email (6 chiffres, expiration 10 min, max 5 essais, transition Visiteur -> Profil métier)
+    if (method === 'POST' && (path === '/api/v1/auth/verify-otp' || path === '/api/v1/auth/verify-email')) {
       const { email, code, approveClientOnboarding } = ctx.body;
       if (!email || !code) {
         throw new AppError(400, 'VALIDATION_OTP_FIELDS', 'email et code OTP sont requis.');
@@ -165,7 +193,22 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, verified, 200);
     }
 
-    // 2C. Connexion (Argon2id + Protection Brute-Force + Session Unique Redis + JWT & Refresh Token)
+    // 2B-bis. Vérification SMS OTP Téléphone
+    if (method === 'POST' && path === '/api/v1/auth/verify-phone') {
+      const { phone, code } = ctx.body;
+      if (!phone || !code) {
+        throw new AppError(400, 'VALIDATION_PHONE_OTP_FIELDS', 'phone et code SMS OTP sont requis.');
+      }
+      const verified = this.services.verifyPhoneOtpChallenge({
+        phone: String(phone),
+        code: String(code),
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, verified, 200);
+    }
+
+    // 2C. Connexion (Argon2id + Protection Brute-Force + Session Unique Redis + JWT + Refresh Token + Cookie Sécurisé)
     if (method === 'POST' && path === '/api/v1/auth/login') {
       const { userId, email, password, role, companyName, deviceName, userAgent, mfaCode } =
         ctx.body;
@@ -188,7 +231,72 @@ export class TradeLinkApiApplication {
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
       });
-      return this.ok(ctx, sessionData, 200);
+
+      const sessionCookie = `tradelink_session=${sessionData.sessionId}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Strict`;
+
+      return this.ok(ctx, sessionData, 200, undefined, {
+        'Set-Cookie': sessionCookie,
+      });
+    }
+
+    // 2C-bis. Déconnexion (Révocation de session active & Invalidation Cookie)
+    if (method === 'POST' && path === '/api/v1/auth/logout') {
+      const user = requireAuthenticatedSession(ctx);
+      const res = this.services.logoutUserSession({
+        sessionId: user.sessionId,
+        userId: user.id,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200, undefined, {
+        'Set-Cookie': 'tradelink_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict',
+      });
+    }
+
+    // 2C-ter. Gestion des sessions de l'utilisateur
+    if (method === 'GET' && path === '/api/v1/auth/sessions') {
+      const user = requireAuthenticatedSession(ctx);
+      const sessions = this.services.listUserSessions(user.id);
+      return this.ok(ctx, sessions, 200);
+    }
+
+    if (method === 'DELETE' && path.startsWith('/api/v1/auth/sessions/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const targetSessionId = path.split('/').pop() ?? '';
+      const res = this.services.revokeUserSessionById({
+        userId: user.id,
+        targetSessionId,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    // 2C-quater. Protection anti-CSRF & Redirection intelligente
+    if (method === 'GET' && path === '/api/v1/auth/csrf-token') {
+      const csrfToken = `csrf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      return this.ok(ctx, { csrfToken }, 200, undefined, {
+        'X-CSRF-Token': csrfToken,
+      });
+    }
+
+    if (method === 'GET' && path === '/api/v1/auth/redirect-target') {
+      const user = requireAuthenticatedSession(ctx);
+      const redirect = this.services.computeSmartRedirect({
+        role: user.role,
+        mfaVerified: user.mfaVerified,
+      });
+      return this.ok(ctx, redirect, 200);
+    }
+
+    // 2C-quinquies. Consultation des tentatives de connexion (Audit Security)
+    if (method === 'GET' && path === '/api/v1/auth/login-attempts') {
+      const user = requireAuthenticatedSession(ctx);
+      const attempts =
+        user.role === 'ADMIN'
+          ? this.services.getLoginAttempts()
+          : this.services.getLoginAttempts(user.id, user.email);
+      return this.ok(ctx, attempts, 200);
     }
 
     // 2D. MFA TOTP obligatoire Admin : Setup QR Code & Vérification TOTP
@@ -282,6 +390,46 @@ export class TradeLinkApiApplication {
         ipAddress: ctx.ipAddress,
       });
       return this.ok(ctx, revoked, 200);
+    }
+
+    // 2H. Administration des comptes : Suspension & Réactivation (Admin Uniquement)
+    if (method === 'POST' && path === '/api/v1/admin/users/suspend') {
+      const user = requireAuthenticatedSession(ctx);
+      if (user.role !== 'ADMIN') {
+        throw new AppError(403, 'FORBIDDEN_ADMIN_ONLY', 'Action réservée aux administrateurs TRADELINK.');
+      }
+      const { userId, email, reason } = ctx.body;
+      const target = userId ?? email;
+      if (!target || !reason) {
+        throw new AppError(400, 'VALIDATION_SUSPEND_FIELDS', 'userId ou email et reason sont requis.');
+      }
+      const res = this.services.suspendUserAccount({
+        targetEmailOrId: String(target),
+        reason: String(reason),
+        adminUserId: user.id,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    if (method === 'POST' && path === '/api/v1/admin/users/unsuspend') {
+      const user = requireAuthenticatedSession(ctx);
+      if (user.role !== 'ADMIN') {
+        throw new AppError(403, 'FORBIDDEN_ADMIN_ONLY', 'Action réservée aux administrateurs TRADELINK.');
+      }
+      const { userId, email } = ctx.body;
+      const target = userId ?? email;
+      if (!target) {
+        throw new AppError(400, 'VALIDATION_UNSUSPEND_FIELDS', 'userId ou email est requis.');
+      }
+      const res = this.services.unsuspendUserAccount({
+        targetEmailOrId: String(target),
+        adminUserId: user.id,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
     }
 
     // 3A. Catégories & Produits (Pagination, Filtres, Soft Delete, Restriction Comptable Stage 3)

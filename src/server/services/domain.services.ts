@@ -46,16 +46,19 @@ import {
   verifyBackupCryptographicIntegrity,
 } from '../../services/adminAdvancedEngine';
 import {
+  AuthSessionDetail,
   DayCountBasis,
   IncidentRecord,
   InvoiceRecord,
   KMSKeyRecord,
+  LoginAttemptRecord,
   OrderRecord,
   ProductItem,
   QuoteRecord,
   RoomLiveRecord,
   ShipmentRecord,
   ShipmentStatus,
+  SmartRedirectInfo,
   SupportedLocale,
   TranslationRecord,
   UserLanguagePreferenceRecord,
@@ -109,6 +112,28 @@ export interface RegisteredAccountRecord {
   failedLoginAttempts: number;
   lockedUntilMs?: number;
   createdAt: string;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  phoneVerified?: boolean;
+  businessAddress?: string;
+  city?: string;
+  postalCode?: string;
+  termsAcceptedAt?: string;
+  privacyAcceptedAt?: string;
+  emailVerifiedAt?: string;
+  phoneVerifiedAt?: string;
+  isSuspended?: boolean;
+  suspensionReason?: string;
+}
+
+export interface PhoneOtpChallengeRecord {
+  phone: string;
+  code: string;
+  purpose: 'REGISTRATION_PHONE_VERIFICATION';
+  expiresAtMs: number;
+  attemptsRemaining: number;
+  consumed: boolean;
 }
 
 export interface OtpChallengeRecord {
@@ -153,13 +178,14 @@ export interface UserDeviceRecord {
 export class TradeLinkDomainServices {
   private readonly accountsByEmail = new Map<string, RegisteredAccountRecord>();
   private readonly otpChallenges = new Map<string, OtpChallengeRecord>();
+  private readonly phoneOtpChallenges = new Map<string, PhoneOtpChallengeRecord>();
   private readonly refreshTokens = new Map<string, RefreshTokenRecord>();
   private readonly resetTokens = new Map<string, PasswordResetTokenRecord>();
   private readonly devicesById = new Map<string, UserDeviceRecord>();
   private readonly processedStripeEventIds = new Set<string>();
 
   constructor(private readonly repo: TradeLinkRepositoryStore) {
-    // Provisionnement manuel initial de l'Administrateur (Chapitre 2.1 : Admin provisionné manuellement)
+    // Provisionnement manuel initial des profils souverains (Chapitre 2.1)
     this.seedProvisionedAccounts();
   }
 
@@ -169,6 +195,8 @@ export class TradeLinkDomainServices {
       userId: 'usr-admin-01',
       email: 'k.benali@tradelink-global.com',
       fullName: 'Karim Benali',
+      firstName: 'Karim',
+      lastName: 'Benali',
       companyName: 'TradeLink Global HQ',
       taxId: 'FR-TL-00000001',
       country: 'France',
@@ -176,6 +204,9 @@ export class TradeLinkDomainServices {
       requestedRole: 'ADMIN',
       passwordHashArgon2id: hashPasswordArgon2id('AdminTradeLink!2026', 'salt-admin-01'),
       emailVerified: true,
+      emailVerifiedAt: '2026-01-01T00:00:00Z',
+      termsAcceptedAt: '2026-01-01T00:00:00Z',
+      privacyAcceptedAt: '2026-01-01T00:00:00Z',
       kycStatus: 'VALIDATED',
       mfaEnabled: true,
       mfaSecretBase32: adminSecret,
@@ -187,13 +218,21 @@ export class TradeLinkDomainServices {
       userId: 'usr-client-01',
       email: 's.mansouri@atlas-import.ma',
       fullName: 'Sofia Mansouri',
+      firstName: 'Sofia',
+      lastName: 'Mansouri',
       companyName: 'Atlas Import & Distribution SARL',
       taxId: 'MA-ICE-002849100',
       country: 'Maroc',
+      phone: '+212661002244',
+      phoneVerified: true,
+      phoneVerifiedAt: '2026-02-10T00:00:00Z',
       role: 'CLIENT',
       requestedRole: 'CLIENT',
       passwordHashArgon2id: hashPasswordArgon2id('ClientAtlas!2026', 'salt-client-01'),
       emailVerified: true,
+      emailVerifiedAt: '2026-02-10T00:00:00Z',
+      termsAcceptedAt: '2026-02-10T00:00:00Z',
+      privacyAcceptedAt: '2026-02-10T00:00:00Z',
       kycStatus: 'VALIDATED',
       mfaEnabled: false,
       failedLoginAttempts: 0,
@@ -204,6 +243,8 @@ export class TradeLinkDomainServices {
       userId: 'usr-supp-01',
       email: 'h.weber@eurotech-supply.de',
       fullName: 'Hans Weber',
+      firstName: 'Hans',
+      lastName: 'Weber',
       companyName: 'EuroTech Industrial & ColdChain GmbH',
       taxId: 'DE-998877665',
       country: 'Allemagne',
@@ -211,28 +252,117 @@ export class TradeLinkDomainServices {
       requestedRole: 'FOURNISSEUR',
       passwordHashArgon2id: hashPasswordArgon2id('SupplierEuro!2026', 'salt-supp-01'),
       emailVerified: true,
+      emailVerifiedAt: '2026-02-12T00:00:00Z',
+      termsAcceptedAt: '2026-02-12T00:00:00Z',
+      privacyAcceptedAt: '2026-02-12T00:00:00Z',
       kycStatus: 'VALIDATED',
       mfaEnabled: false,
       failedLoginAttempts: 0,
       createdAt: '2026-02-12T00:00:00Z',
     });
+
+    this.accountsByEmail.set('t.alami@logistrading.ma', {
+      userId: 'usr-trans-01',
+      email: 't.alami@logistrading.ma',
+      fullName: 'Tariq Alami',
+      firstName: 'Tariq',
+      lastName: 'Alami',
+      companyName: 'LogisTrading Maroc SARL',
+      taxId: 'MA-ICE-007654321',
+      country: 'Maroc',
+      phone: '+212662998877',
+      phoneVerified: true,
+      phoneVerifiedAt: '2026-02-14T00:00:00Z',
+      role: 'TRANSPORTEUR',
+      requestedRole: 'TRANSPORTEUR',
+      passwordHashArgon2id: hashPasswordArgon2id('CarrierLogis!2026', 'salt-trans-01'),
+      emailVerified: true,
+      emailVerifiedAt: '2026-02-14T00:00:00Z',
+      termsAcceptedAt: '2026-02-14T00:00:00Z',
+      privacyAcceptedAt: '2026-02-14T00:00:00Z',
+      kycStatus: 'VALIDATED',
+      mfaEnabled: false,
+      failedLoginAttempts: 0,
+      createdAt: '2026-02-14T00:00:00Z',
+    });
+
+    this.accountsByEmail.set('c.dupont@tradelink-audit.fr', {
+      userId: 'usr-compt-01',
+      email: 'c.dupont@tradelink-audit.fr',
+      fullName: 'Claire Dupont',
+      firstName: 'Claire',
+      lastName: 'Dupont',
+      companyName: 'TradeLink Finance & Audit',
+      taxId: 'FR-COMPT-001',
+      country: 'France',
+      role: 'COMPTABLE',
+      requestedRole: 'COMPTABLE',
+      passwordHashArgon2id: hashPasswordArgon2id('ComptableSecure!2026', 'salt-compt-01'),
+      emailVerified: true,
+      emailVerifiedAt: '2026-02-15T00:00:00Z',
+      termsAcceptedAt: '2026-02-15T00:00:00Z',
+      privacyAcceptedAt: '2026-02-15T00:00:00Z',
+      kycStatus: 'VALIDATED',
+      mfaEnabled: false,
+      failedLoginAttempts: 0,
+      createdAt: '2026-02-15T00:00:00Z',
+    });
+
+    this.accountsByEmail.set('s.lefevre@tradelink-support.com', {
+      userId: 'usr-supp-rep-01',
+      email: 's.lefevre@tradelink-support.com',
+      fullName: 'Stéphane Lefèvre',
+      firstName: 'Stéphane',
+      lastName: 'Lefèvre',
+      companyName: 'TradeLink Global Support',
+      taxId: 'FR-SUPP-001',
+      country: 'France',
+      role: 'SUPPORT',
+      requestedRole: 'SUPPORT',
+      passwordHashArgon2id: hashPasswordArgon2id('SupportAgent!2026', 'salt-supp-rep-01'),
+      emailVerified: true,
+      emailVerifiedAt: '2026-02-16T00:00:00Z',
+      termsAcceptedAt: '2026-02-16T00:00:00Z',
+      privacyAcceptedAt: '2026-02-16T00:00:00Z',
+      kycStatus: 'VALIDATED',
+      mfaEnabled: false,
+      failedLoginAttempts: 0,
+      createdAt: '2026-02-16T00:00:00Z',
+    });
   }
 
-  // 1A. Inscription Visiteur (Chapitre 2.1 & PROMPT 5 : Admin provisionné manuellement, Visiteur -> Client après approbation)
+  // 1A. Inscription Visiteur (Chapitre 2.1 & PROMPT 01 : Admin, Comptable & Support provisionnés manuellement, Visiteur -> Client/Fournisseur/Transporteur après validation)
   public registerVisitorAccount(params: {
     email: string;
     password: string;
-    fullName: string;
+    fullName?: string;
+    firstName?: string;
+    lastName?: string;
     companyName: string;
-    taxId: string;
+    taxId?: string;
     country: string;
+    phone?: string;
+    businessAddress?: string;
+    city?: string;
+    postalCode?: string;
     requestedRole?: string;
+    termsAccepted?: boolean;
+    privacyAccepted?: boolean;
     correlationId: string;
     ipAddress: string;
   }) {
     const normalizedEmail = params.email.trim().toLowerCase();
     if (!normalizedEmail.includes('@')) {
       throw new AppError(400, 'VALIDATION_INVALID_EMAIL', 'Adresse email professionnelle invalide.');
+    }
+
+    // Règle stricte : Acceptation obligatoire des conditions générales et de la politique de confidentialité
+    if (params.termsAccepted === false || params.privacyAccepted === false) {
+      throw new AppError(
+        400,
+        'TERMS_ACCEPTANCE_REQUIRED',
+        'L’acceptation expresse des Conditions Générales d’Utilisation et de la Politique de Confidentialité est obligatoire pour créer un compte TRADELINK.'
+      );
     }
 
     // Règle stricte : L'Administrateur est provisionné manuellement uniquement
@@ -259,6 +389,30 @@ export class TradeLinkDomainServices {
       );
     }
 
+    // Règle stricte : Les rôles internes COMPTABLE et SUPPORT sont provisionnés manuellement
+    if (params.requestedRole === 'COMPTABLE' || params.requestedRole === 'SUPPORT') {
+      this.repo.executeTransaction((tx) => {
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: normalizedEmail,
+          actorRole: 'VISITEUR',
+          action: 'AUTH_PUBLIC_RESTRICTED_ROLE_BLOCKED',
+          targetType: 'User',
+          targetId: normalizedEmail,
+          result: 'DENIED',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `Tentative bloquée : le rôle ${params.requestedRole} est provisionné manuellement par la gouvernance TRADELINK.`,
+        });
+      });
+      throw new AppError(
+        403,
+        'ROLE_RESTRICTED_MANUAL_PROVISIONING',
+        `Interdit : Le rôle ${params.requestedRole} est strictement restreint et provisionné manuellement par l’administration TRADELINK.`
+      );
+    }
+
     if (!params.password || params.password.length < 10) {
       throw new AppError(
         400,
@@ -280,14 +434,27 @@ export class TradeLinkDomainServices {
         ? 'TRANSPORTEUR'
         : 'CLIENT';
 
+    const resolvedFullName = (
+      params.fullName ?? `${params.firstName ?? ''} ${params.lastName ?? ''}`
+    ).trim() || params.companyName.trim();
+
+    const nowIso = new Date().toISOString();
+
     // Le demandeur démarre à l'état pré-client VISITEUR jusqu'à vérification OTP et approbation
     const record: RegisteredAccountRecord = {
       userId,
       email: normalizedEmail,
-      fullName: params.fullName.trim(),
+      fullName: resolvedFullName,
+      firstName: params.firstName?.trim(),
+      lastName: params.lastName?.trim(),
       companyName: params.companyName.trim(),
-      taxId: params.taxId.trim(),
+      taxId: params.taxId?.trim() ?? 'ICE-EN-ATTENTE',
       country: params.country.trim(),
+      phone: params.phone?.trim(),
+      phoneVerified: false,
+      businessAddress: params.businessAddress?.trim(),
+      city: params.city?.trim(),
+      postalCode: params.postalCode?.trim(),
       role: 'VISITEUR',
       requestedRole: targetRole,
       passwordHashArgon2id,
@@ -295,7 +462,9 @@ export class TradeLinkDomainServices {
       kycStatus: 'PENDING_OTP',
       mfaEnabled: false,
       failedLoginAttempts: 0,
-      createdAt: new Date().toISOString(),
+      termsAcceptedAt: nowIso,
+      privacyAcceptedAt: nowIso,
+      createdAt: nowIso,
     };
 
     this.accountsByEmail.set(normalizedEmail, record);
@@ -310,6 +479,20 @@ export class TradeLinkDomainServices {
       consumed: false,
     });
 
+    let phoneOtpCode: string | undefined;
+    if (params.phone) {
+      const normalizedPhone = params.phone.replace(/[\s\-\(\)]/g, '');
+      phoneOtpCode = String(Math.floor(100000 + Math.random() * 900000));
+      this.phoneOtpChallenges.set(normalizedPhone, {
+        phone: normalizedPhone,
+        code: phoneOtpCode,
+        purpose: 'REGISTRATION_PHONE_VERIFICATION',
+        expiresAtMs: Date.now() + 10 * 60 * 1000,
+        attemptsRemaining: 5,
+        consumed: false,
+      });
+    }
+
     this.repo.executeTransaction((tx) => {
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
@@ -322,21 +505,27 @@ export class TradeLinkDomainServices {
         result: 'SUCCESS',
         correlationId: params.correlationId,
         ipAddress: params.ipAddress,
-        details: `Demande de compte Visiteur créée (${record.companyName}) avec hash Argon2id et OTP émis.`,
+        details: `Demande de compte Visiteur créée (${record.companyName}) avec hash Argon2id et OTP émis. Orientation KYC J+7.`,
       });
     });
 
     return {
       userId,
       email: normalizedEmail,
+      fullName: resolvedFullName,
+      companyName: record.companyName,
       role: record.role,
       requestedRole: record.requestedRole,
       kycStatus: record.kycStatus,
+      kycDaysRemaining: 7,
+      termsAcceptedAt: record.termsAcceptedAt,
+      privacyAcceptedAt: record.privacyAcceptedAt,
       passwordHashAlgorithm: 'Argon2id (v=19, m=65536, t=3, p=4)',
       otpIssued: true,
       otpExpiresInSeconds: 600,
-      // Renvoyé uniquement en mode test/sandbox pour permettre la vérification automatisée sans exposer de secret de prod
       sandboxOtpCode: this.repo.isProductionDatabaseConnected ? undefined : otpCode,
+      phoneOtpIssued: Boolean(phoneOtpCode),
+      sandboxPhoneOtpCode: this.repo.isProductionDatabaseConnected ? undefined : phoneOtpCode,
     };
   }
 
@@ -389,6 +578,7 @@ export class TradeLinkDomainServices {
     }
 
     account.emailVerified = true;
+    account.emailVerifiedAt = new Date().toISOString();
     if (params.approveClientOnboarding !== false) {
       account.role = account.requestedRole;
       account.kycStatus = 'SUBMITTED';
@@ -414,8 +604,78 @@ export class TradeLinkDomainServices {
       userId: account.userId,
       email: account.email,
       emailVerified: account.emailVerified,
+      emailVerifiedAt: account.emailVerifiedAt,
       role: account.role,
       kycStatus: account.kycStatus,
+    };
+  }
+
+  // 1B-bis. Vérification SMS OTP Téléphone
+  public verifyPhoneOtpChallenge(params: {
+    phone: string;
+    code: string;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    const normalizedPhone = params.phone.replace(/[\s\-\(\)]/g, '');
+    const challenge = this.phoneOtpChallenges.get(normalizedPhone);
+    if (!challenge || challenge.consumed) {
+      throw new AppError(400, 'PHONE_OTP_NOT_FOUND', 'Aucun code SMS OTP actif pour ce numéro de téléphone.');
+    }
+
+    if (Date.now() > challenge.expiresAtMs) {
+      throw new AppError(400, 'PHONE_OTP_EXPIRED', 'Le code SMS OTP a expiré (10 minutes).');
+    }
+
+    if (challenge.attemptsRemaining <= 0) {
+      throw new AppError(
+        429,
+        'PHONE_OTP_MAX_ATTEMPTS_EXCEEDED',
+        'Nombre maximal de tentatives SMS OTP atteint (5/5).'
+      );
+    }
+
+    if (challenge.code !== params.code.trim()) {
+      challenge.attemptsRemaining -= 1;
+      throw new AppError(
+        400,
+        'PHONE_OTP_INVALID_CODE',
+        `Code SMS OTP incorrect. Tentatives restantes : ${challenge.attemptsRemaining}.`
+      );
+    }
+
+    challenge.consumed = true;
+    const nowIso = new Date().toISOString();
+    let updatedUserId: string | null = null;
+    for (const acc of this.accountsByEmail.values()) {
+      if (acc.phone && acc.phone.replace(/[\s\-\(\)]/g, '') === normalizedPhone) {
+        acc.phoneVerified = true;
+        acc.phoneVerifiedAt = nowIso;
+        updatedUserId = acc.userId;
+        break;
+      }
+    }
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: nowIso.replace('T', ' ').slice(0, 19),
+        actorName: normalizedPhone,
+        actorRole: 'VISITEUR',
+        action: 'AUTH_PHONE_OTP_VERIFIED',
+        targetType: 'User',
+        targetId: updatedUserId ?? normalizedPhone,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Numéro de téléphone ${normalizedPhone} vérifié avec succès par SMS OTP.`,
+      });
+    });
+
+    return {
+      phone: normalizedPhone,
+      phoneVerified: true,
+      verifiedAt: nowIso,
     };
   }
 
@@ -435,9 +695,36 @@ export class TradeLinkDomainServices {
     const normalizedEmail = params.email.trim().toLowerCase();
     const account = this.accountsByEmail.get(normalizedEmail);
 
+    // Vérification compte suspendu
+    if (account?.isSuspended) {
+      this.repo.recordLoginAttempt({
+        userId: account.userId,
+        emailAttempted: normalizedEmail,
+        ipAddress: params.ipAddress,
+        userAgent: params.userAgent ?? 'Mozilla/5.0 TradeLink-Client/6.0',
+        isSuccess: false,
+        failureReason: 'AUTH_ACCOUNT_SUSPENDED',
+        correlationId: params.correlationId,
+      });
+      throw new AppError(
+        403,
+        'AUTH_ACCOUNT_SUSPENDED',
+        `Compte suspendu par la gouvernance TRADELINK : ${account.suspensionReason || 'Veuillez contacter le support administratif.'}`
+      );
+    }
+
     // Si un mot de passe est fourni ou que le compte est enregistré avec Argon2id, appliquer le contrôle Brute-Force + Argon2id
     if (account && params.password !== undefined) {
       if (account.lockedUntilMs && Date.now() < account.lockedUntilMs) {
+        this.repo.recordLoginAttempt({
+          userId: account.userId,
+          emailAttempted: normalizedEmail,
+          ipAddress: params.ipAddress,
+          userAgent: params.userAgent ?? 'Mozilla/5.0 TradeLink-Client/6.0',
+          isSuccess: false,
+          failureReason: 'AUTH_ACCOUNT_LOCKED_BRUTE_FORCE',
+          correlationId: params.correlationId,
+        });
         this.repo.executeTransaction((tx) => {
           tx.auditLogs.unshift({
             id: `aud-${Date.now()}`,
@@ -463,7 +750,19 @@ export class TradeLinkDomainServices {
       const validPassword = verifyPasswordArgon2id(params.password, account.passwordHashArgon2id);
       if (!validPassword) {
         account.failedLoginAttempts += 1;
-        if (account.failedLoginAttempts >= 5) {
+        const willLock = account.failedLoginAttempts >= 5;
+
+        this.repo.recordLoginAttempt({
+          userId: account.userId,
+          emailAttempted: normalizedEmail,
+          ipAddress: params.ipAddress,
+          userAgent: params.userAgent ?? 'Mozilla/5.0 TradeLink-Client/6.0',
+          isSuccess: false,
+          failureReason: willLock ? 'AUTH_ACCOUNT_LOCKED_BRUTE_FORCE' : 'AUTH_INVALID_CREDENTIALS',
+          correlationId: params.correlationId,
+        });
+
+        if (willLock) {
           account.lockedUntilMs = Date.now() + 15 * 60 * 1000;
           this.repo.executeTransaction((tx) => {
             tx.auditLogs.unshift({
@@ -519,6 +818,16 @@ export class TradeLinkDomainServices {
     const resolvedRole = account?.role ?? params.role ?? 'CLIENT';
     const resolvedCompany = account?.companyName ?? params.companyName ?? 'TradeLink Partner';
 
+    // Journalisation tentative réussie
+    this.repo.recordLoginAttempt({
+      userId: resolvedUserId,
+      emailAttempted: normalizedEmail,
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent ?? 'Mozilla/5.0 TradeLink-Client/6.0',
+      isSuccess: true,
+      correlationId: params.correlationId,
+    });
+
     // MFA obligatoire pour l'Administrateur lorsque l'authentification complète par mot de passe est utilisée
     let mfaVerified = true;
     if (resolvedRole === 'ADMIN' && params.password !== undefined) {
@@ -565,6 +874,21 @@ export class TradeLinkDomainServices {
       lastActiveAt: new Date().toISOString(),
     });
 
+    // Enregistrement de la session dans le repository store
+    this.repo.revokeAllUserSessionsExcept(resolvedUserId, newSessionId);
+    this.repo.saveUserSession({
+      id: newSessionId,
+      userId: resolvedUserId,
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent ?? 'Mozilla/5.0 TradeLink-Client/6.0',
+      deviceName: params.deviceName ?? 'Poste de travail B2B (Chrome/Windows)',
+      isCurrent: true,
+      isRevoked: false,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    });
+
     const accessToken = signJwtAccessToken({
       sub: resolvedUserId,
       email: normalizedEmail,
@@ -584,6 +908,25 @@ export class TradeLinkDomainServices {
       expiresAtMs: Date.now() + 7 * 24 * 3600 * 1000,
       consumed: false,
       revoked: false,
+    });
+
+    this.repo.saveRefreshToken({
+      id: `rt-db-${Date.now().toString(36)}`,
+      userId: resolvedUserId,
+      sessionId: newSessionId,
+      tokenHash: refreshToken,
+      family: `fam-${resolvedUserId}`,
+      isRevoked: false,
+      expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
+      createdAt: new Date().toISOString(),
+    });
+
+    const redirectInfo = this.computeSmartRedirect({
+      role: resolvedRole,
+      kycStatus: account?.kycStatus,
+      isSuspended: account?.isSuspended,
+      mfaVerified,
+      createdAt: account?.createdAt,
     });
 
     this.repo.executeTransaction((tx) => {
@@ -616,6 +959,240 @@ export class TradeLinkDomainServices {
       accessToken,
       refreshToken,
       deviceId,
+      redirectTarget: redirectInfo.targetPath,
+      redirectInfo,
+    };
+  }
+
+  // 1C-bis. Moteur de Redirection Intelligente Post-Authentification
+  public computeSmartRedirect(params: {
+    role: UserRoleCode;
+    kycStatus?: string;
+    isSuspended?: boolean;
+    mfaVerified?: boolean;
+    createdAt?: string;
+  }): SmartRedirectInfo {
+    if (params.isSuspended) {
+      return {
+        targetPath: '/suspended',
+        role: params.role,
+        accountStatus: 'SUSPENDED',
+        reason: 'Compte suspendu par l’administration TRADELINK.',
+      };
+    }
+
+    if (params.role === 'ADMIN' && params.mfaVerified === false) {
+      return {
+        targetPath: '/admin/mfa-challenge',
+        role: params.role,
+        accountStatus: 'PENDING_MFA',
+        reason: 'Double authentification TOTP requise pour l’administration.',
+      };
+    }
+
+    const createdMs = params.createdAt ? new Date(params.createdAt).getTime() : Date.now();
+    const daysElapsed = Math.floor((Date.now() - createdMs) / (24 * 3600 * 1000));
+    const kycDaysRemaining = Math.max(0, 7 - daysElapsed);
+
+    if (params.kycStatus === 'PENDING_OTP') {
+      return {
+        targetPath: '/auth/verify-otp',
+        role: params.role,
+        accountStatus: 'PENDING_KYC',
+        reason: 'Validation de l’adresse email requise.',
+        kycDaysRemaining,
+      };
+    }
+
+    const defaultRolePaths: Record<UserRoleCode, string> = {
+      ADMIN: '/admin',
+      CLIENT: '/client',
+      FOURNISSEUR: '/fournisseur',
+      TRANSPORTEUR: '/transporteur',
+      COMPTABLE: '/comptable',
+      SUPPORT: '/support',
+      VISITEUR: '/',
+    };
+
+    return {
+      targetPath: defaultRolePaths[params.role] ?? '/',
+      role: params.role,
+      accountStatus: 'ACTIVE',
+      kycDaysRemaining,
+    };
+  }
+
+  // 1C-ter. Déconnexion & Révocation de session active
+  public logoutUserSession(params: {
+    sessionId: string;
+    userId: string;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    revokeUserActiveSession(params.userId);
+    this.repo.revokeUserSession(params.sessionId, 'LOGOUT_USER_INITIATED');
+    this.repo.revokeRefreshTokensForSession(params.sessionId);
+
+    // Invalidation des tokens locaux en mémoire
+    for (const rt of this.refreshTokens.values()) {
+      if (rt.sessionId === params.sessionId || rt.userId === params.userId) {
+        rt.revoked = true;
+      }
+    }
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.userId,
+        actorRole: 'CLIENT',
+        action: 'AUTH_LOGOUT',
+        targetType: 'Session',
+        targetId: params.sessionId,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Session ${params.sessionId} fermée et révoquée avec succès.`,
+      });
+    });
+
+    return {
+      loggedOut: true,
+      sessionId: params.sessionId,
+      revokedAt: new Date().toISOString(),
+    };
+  }
+
+  // 1C-quater. Gestion des sessions de l'utilisateur & journalisation des connexions
+  public listUserSessions(userId: string): AuthSessionDetail[] {
+    return this.repo.getUserSessions(userId);
+  }
+
+  public getLoginAttempts(userId?: string, email?: string): LoginAttemptRecord[] {
+    return this.repo.getLoginAttempts(userId, email);
+  }
+
+  public revokeUserSessionById(params: {
+    userId: string;
+    targetSessionId: string;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    const revoked = this.repo.revokeUserSession(params.targetSessionId, 'USER_REQUESTED_REVOCATION');
+    this.repo.revokeRefreshTokensForSession(params.targetSessionId);
+
+    // Si la session révoquée est la session active, la retirer de la mémoire active
+    revokeUserActiveSession(params.userId);
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.userId,
+        actorRole: 'CLIENT',
+        action: 'AUTH_SESSION_REVOKED_BY_USER',
+        targetType: 'Session',
+        targetId: params.targetSessionId,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Session ${params.targetSessionId} révoquée manuellement.`,
+      });
+    });
+
+    return {
+      sessionId: params.targetSessionId,
+      revoked,
+    };
+  }
+
+  public suspendUserAccount(params: {
+    targetEmailOrId: string;
+    reason: string;
+    adminUserId: string;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    const target = Array.from(this.accountsByEmail.values()).find(
+      (a) => a.email === params.targetEmailOrId.toLowerCase() || a.userId === params.targetEmailOrId
+    );
+    if (!target) {
+      throw new AppError(404, 'USER_NOT_FOUND', 'Utilisateur à suspendre introuvable.');
+    }
+
+    target.isSuspended = true;
+    target.suspensionReason = params.reason;
+
+    // Révocation de toutes ses sessions actives et refresh tokens
+    revokeUserActiveSession(target.userId);
+    this.repo.revokeAllUserSessionsExcept(target.userId);
+    this.repo.revokeRefreshTokensForUser(target.userId);
+    for (const rt of this.refreshTokens.values()) {
+      if (rt.userId === target.userId) {
+        rt.revoked = true;
+      }
+    }
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.adminUserId,
+        actorRole: 'ADMIN',
+        action: 'AUTH_USER_ACCOUNT_SUSPENDED',
+        targetType: 'User',
+        targetId: target.userId,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Compte ${target.email} suspendu par l’administrateur : ${params.reason}.`,
+      });
+    });
+
+    return {
+      userId: target.userId,
+      email: target.email,
+      isSuspended: true,
+      reason: params.reason,
+    };
+  }
+
+  public unsuspendUserAccount(params: {
+    targetEmailOrId: string;
+    adminUserId: string;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    const target = Array.from(this.accountsByEmail.values()).find(
+      (a) => a.email === params.targetEmailOrId.toLowerCase() || a.userId === params.targetEmailOrId
+    );
+    if (!target) {
+      throw new AppError(404, 'USER_NOT_FOUND', 'Utilisateur introuvable.');
+    }
+
+    target.isSuspended = false;
+    target.suspensionReason = undefined;
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.adminUserId,
+        actorRole: 'ADMIN',
+        action: 'AUTH_USER_ACCOUNT_UNSUSPENDED',
+        targetType: 'User',
+        targetId: target.userId,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Compte ${target.email} réactivé par l’administrateur.`,
+      });
+    });
+
+    return {
+      userId: target.userId,
+      email: target.email,
+      isSuspended: false,
     };
   }
 

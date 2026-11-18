@@ -9,15 +9,19 @@
 
 import {
   AuditLogRecord,
+  AuthSessionDetail,
   BackupRecord,
   CalculationResultRecord,
   IncidentRecord,
   InvoiceRecord,
   KYCDossier,
+  LoginAttemptRecord,
+  MFAConfigurationRecord,
   OrderRecord,
   PaymentRecord,
   ProductItem,
   QuoteRecord,
+  RefreshTokenRecord,
   RoomLiveRecord,
   ShipmentRecord,
   SupportedLocale,
@@ -64,6 +68,10 @@ export class TradeLinkRepositoryStore {
   public readonly isProductionDatabaseConnected: boolean;
   private userPreferences: Map<string, UserLanguagePreferenceRecord> = new Map();
   private translationsMap: Map<string, TranslationRecord> = new Map();
+  private loginAttemptsList: LoginAttemptRecord[] = [];
+  private refreshTokensStore: Map<string, RefreshTokenRecord> = new Map();
+  private mfaConfigurationsStore: Map<string, MFAConfigurationRecord> = new Map();
+  private authSessionsStore: Map<string, AuthSessionDetail> = new Map();
 
   constructor(initialState: DatabaseStateSnapshot, isProdDbConnected = false) {
     this.state = structuredClone({
@@ -213,6 +221,129 @@ export class TradeLinkRepositoryStore {
       [targetLang]: desc,
     };
     return structuredClone(prod);
+  }
+
+  // ============================================================================
+  // GESTION REPOSITORIES : AUTHENTIFICATION, SESSIONS & AUDIT DE CONNEXION (PROMPT 01)
+  // ============================================================================
+
+  public recordLoginAttempt(attempt: Omit<LoginAttemptRecord, 'id' | 'attemptedAt'>): LoginAttemptRecord {
+    const record: LoginAttemptRecord = {
+      ...attempt,
+      id: `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      attemptedAt: new Date().toISOString(),
+    };
+    this.loginAttemptsList.unshift(record);
+    if (this.loginAttemptsList.length > 500) {
+      this.loginAttemptsList.pop();
+    }
+    return record;
+  }
+
+  public getLoginAttempts(userId?: string, email?: string): LoginAttemptRecord[] {
+    return this.loginAttemptsList.filter((a) => {
+      if (userId && a.userId === userId) return true;
+      if (email && a.emailAttempted.toLowerCase() === email.toLowerCase()) return true;
+      return !userId && !email;
+    });
+  }
+
+  public getRecentFailedLoginAttempts(email: string, windowMinutes: number = 15): LoginAttemptRecord[] {
+    const cutoff = Date.now() - windowMinutes * 60 * 1000;
+    return this.loginAttemptsList.filter(
+      (a) =>
+        a.emailAttempted.toLowerCase() === email.toLowerCase() &&
+        !a.isSuccess &&
+        new Date(a.attemptedAt).getTime() >= cutoff
+    );
+  }
+
+  public saveRefreshToken(record: RefreshTokenRecord): RefreshTokenRecord {
+    this.refreshTokensStore.set(record.tokenHash, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  public findRefreshToken(tokenHash: string): RefreshTokenRecord | null {
+    const item = this.refreshTokensStore.get(tokenHash);
+    return item ? structuredClone(item) : null;
+  }
+
+  public revokeRefreshToken(tokenHash: string): boolean {
+    const item = this.refreshTokensStore.get(tokenHash);
+    if (!item) return false;
+    item.isRevoked = true;
+    item.revokedAt = new Date().toISOString();
+    return true;
+  }
+
+  public revokeRefreshTokensForUser(userId: string): number {
+    let count = 0;
+    for (const item of this.refreshTokensStore.values()) {
+      if (item.userId === userId && !item.isRevoked) {
+        item.isRevoked = true;
+        item.revokedAt = new Date().toISOString();
+        count++;
+      }
+    }
+    return count;
+  }
+
+  public revokeRefreshTokensForSession(sessionId: string): number {
+    let count = 0;
+    for (const item of this.refreshTokensStore.values()) {
+      if (item.sessionId === sessionId && !item.isRevoked) {
+        item.isRevoked = true;
+        item.revokedAt = new Date().toISOString();
+        count++;
+      }
+    }
+    return count;
+  }
+
+  public saveMfaConfig(config: MFAConfigurationRecord): MFAConfigurationRecord {
+    this.mfaConfigurationsStore.set(config.userId, structuredClone(config));
+    return structuredClone(config);
+  }
+
+  public getMfaConfig(userId: string): MFAConfigurationRecord | null {
+    const config = this.mfaConfigurationsStore.get(userId);
+    return config ? structuredClone(config) : null;
+  }
+
+  public saveUserSession(session: AuthSessionDetail): AuthSessionDetail {
+    this.authSessionsStore.set(session.id, structuredClone(session));
+    return structuredClone(session);
+  }
+
+  public getUserSession(sessionId: string): AuthSessionDetail | null {
+    const sess = this.authSessionsStore.get(sessionId);
+    return sess ? structuredClone(sess) : null;
+  }
+
+  public getUserSessions(userId: string): AuthSessionDetail[] {
+    return Array.from(this.authSessionsStore.values()).filter((s) => s.userId === userId);
+  }
+
+  public revokeUserSession(sessionId: string, reason?: string): boolean {
+    const sess = this.authSessionsStore.get(sessionId);
+    if (!sess) return false;
+    sess.isRevoked = true;
+    sess.revokedReason = reason ?? 'MANUAL_REVOCATION';
+    sess.isCurrent = false;
+    return true;
+  }
+
+  public revokeAllUserSessionsExcept(userId: string, keepSessionId?: string): number {
+    let count = 0;
+    for (const sess of this.authSessionsStore.values()) {
+      if (sess.userId === userId && sess.id !== keepSessionId && !sess.isRevoked) {
+        sess.isRevoked = true;
+        sess.revokedReason = 'SUPERSEDED_BY_NEW_ACTIVE_SESSION';
+        sess.isCurrent = false;
+        count++;
+      }
+    }
+    return count;
   }
 
   public getSnapshot(): Readonly<Required<DatabaseStateSnapshot>> {

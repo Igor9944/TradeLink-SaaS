@@ -38,9 +38,17 @@ model User {
   updatedAt           DateTime  @updatedAt
   deletedAt           DateTime? // Suppression logique (Soft Delete)
 
+  termsAcceptedAt     DateTime?
+  privacyAcceptedAt   DateTime?
+  emailVerifiedAt     DateTime?
+  phoneVerifiedAt     DateTime?
+
   userRoles           UserRole[]
   sessions            Session[]
   devices             Device[]
+  refreshTokens       RefreshToken[]
+  mfaConfig           MFAConfiguration?
+  loginAttempts       LoginAttempt[]
   kyc                 KYC?
   clientProfile       Client?
   supplierProfile     Supplier?
@@ -134,9 +142,65 @@ model Session {
 
   user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   device Device? @relation(fields: [deviceId], references: [id])
+  refreshTokens RefreshToken[]
 
   @@index([userId, isRevoked])
   @@index([expiresAt])
+}
+
+// 6B. RefreshToken — Jetons de rafraîchissement avec rotation et détection de rejeu
+model RefreshToken {
+  id          String    @id @default(uuid())
+  userId      String
+  sessionId   String
+  tokenHash   String    @unique
+  family      String    // Famille de jetons pour détection de vol/rejeu
+  isRevoked   Boolean   @default(false)
+  revokedAt   DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRevoked])
+  @@index([family])
+  @@index([expiresAt])
+}
+
+// 6C. MFAConfiguration — Configuration TOTP Authenticator RFC 6238
+model MFAConfiguration {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  secretEncrypted String    // Clé secrète Base32 chiffrée KMS
+  algorithm       String    @default("SHA1") // RFC 6238
+  digits          Int       @default(6)
+  periodSeconds   Int       @default(30)
+  isVerified      Boolean   @default(false)
+  verifiedAt      DateTime?
+  backupCodes     String[]  // Codes de secours
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// 6D. LoginAttempt — Journalisation des connexions & protection Brute-Force
+model LoginAttempt {
+  id             String    @id @default(uuid())
+  userId         String?
+  emailAttempted String
+  ipAddress      String
+  userAgent      String
+  isSuccess      Boolean
+  failureReason  String?   // ex: INVALID_PASSWORD, LOCKED_BRUTE_FORCE, MFA_REQUIRED
+  correlationId  String
+  attemptedAt    DateTime  @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([emailAttempted, attemptedAt])
+  @@index([ipAddress, attemptedAt])
 }
 
 // 7. Device — Appareils connus et signaux de confiance

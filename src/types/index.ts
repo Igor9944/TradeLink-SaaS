@@ -584,4 +584,87 @@ export interface TranslatedMessageBubbleState {
   engineVersion: string;
 }
 
+// ============================================================================
+// MODÈLES AUTHENTIFICATION, GESTION DES SESSIONS & SÉCURITÉ (PROMPT 01)
+// ============================================================================
+
+export interface RefreshTokenRecord {
+  id: string;
+  userId: string;
+  sessionId: string;
+  tokenHash: string;
+  family: string;
+  isRevoked: boolean;
+  revokedAt?: string | null;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface MFAConfigurationRecord {
+  id: string;
+  userId: string;
+  secretEncrypted: string;
+  algorithm: string;
+  digits: number;
+  periodSeconds: number;
+  isVerified: boolean;
+  verifiedAt?: string | null;
+  backupCodes: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LoginAttemptRecord {
+  id: string;
+  userId?: string | null;
+  emailAttempted: string;
+  ipAddress: string;
+  userAgent: string;
+  isSuccess: boolean;
+  failureReason?: string | null;
+  correlationId: string;
+  attemptedAt: string;
+}
+
+export interface AuthSessionDetail {
+  id: string;
+  userId: string;
+  ipAddress: string;
+  userAgent: string;
+  deviceName?: string;
+  os?: string;
+  browser?: string;
+  isCurrent: boolean;
+  isRevoked: boolean;
+  revokedReason?: string | null;
+  createdAt: string;
+  expiresAt: string;
+  lastActiveAt: string;
+}
+
+export interface RegisterPayload {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  password: string;
+  companyName: string;
+  taxId?: string;
+  businessAddress?: string;
+  city?: string;
+  postalCode?: string;
+  country: string;
+  requestedRole: 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR' | 'ADMIN';
+  termsAccepted: boolean;
+  privacyAccepted: boolean;
+}
+
+export interface SmartRedirectInfo {
+  targetPath: string;
+  role: UserRoleCode;
+  accountStatus: 'ACTIVE' | 'SUSPENDED' | 'PENDING_MFA' | 'PENDING_KYC';
+  reason?: string;
+  kycDaysRemaining?: number;
+}
+
 

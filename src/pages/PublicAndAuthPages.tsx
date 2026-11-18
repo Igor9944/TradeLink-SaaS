@@ -1114,6 +1114,8 @@ export const AuthPortalPage: React.FC<{
   const [regCompany, setRegCompany] = useState('Atlas Import & Distribution S.A.');
   const [regEmail, setRegEmail] = useState('achats@atlas-import-retail.ma');
   const [regPhone, setRegPhone] = useState('+212 6 61 00 22 44');
+  const [regTaxId, setRegTaxId] = useState('MA-ICE-002849100');
+  const [regAddress, setRegAddress] = useState('14 Boulevard d’Anfa, Casablanca');
   const [regPassword, setRegPassword] = useState('SecureTrade#2026!');
   const [regCountry, setRegCountry] = useState('Maroc (MA)');
   const [termsAccepted, setTermsAccepted] = useState(true);
@@ -1452,6 +1454,25 @@ export const AuthPortalPage: React.FC<{
                   autoComplete="tel"
                   value={regPhone}
                   onChange={(e) => setRegPhone(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-3">
+                <Input
+                  label="Identifiant Fiscal / ICE / SIRET *"
+                  id="reg-taxid"
+                  name="taxid"
+                  value={regTaxId}
+                  onChange={(e) => setRegTaxId(e.target.value)}
+                  required
+                />
+                <Input
+                  label="Adresse du Siège Social *"
+                  id="reg-address"
+                  name="address"
+                  value={regAddress}
+                  onChange={(e) => setRegAddress(e.target.value)}
                   required
                 />
               </div>
