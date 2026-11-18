@@ -41,7 +41,7 @@ const AccountingWorkspacePage = lazy(() =>
   }))
 );
 const SupportWorkspacePage = lazy(() =>
-  import('./pages/CarrierAccountingSupportAndTransversalPages').then((m) => ({
+  import('./pages/SupportWorkspacePages').then((m) => ({
     default: m.SupportWorkspacePage,
   }))
 );
@@ -177,6 +177,10 @@ export const App: React.FC = () => {
                       <Route path="/support/dashboard" element={<RoleGuard allowedRoles={['SUPPORT', 'ADMIN']} workspaceLabel="Espace Support"><SupportWorkspacePage section="dashboard" /></RoleGuard>} />
                       <Route path="/support/tickets" element={<RoleGuard allowedRoles={['SUPPORT', 'ADMIN']} workspaceLabel="Espace Support"><SupportWorkspacePage section="tickets" /></RoleGuard>} />
                       <Route path="/support/tickets/:id" element={<RoleGuard allowedRoles={['SUPPORT', 'ADMIN']} workspaceLabel="Espace Support"><SupportWorkspacePage section="ticket-detail" /></RoleGuard>} />
+                      <Route path="/support/utilisateurs" element={<RoleGuard allowedRoles={['SUPPORT', 'ADMIN']} workspaceLabel="Espace Support"><SupportWorkspacePage section="utilisateurs" /></RoleGuard>} />
+                      <Route path="/support/communication" element={<RoleGuard allowedRoles={['SUPPORT', 'ADMIN']} workspaceLabel="Espace Support"><SupportWorkspacePage section="communication" /></RoleGuard>} />
+                      <Route path="/support/base-connaissances" element={<RoleGuard allowedRoles={['SUPPORT', 'ADMIN']} workspaceLabel="Espace Support"><SupportWorkspacePage section="base-connaissances" /></RoleGuard>} />
+                      <Route path="/support/ia" element={<RoleGuard allowedRoles={['SUPPORT', 'ADMIN']} workspaceLabel="Espace Support"><SupportWorkspacePage section="assistant-ia" /></RoleGuard>} />
                       <Route path="/support/room-live" element={<RoleGuard allowedRoles={['SUPPORT', 'ADMIN']} workspaceLabel="Espace Support"><SupportWorkspacePage section="room-live" /></RoleGuard>} />
                       <Route path="/support/parametres" element={<RoleGuard allowedRoles={['SUPPORT', 'ADMIN']} workspaceLabel="Espace Support"><SupportWorkspacePage section="parametres" /></RoleGuard>} />
 

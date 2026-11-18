@@ -148,9 +148,13 @@ export const ROLE_NAVIGATION: Record<UserRoleCode, NavItem[]> = {
   ],
   SUPPORT: [
     { label: { fr: 'Dashboard Support', en: 'Support Dashboard', ar: 'لوحة الدعم الفني' }, path: '/support/dashboard', icon3d: 'support' },
-    { label: { fr: 'Tickets & SLA', en: 'Tickets & SLA', ar: 'تذاكر الدعم' }, path: '/support/tickets', icon3d: 'mailbox', badge: '4' },
-    { label: { fr: 'Room Live Assistance', en: 'Support Room Live', ar: 'غرفة الدعم المرئي' }, path: '/support/room-live', icon3d: 'live-tracking' },
-    { label: { fr: 'Paramètres Support', en: 'Support Settings', ar: 'إعدادات الدعم' }, path: '/support/parametres', icon3d: 'fleet-keys' },
+    { label: { fr: 'Tickets & SLA', en: 'Tickets & SLA', ar: 'تذاكر الدعم' }, path: '/support/tickets', icon3d: 'mailbox', badge: '5' },
+    { label: { fr: 'Annuaire Utilisateurs', en: 'Users Directory', ar: 'دليل المستخدمين' }, path: '/support/utilisateurs', icon3d: 'checklist' },
+    { label: { fr: 'Communication & Modèles', en: 'Communication', ar: 'المراسلات والنماذج' }, path: '/support/communication', icon3d: 'handover' },
+    { label: { fr: 'Base de Connaissances', en: 'Knowledge Base', ar: 'قاعدة المعرفة' }, path: '/support/base-connaissances', icon3d: 'shelving-rack' },
+    { label: { fr: 'Assistant IA Support', en: 'AI Support Assistant', ar: 'مساعد الدعم الذكي' }, path: '/support/ia', icon3d: 'live-tracking' },
+    { label: { fr: 'Room Live Assistance', en: 'Support Room Live', ar: 'غرفة الدعم المرئي' }, path: '/support/room-live', icon3d: 'route-map' },
+    { label: { fr: 'Paramètres Agent', en: 'Agent Settings', ar: 'إعدادات الوكيل' }, path: '/support/parametres', icon3d: 'fleet-keys' },
   ],
 };
 
