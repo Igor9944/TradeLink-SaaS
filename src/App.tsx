@@ -95,19 +95,24 @@ export const App: React.FC = () => {
                 <AppLayout>
                   <Suspense fallback={<PageSkeletonLoader />}>
                     <Routes>
-                      {/* ADMINISTRATEUR (Pages 11 à 22 — Réservé ADMIN + MFA obligatoire) */}
+                      {/* ADMINISTRATEUR (Piliers 1 à 10 — Réservé ADMIN + MFA obligatoire) */}
                       <Route path="/admin/dashboard" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="dashboard" /></RoleGuard>} />
                       <Route path="/admin/users" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="users" /></RoleGuard>} />
                       <Route path="/admin/users/:id" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="user-detail" /></RoleGuard>} />
                       <Route path="/admin/kyc" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="kyc" /></RoleGuard>} />
                       <Route path="/admin/kyc/:id" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="kyc-detail" /></RoleGuard>} />
+                      <Route path="/admin/commercial" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="commercial" /></RoleGuard>} />
+                      <Route path="/admin/finance" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="finance" /></RoleGuard>} />
+                      <Route path="/admin/logistique" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="logistique" /></RoleGuard>} />
                       <Route path="/admin/security" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="security" /></RoleGuard>} />
                       <Route path="/admin/import-export" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="import-export" /></RoleGuard>} />
                       <Route path="/admin/ai-config" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="ai-config" /></RoleGuard>} />
+                      <Route path="/admin/room-live" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="room-live" /></RoleGuard>} />
                       <Route path="/admin/floating-buttons" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="floating-buttons" /></RoleGuard>} />
                       <Route path="/admin/audit" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="audit" /></RoleGuard>} />
                       <Route path="/admin/backups" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="backups" /></RoleGuard>} />
                       <Route path="/admin/reports" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="reports" /></RoleGuard>} />
+                      <Route path="/admin/parametres" element={<RoleGuard allowedRoles={['ADMIN']} workspaceLabel="Administration"><AdminWorkspacePage section="parametres" /></RoleGuard>} />
 
                       {/* CLIENT B2B (Pages 23 à 39 — Réservé CLIENT & ADMIN) */}
                       <Route path="/client/dashboard" element={<RoleGuard allowedRoles={['CLIENT', 'ADMIN']} workspaceLabel="Espace Client B2B"><ClientWorkspacePage section="dashboard" /></RoleGuard>} />

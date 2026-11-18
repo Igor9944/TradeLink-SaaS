@@ -914,13 +914,15 @@ export const ConfirmDialog: React.FC<{
   title: string;
   description: string;
   confirmLabel?: string;
-}> = ({ open, onClose, onConfirm, title, description, confirmLabel = 'Confirmer l’opération' }) => (
+  children?: React.ReactNode;
+}> = ({ open, onClose, onConfirm, title, description, confirmLabel = 'Confirmer l’opération', children }) => (
   <Modal open={open} onClose={onClose} title={title} maxWidthClass="max-w-md">
     <div className="space-y-4 text-xs">
       <div className="flex items-start gap-3 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30">
         <HelpCircle className="w-5 h-5 text-amber-500 shrink-0" />
         <p className="leading-relaxed">{description}</p>
       </div>
+      {children}
       <div className="flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose} autoFocus>
           Annuler

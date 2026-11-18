@@ -165,6 +165,8 @@ export interface UserProfile {
   mfaVerified: boolean;
   activeSessionId: string;
   previousSessionRevoked?: boolean;
+  isSuspended?: boolean;
+  suspensionReason?: string;
   kycStatus: KYCStatus;
   kycDaysRemaining: number;
   jurisdiction: string;
