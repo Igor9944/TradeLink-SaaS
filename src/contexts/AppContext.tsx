@@ -1265,6 +1265,9 @@ interface AppContextValue {
   addProduct: (p: Omit<ProductItem, 'id'>) => void;
   updateProductDetails: (productId: string, sku: string, unitPrice: string, nameFr: string, nameAr: string) => void;
   updateProductStock: (productId: string, delta: number, reason: string) => void;
+  archiveProduct: (productId: string) => void;
+  deleteProduct: (productId: string) => { ok: boolean; message: string };
+  importProductsBulk: (items: Omit<ProductItem, 'id'>[]) => number;
   cart: CartItem[];
   addToCart: (product: ProductItem, qty?: number) => void;
   updateCartQuantity: (productId: string, delta: number) => void;
@@ -1275,9 +1278,11 @@ interface AppContextValue {
   orders: OrderRecord[];
   createOrderFromCart: (shippingAddress: string, paymentMethod: string) => OrderRecord | null;
   updateOrderStatus: (orderId: string, newStatus: OrderStatus) => void;
+  updateOrderStatusWithReason: (orderId: string, newStatus: OrderStatus, reason?: string) => void;
   quotes: QuoteRecord[];
   createQuote: (q: Omit<QuoteRecord, 'id' | 'quoteNumber' | 'createdAt'>) => void;
   convertQuoteToOrder: (quoteId: string) => void;
+  respondToQuote: (quoteId: string, adjustedAmount: string, notes?: string) => void;
   invoices: InvoiceRecord[];
   payInvoice: (invoiceId: string) => void;
   payments: PaymentRecord[];
@@ -1729,6 +1734,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notifyToast(`Stock mis à jour (${delta > 0 ? '+' : ''}${delta}) — Motif : ${reason}`, 'success');
   };
 
+  const archiveProduct = (productId: string) => {
+    setProducts((prev) =>
+      prev.map((p) => (p.id === productId ? { ...p, isPublished: false } : p))
+    );
+    addAuditLog('PRODUCT_ARCHIVED', 'Product', productId, 'SUCCESS', `Produit ${productId} archivé.`);
+    notifyToast(`Produit archivé avec succès.`, 'info');
+  };
+
+  const deleteProduct = (productId: string): { ok: boolean; message: string } => {
+    const isReferenced = orders.some(
+      (o) =>
+        ['PENDING', 'ACCEPTED', 'PREPARING', 'SHIPPED'].includes(o.status) &&
+        o.items.some((it) => it.productId === productId)
+    );
+    if (isReferenced) {
+      archiveProduct(productId);
+      return {
+        ok: false,
+        message: 'Le produit est référencé dans des commandes en cours. Il a été archivé pour respecter les règles d’intégrité.',
+      };
+    }
+    setProducts((prev) => prev.filter((p) => p.id !== productId));
+    addAuditLog('PRODUCT_DELETED', 'Product', productId, 'SUCCESS', `Produit ${productId} supprimé définitivement.`);
+    notifyToast('Produit supprimé du catalogue.', 'success');
+    return { ok: true, message: 'Produit supprimé avec succès.' };
+  };
+
+  const importProductsBulk = (items: Omit<ProductItem, 'id'>[]): number => {
+    const newItems: ProductItem[] = items.map((it, idx) => ({
+      ...it,
+      id: `prod-bulk-${Date.now()}-${idx}`,
+    }));
+    setProducts((prev) => [...newItems, ...prev]);
+    addAuditLog('PRODUCTS_BULK_IMPORTED', 'Product', `${items.length} items`, 'SUCCESS', `${items.length} produits importés en masse.`);
+    notifyToast(`${items.length} produits importés avec succès dans le catalogue.`, 'success');
+    return newItems.length;
+  };
+
   const addToCart = (product: ProductItem, qty = 1) => {
     if (qty > product.stockAvailable) {
       notifyToast(`Stock insuffisant (Disponible : ${product.stockAvailable})`, 'error');
@@ -1897,6 +1940,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setOrders((prev) => [newOrder, ...prev]);
     notifyToast(`Devis ${q.quoteNumber} converti en commande ${orderNumber}`, 'success');
+  };
+
+  const respondToQuote = (quoteId: string, adjustedAmount: string, notes?: string) => {
+    setQuotes((prev) =>
+      prev.map((q) =>
+        q.id === quoteId
+          ? {
+              ...q,
+              status: 'RESPONDED',
+              totalAmount: adjustedAmount,
+              amountInWords: `${adjustedAmount} ${q.currency}`,
+            }
+          : q
+      )
+    );
+    addAuditLog('QUOTE_RESPONDED', 'Quote', quoteId, 'SUCCESS', `Proposition commerciale émise pour devis ${quoteId} (${notes || 'Tarif négocié'}).`);
+    notifyToast(`Proposition commerciale transmise au client (${adjustedAmount} EUR).`, 'success');
+  };
+
+  const updateOrderStatusWithReason = (orderId: string, newStatus: OrderStatus, reason?: string) => {
+    if (currentUser.role === 'COMPTABLE') {
+      notifyToast('Action refusée : Le Comptable (Stage 3) est en lecture seule sur les commandes.', 'error');
+      return;
+    }
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              status: newStatus,
+              timeline: [
+                ...o.timeline,
+                {
+                  step: `Statut modifié en ${newStatus}${reason ? ` (${reason})` : ''}`,
+                  timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16),
+                  actor: `${currentUser.firstName} ${currentUser.lastName} (${currentUser.role})`,
+                  completed: true,
+                },
+              ],
+            }
+          : o
+      )
+    );
+    addAuditLog('ORDER_STATUS_CHANGED', 'Order', orderId, 'SUCCESS', `Statut commande ${orderId} -> ${newStatus}. ${reason ? `Motif: ${reason}` : ''}`);
+    notifyToast(`Commande ${newStatus} ${reason ? `(Motif: ${reason})` : ''}`, newStatus === 'REFUSED' ? 'info' : 'success');
   };
 
   const payInvoice = (invoiceId: string) => {
@@ -3168,6 +3256,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addProduct,
         updateProductDetails,
         updateProductStock,
+        archiveProduct,
+        deleteProduct,
+        importProductsBulk,
         cart,
         addToCart,
         updateCartQuantity,
@@ -3178,9 +3269,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         orders,
         createOrderFromCart,
         updateOrderStatus,
+        updateOrderStatusWithReason,
         quotes,
         createQuote,
         convertQuoteToOrder,
+        respondToQuote,
         invoices,
         payInvoice,
         payments,

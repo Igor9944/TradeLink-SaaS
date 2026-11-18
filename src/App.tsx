@@ -30,7 +30,7 @@ const ClientWorkspacePage = lazy(() =>
   import('./pages/ClientWorkspacePages').then((m) => ({ default: m.ClientWorkspacePage }))
 );
 const SupplierWorkspacePage = lazy(() =>
-  import('./pages/ClientAndSupplierPages').then((m) => ({ default: m.SupplierWorkspacePage }))
+  import('./pages/SupplierWorkspacePages').then((m) => ({ default: m.SupplierWorkspacePage }))
 );
 const CarrierWorkspacePage = lazy(() =>
   import('./pages/CarrierAccountingSupportAndTransversalPages').then((m) => ({
@@ -145,6 +145,9 @@ export const App: React.FC = () => {
                       <Route path="/fournisseur/devis" element={<RoleGuard allowedRoles={['FOURNISSEUR', 'ADMIN']} workspaceLabel="Espace Fournisseur"><SupplierWorkspacePage section="devis" /></RoleGuard>} />
                       <Route path="/fournisseur/documents" element={<RoleGuard allowedRoles={['FOURNISSEUR', 'ADMIN']} workspaceLabel="Espace Fournisseur"><SupplierWorkspacePage section="documents" /></RoleGuard>} />
                       <Route path="/fournisseur/paiements" element={<RoleGuard allowedRoles={['FOURNISSEUR', 'ADMIN']} workspaceLabel="Espace Fournisseur"><SupplierWorkspacePage section="paiements" /></RoleGuard>} />
+                      <Route path="/fournisseur/clients" element={<RoleGuard allowedRoles={['FOURNISSEUR', 'ADMIN']} workspaceLabel="Espace Fournisseur"><SupplierWorkspacePage section="clients" /></RoleGuard>} />
+                      <Route path="/fournisseur/logistique" element={<RoleGuard allowedRoles={['FOURNISSEUR', 'ADMIN']} workspaceLabel="Espace Fournisseur"><SupplierWorkspacePage section="logistique" /></RoleGuard>} />
+                      <Route path="/fournisseur/ia" element={<RoleGuard allowedRoles={['FOURNISSEUR', 'ADMIN']} workspaceLabel="Espace Fournisseur"><SupplierWorkspacePage section="assistant-ia" /></RoleGuard>} />
                       <Route path="/fournisseur/room-live" element={<RoleGuard allowedRoles={['FOURNISSEUR', 'ADMIN']} workspaceLabel="Espace Fournisseur"><SupplierWorkspacePage section="room-live" /></RoleGuard>} />
                       <Route path="/fournisseur/parametres" element={<RoleGuard allowedRoles={['FOURNISSEUR', 'ADMIN']} workspaceLabel="Espace Fournisseur"><SupplierWorkspacePage section="parametres" /></RoleGuard>} />
 
