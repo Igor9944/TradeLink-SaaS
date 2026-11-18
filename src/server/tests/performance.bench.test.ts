@@ -227,7 +227,7 @@ export async function runPerformanceBenchSuite() {
   let tokenCount = 0;
   let firstTokenLatency = 0;
   for await (const chunk of streamGen) {
-    if (tokenCount === 0) {
+    if (tokenCount === 0 && chunk.token) {
       firstTokenLatency = performance.now() - streamStart;
     }
     tokenCount++;
