@@ -32,6 +32,8 @@ import {
   TranslationRecord,
   UserLanguagePreferenceRecord,
   VoiceInteractionRecord,
+  OcrDocumentDetail,
+  OcrQueueJob,
 } from '../../types';
 import { PaginationAndFilterParams } from '../validators/schema.validator';
 import { StockMovementRecord } from '../../services/commercialEngine';
@@ -72,6 +74,8 @@ export interface DatabaseStateSnapshot {
   kycReminders?: KYCReminderLogRecord[];
   copilotThreads?: CopilotConversationThread[];
   voiceInteractions?: VoiceInteractionRecord[];
+  ocrDocuments?: OcrDocumentDetail[];
+  ocrQueueJobs?: OcrQueueJob[];
 }
 
 export class TradeLinkRepositoryStore {
@@ -119,6 +123,8 @@ export class TradeLinkRepositoryStore {
       kycReminders: initialState.kycReminders ?? [],
       copilotThreads: initialState.copilotThreads ?? [],
       voiceInteractions: initialState.voiceInteractions ?? [],
+      ocrDocuments: initialState.ocrDocuments ?? [],
+      ocrQueueJobs: initialState.ocrQueueJobs ?? [],
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
   }
@@ -445,6 +451,78 @@ export class TradeLinkRepositoryStore {
     const all = this.state.voiceInteractions;
     if (!userId) return all.map((i) => structuredClone(i));
     return all.filter((i) => i.userId === userId).map((i) => structuredClone(i));
+  }
+
+  // ============================================================================
+  // GESTION OCR, INTELLIGENCE DOCUMENTAIRE & JOBS (PROMPT 05)
+  // ============================================================================
+
+  public saveOcrDocument(doc: OcrDocumentDetail): OcrDocumentDetail {
+    const idx = this.state.ocrDocuments.findIndex((d) => d.id === doc.id);
+    if (idx >= 0) {
+      this.state.ocrDocuments[idx] = structuredClone(doc);
+    } else {
+      this.state.ocrDocuments.unshift(structuredClone(doc));
+    }
+    return structuredClone(doc);
+  }
+
+  public getOcrDocumentById(id: string): OcrDocumentDetail | null {
+    const doc = this.state.ocrDocuments.find((d) => d.id === id && !d.deletedAt);
+    return doc ? structuredClone(doc) : null;
+  }
+
+  public findOcrDocumentByHash(sha256Hash: string): OcrDocumentDetail | null {
+    const doc = this.state.ocrDocuments.find((d) => d.sha256Hash === sha256Hash && !d.deletedAt);
+    return doc ? structuredClone(doc) : null;
+  }
+
+  public listOcrDocuments(userId?: string, profile?: string, status?: string): OcrDocumentDetail[] {
+    let list = this.state.ocrDocuments.filter((d) => !d.deletedAt);
+    if (userId) {
+      list = list.filter((d) => d.uploadedById === userId);
+    }
+    if (profile) {
+      list = list.filter((d) => d.profile === profile);
+    }
+    if (status) {
+      list = list.filter((d) => d.processingStatus === status || d.status === status);
+    }
+    return list.map((d) => structuredClone(d));
+  }
+
+  public softDeleteOcrDocument(id: string, actorId: string, isAdmin = false): boolean {
+    const doc = this.state.ocrDocuments.find((d) => d.id === id);
+    if (!doc) return false;
+    // Anti-IDOR : propriétaire ou Admin uniquement
+    if (doc.uploadedById !== actorId && !isAdmin) {
+      const err = new Error('FORBIDDEN_IDOR_DOCUMENT_OWNERSHIP');
+      (err as any).statusCode = 403;
+      throw err;
+    }
+    doc.deletedAt = new Date().toISOString();
+    return true;
+  }
+
+  public enqueueOcrJob(job: OcrQueueJob): OcrQueueJob {
+    this.state.ocrQueueJobs.unshift(structuredClone(job));
+    return structuredClone(job);
+  }
+
+  public getOcrQueueJobs(): OcrQueueJob[] {
+    return this.state.ocrQueueJobs.map((j) => structuredClone(j));
+  }
+
+  public updateOcrJob(jobId: string, progress: number, status?: OcrQueueJob['status']): void {
+    const job = this.state.ocrQueueJobs.find((j) => j.id === jobId);
+    if (job) {
+      job.progressPercentage = Math.min(100, Math.max(0, progress));
+      if (status) job.status = status;
+      if (progress >= 100) {
+        job.status = 'COMPLETED';
+        job.completedAt = new Date().toISOString();
+      }
+    }
   }
 
   public getSnapshot(): Readonly<Required<DatabaseStateSnapshot>> {

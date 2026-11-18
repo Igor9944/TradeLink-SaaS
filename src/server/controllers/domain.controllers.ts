@@ -1566,6 +1566,112 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, result, 200);
     }
 
+    // ============================================================================
+    // 24. CONTRÔLEURS OCR, EXTRACTION & INTELLIGENCE DOCUMENTAIRE (PROMPT 05)
+    // ============================================================================
+
+    // 24A. Importation et analyse OCR d'un document
+    if (method === 'POST' && path === '/api/v1/ocr/upload') {
+      const user = requireAuthenticatedSession(ctx);
+      const { fileName, fileBytesBase64, fileSizeBytes, mimeType, profile } = ctx.body || {};
+      if (!fileName || !profile) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'fileName et profile sont obligatoires pour importer un document.');
+      }
+      const result = this.services.uploadAndAnalyzeOcrDocumentService({
+        actor: user,
+        fileName,
+        fileBytesBase64,
+        fileSizeBytes: Number(fileSizeBytes) || (fileBytesBase64 ? Buffer.from(fileBytesBase64, 'base64').length : 1024),
+        mimeType: mimeType || 'application/pdf',
+        profile,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, result, 201);
+    }
+
+    // 24B. Liste des documents analysés par OCR
+    if (method === 'GET' && path === '/api/v1/ocr/documents') {
+      const user = requireAuthenticatedSession(ctx);
+      const profile = ctx.query.profile as any;
+      const status = ctx.query.status as any;
+      const list = this.services.listOcrDocumentsService(user, { profile, status });
+      return this.ok(ctx, list, 200);
+    }
+
+    // 24C. État de la file d'attente OCR
+    if (method === 'GET' && path === '/api/v1/ocr/queue') {
+      requireAuthenticatedSession(ctx);
+      const status = this.services.getOcrQueueStatusService();
+      return this.ok(ctx, status, 200);
+    }
+
+    // 24D. Consultation détaillée d'un document OCR
+    if (method === 'GET' && path.startsWith('/api/v1/ocr/documents/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const documentId = path.replace('/api/v1/ocr/documents/', '');
+      const doc = this.services.getOcrDocumentByIdService(documentId, user);
+      return this.ok(ctx, doc, 200);
+    }
+
+    // 24E. Correction manuelle d'un champ OCR
+    if ((method === 'PUT' || method === 'PATCH') && path.includes('/api/v1/ocr/documents/') && path.endsWith('/fields')) {
+      const user = requireAuthenticatedSession(ctx);
+      const documentId = path.replace('/api/v1/ocr/documents/', '').replace('/fields', '');
+      const { fieldKey, newValue, reason } = ctx.body || {};
+      if (!fieldKey || newValue === undefined) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'fieldKey et newValue requis.');
+      }
+      const updated = this.services.correctOcrFieldService({
+        documentId,
+        fieldKey,
+        newValue: String(newValue),
+        reason,
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 24F. Validation humaine finale obligatoire
+    if (method === 'POST' && path.includes('/api/v1/ocr/documents/') && path.endsWith('/validate')) {
+      const user = requireAuthenticatedSession(ctx);
+      const documentId = path.replace('/api/v1/ocr/documents/', '').replace('/validate', '');
+      const { confirmedFields } = ctx.body || {};
+      const result = this.services.validateOcrDocumentHumanReviewService({
+        documentId,
+        confirmedFields: confirmedFields || {},
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 24G. Rejet d'un document OCR
+    if (method === 'POST' && path.includes('/api/v1/ocr/documents/') && path.endsWith('/reject')) {
+      const user = requireAuthenticatedSession(ctx);
+      const documentId = path.replace('/api/v1/ocr/documents/', '').replace('/reject', '');
+      const { reason } = ctx.body || {};
+      const result = this.services.rejectOcrDocumentService({
+        documentId,
+        reason: reason || '',
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 24H. Suppression d'un document OCR (Soft delete)
+    if (method === 'DELETE' && path.startsWith('/api/v1/ocr/documents/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const documentId = path.replace('/api/v1/ocr/documents/', '');
+      const result = this.services.softDeleteOcrDocumentService(documentId, user);
+      return this.ok(ctx, result, 200);
+    }
+
     throw new AppError(404, 'ENDPOINT_NOT_FOUND', `Route API introuvable : ${method} ${path}`);
   }
 }

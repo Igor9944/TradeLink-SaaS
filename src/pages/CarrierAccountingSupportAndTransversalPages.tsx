@@ -55,12 +55,18 @@ import {
   Button,
   Card,
   DataTable,
-  FileUploader,
   Input,
   Modal,
   Tabs,
 } from '../components/ui/DesignSystem';
-import { DayCountBasis, IncidentRecord, InvoiceRecord } from '../types';
+import {
+  DayCountBasis,
+  IncidentRecord,
+  InvoiceRecord,
+  OcrDocumentDetail,
+} from '../types';
+import { OcrSecureUploader } from '../components/ocr/OcrSecureUploader';
+import { OcrDocumentStudioView } from '../components/ocr/OcrDocumentStudioView';
 import {
   AccountingEngine,
   AccountingEntryLineRecord,
@@ -4420,304 +4426,369 @@ export const RoomLiveSessionPage: React.FC = () => {
 
 export const OCRStudioPage: React.FC = () => {
   const {
-    ocrDocument,
-    uploadOcrFile,
-    correctOcrField,
-    reviewDynamicField,
-    validateOcrDocument,
     currentUser,
   } = useApp();
 
-  const [activeSelectedField, setActiveSelectedField] = useState<string>('invoiceNumber');
+  const [activeTab, setActiveTab] = useState<'STUDIO' | 'UPLOAD' | 'HISTORY'>('STUDIO');
+
+  const sampleFields = [
+    {
+      key: 'invoiceNumber',
+      label: 'Numéro de Facture',
+      value: 'FAC-2026-9901',
+      confidence: 0.98,
+      boundingBox: { x: 120, y: 45, width: 140, height: 20, page: 1 },
+    },
+    {
+      key: 'issueDate',
+      label: 'Date d\'Émission',
+      value: '2026-11-18',
+      confidence: 0.96,
+      boundingBox: { x: 420, y: 45, width: 100, height: 20, page: 1 },
+    },
+    {
+      key: 'vendorName',
+      label: 'Fournisseur Émetteur',
+      value: 'EuroTech Distribution SARL',
+      confidence: 0.95,
+      boundingBox: { x: 120, y: 80, width: 220, height: 22, page: 1 },
+    },
+    {
+      key: 'clientName',
+      label: 'Client Destinataire',
+      value: 'Atlas Industrial S.A.',
+      confidence: 0.94,
+      boundingBox: { x: 120, y: 110, width: 200, height: 22, page: 1 },
+    },
+    {
+      key: 'taxIdentifier',
+      label: 'Identifiant Fiscal (ICE / RC)',
+      value: '002938475000032',
+      confidence: 0.93,
+      boundingBox: { x: 120, y: 140, width: 180, height: 20, page: 1 },
+    },
+    {
+      key: 'amountHt',
+      label: 'Montant Total HT',
+      value: '3450.00',
+      confidence: 0.97,
+      boundingBox: { x: 380, y: 350, width: 120, height: 22, page: 1 },
+    },
+    {
+      key: 'vatAmount',
+      label: 'Montant TVA (20%)',
+      value: '690.00',
+      confidence: 0.96,
+      boundingBox: { x: 380, y: 380, width: 120, height: 22, page: 1 },
+    },
+    {
+      key: 'amountTtc',
+      label: 'Montant Total TTC',
+      value: '4140.00',
+      confidence: 0.99,
+      boundingBox: { x: 380, y: 410, width: 120, height: 24, page: 1 },
+    },
+    {
+      key: 'currency',
+      label: 'Devise de Facturation',
+      value: 'EUR',
+      confidence: 0.99,
+      boundingBox: { x: 505, y: 410, width: 40, height: 24, page: 1 },
+    },
+    {
+      key: 'incoterm',
+      label: 'Incoterm Commercial',
+      value: 'CIF Casablanca Port',
+      confidence: 0.88,
+      boundingBox: { x: 120, y: 440, width: 160, height: 20, page: 1 },
+    },
+  ];
+
+  // Document échantillon complet représentatif de l'intelligence documentaire TRADELINK V6.0
+  const [activeDoc, setActiveDoc] = useState<OcrDocumentDetail>({
+    id: 'doc-ocr-sample-001',
+    fileName: 'Facture_EuroTech_FAC-9901.pdf',
+    fileSize: 418290,
+    fileSizeFormatted: '408.5 Ko',
+    fileType: 'PDF',
+    mimeType: 'application/pdf',
+    profile: 'INVOICE',
+    status: 'EXTRACTED_PENDING_REVIEW',
+    processingStatus: 'EXTRACTED_PENDING_REVIEW',
+    contentHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    sha256Hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    previewUrl: '/logos/logo-light-horizontal.png',
+    presignedUrl: '/logos/logo-light-horizontal.png',
+    rawText: `FACTURE COMMERCIALE N° FAC-2026-9901
+Date : 18/11/2026
+Fournisseur : EuroTech Distribution SARL
+Client : Atlas Industrial S.A.
+ICE : 002938475000032
+RC : Casablanca 184920
+Devise : EUR
+
+Articles :
+- 10x Capteur IoT Industriel IP67 (PU: 120.00 EUR, Total: 1200.00 EUR)
+- 5x Passerelle Edge Gateway 5G (PU: 450.00 EUR, Total: 2250.00 EUR)
+
+Montant Total HT : 3450.00 EUR
+TVA (20%) : 690.00 EUR
+Montant Total TTC : 4140.00 EUR
+Incoterm : CIF Casablanca Port
+Mode de règlement : Virement bancaire 30 jours`,
+    extractedText: `FACTURE COMMERCIALE N° FAC-2026-9901`,
+    detectedLanguage: 'fr',
+    globalConfidence: 0.942,
+    uncertainFields: [],
+    fields: sampleFields,
+    extractedFields: sampleFields,
+    lineItems: [
+      {
+        id: 'li-1',
+        lineNumber: 1,
+        description: 'Capteur IoT Industriel IP67',
+        sku: 'IOT-SENS-IP67',
+        quantity: 10,
+        unitPrice: '120.00',
+        lineTotal: '1200.00',
+        vatRate: '20%',
+        confidence: 0.96,
+      },
+      {
+        id: 'li-2',
+        lineNumber: 2,
+        description: 'Passerelle Edge Gateway 5G',
+        sku: 'GW-EDGE-5G-V2',
+        quantity: 5,
+        unitPrice: '450.00',
+        lineTotal: '2250.00',
+        vatRate: '20%',
+        confidence: 0.95,
+      },
+    ],
+    dynamicFields: [],
+    corrections: [],
+    correctionsLog: [],
+    uploadedById: 'user-sample',
+    validationMetadata: {
+      humanReviewCompleted: false,
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const [recentDocuments, setRecentDocuments] = useState<OcrDocumentDetail[]>([
+    activeDoc,
+    {
+      id: 'doc-ocr-cmr-002',
+      fileName: 'Lettre_CMR_ColdChain_Zenata.pdf',
+      fileSize: 582100,
+      fileSizeFormatted: '568.4 Ko',
+      fileType: 'PDF',
+      mimeType: 'application/pdf',
+      profile: 'TRANSPORT_CMR',
+      status: 'VALIDATED',
+      processingStatus: 'VALIDATED',
+      contentHash: 'f4c1d293847eab10293847120398471290384712093847120938471209384712',
+      sha256Hash: 'f4c1d293847eab10293847120398471290384712093847120938471209384712',
+      previewUrl: '/logos/logo-light-horizontal.png',
+      presignedUrl: '/logos/logo-light-horizontal.png',
+      rawText: 'CMR INTERNATIONAL TRANSPORT',
+      extractedText: 'CMR INTERNATIONAL TRANSPORT',
+      detectedLanguage: 'fr',
+      globalConfidence: 0.96,
+      uncertainFields: [],
+      fields: [
+        { key: 'consignmentNoteNumber', label: 'Numéro CMR', value: 'CMR-2026-8841', confidence: 0.98 },
+        { key: 'carrierName', label: 'Transporteur', value: 'Atlas Cold Chain Express', confidence: 0.97 },
+      ],
+      extractedFields: [
+        { key: 'consignmentNoteNumber', label: 'Numéro CMR', value: 'CMR-2026-8841', confidence: 0.98 },
+        { key: 'carrierName', label: 'Transporteur', value: 'Atlas Cold Chain Express', confidence: 0.97 },
+      ],
+      lineItems: [],
+      dynamicFields: [],
+      corrections: [],
+      correctionsLog: [],
+      uploadedById: 'user-sample-2',
+      validationMetadata: {
+        humanReviewCompleted: true,
+        validatedBy: 'Karim Transport Manager',
+        validatedAt: '2026-11-18T10:15:00Z',
+      },
+      createdAt: '2026-11-18T09:30:00Z',
+      updatedAt: '2026-11-18T10:15:00Z',
+    },
+  ]);
+
+  const handleUploadSuccess = (newDoc: OcrDocumentDetail) => {
+    setActiveDoc(newDoc);
+    setRecentDocuments((prev) => [newDoc, ...prev]);
+    setActiveTab('STUDIO');
+  };
 
   return (
     <div className="space-y-6">
-      <Card
-        title="Studio OCR / IDP — Extraction Documentaire Côte à Côte & Validation Humaine (Chapitre 6.9)"
-        subtitle="Composants 37 (OCRUploader), 38 (OCRPreview) et 39 (DynamicFieldBadge). Extraction des textes, tableaux d'articles et montants avec contrôle de cohérence et validation administrative des champs dynamiques."
-        action={
+      {/* En-tête Global du Studio OCR */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 rounded-2xl bg-white dark:bg-[#071F22] border border-slate-200 dark:border-teal-800 shadow-sm">
+        <div>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-500">Statut :</span>
-            <Badge variant={ocrDocument.status === 'VALIDATED' ? 'success' : 'orange'}>
-              {ocrDocument.status === 'VALIDATED' ? 'Validé Humainement' : 'Extraction IA Prête'}
-            </Badge>
+            <span className="p-2 rounded-xl bg-orange-500/10 text-[#E85D22]">
+              <Sparkles className="w-5 h-5" />
+            </span>
+            <h1 className="text-xl font-bold text-slate-900 dark:text-white">
+              Studio OCR / IDP — Extraction & Intelligence Documentaire
+            </h1>
           </div>
-        }
-      >
-        <div className="space-y-6">
-          {/* Uploader de document avec presets instantanés */}
-          <div className="space-y-2">
-            <FileUploader
-              label="Téléverser une Facture PDF, Lettre de voiture CMR ou Déclaration Douanière pour extraction OCR/IDP"
-              onFileSelect={(name) => uploadOcrFile(name)}
-            />
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-slate-500">Documents types de démonstration :</span>
-              {[
-                'Facture_EuroTech_FAC-9901.pdf',
-                'Lettre_CMR_ColdChain_Zenata.pdf',
-                'Certificat_Origine_EUR1_Casablanca.pdf',
-              ].map((docName) => (
-                <button
-                  key={docName}
-                  type="button"
-                  onClick={() => uploadOcrFile(docName)}
-                  className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-teal-800 bg-slate-50 dark:bg-[#082225] text-slate-700 dark:text-teal-300 hover:border-[#E85D22] transition-colors"
-                >
-                  📄 {docName}
-                </button>
-              ))}
-            </div>
-          </div>
+          <p className="text-xs text-slate-500 mt-1">
+            Reconnaissance optique haute précision, détection binaire anti-malware, vérification de cohérence arithmétique et validation humaine obligatoire.
+          </p>
+        </div>
 
-          {/* Affichage Côte-à-Côte (Composants 37 & 38) */}
-          <div className="grid lg:grid-cols-2 gap-6">
-            {/* Colonne Gauche : Document Original Scanné avec Bounding Boxes Interactives */}
-            <div className="p-5 rounded-2xl bg-slate-100 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-teal-200">
-                  Document Original Scanné
-                </span>
-                <Badge variant="info">
-                  {ocrDocument.fileName} ({ocrDocument.fileSizeFormatted})
-                </Badge>
-              </div>
+        {/* Onglets de navigation */}
+        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-[#0A292C] border border-slate-200 dark:border-teal-800 text-xs">
+          <button
+            type="button"
+            onClick={() => setActiveTab('STUDIO')}
+            className={`px-3 py-1.5 rounded-lg font-bold transition-all ${
+              activeTab === 'STUDIO'
+                ? 'bg-white dark:bg-[#071F22] text-[#E85D22] shadow-sm'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+            }`}
+          >
+            Studio Côte-à-Côte
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('UPLOAD')}
+            className={`px-3 py-1.5 rounded-lg font-bold transition-all ${
+              activeTab === 'UPLOAD'
+                ? 'bg-white dark:bg-[#071F22] text-[#E85D22] shadow-sm'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+            }`}
+          >
+            Téléversement Sécurisé
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('HISTORY')}
+            className={`px-3 py-1.5 rounded-lg font-bold transition-all ${
+              activeTab === 'HISTORY'
+                ? 'bg-white dark:bg-[#071F22] text-[#E85D22] shadow-sm'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+            }`}
+          >
+            Historique ({recentDocuments.length})
+          </button>
+        </div>
+      </div>
 
-              {/* Aperçu interactif avec boîtes englobantes */}
-              <div className="relative rounded-2xl overflow-hidden border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] p-5 space-y-4 text-xs shadow-inner">
-                <div className="flex items-center justify-between border-b pb-3">
-                  <img src="/logos/logo-light-horizontal.png" alt="Logo" className="h-8" />
-                  <div className="text-end font-mono">
-                    <p className="font-bold text-slate-900 dark:text-white">COMMERCIAL INVOICE & CMR</p>
-                    <p className="text-slate-500">
-                      Réf : {ocrDocument.fields.find((f) => f.key === 'invoiceNumber')?.value}
-                    </p>
-                  </div>
-                </div>
+      {/* Contenu selon l'onglet actif */}
+      {activeTab === 'UPLOAD' && (
+        <OcrSecureUploader onUploadSuccess={handleUploadSuccess} />
+      )}
 
-                <div className="relative rounded-xl overflow-hidden border border-teal-800">
-                  <img
-                    src={ocrDocument.previewUrl}
-                    alt="Document Scan Preview"
-                    className="h-44 w-full object-cover opacity-85"
-                  />
-                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center p-3 text-center">
-                    <span className="px-3 py-1.5 rounded-xl bg-black/80 text-white font-mono text-[11px] border border-orange-500">
-                      Zone d'analyse IDP active • Résolution 300 DPI • Extraction OCR terminée
-                    </span>
-                  </div>
-                </div>
+      {activeTab === 'STUDIO' && (
+        <OcrDocumentStudioView
+          document={activeDoc}
+          onValidateDocument={(payload) => {
+            setActiveDoc((prev) => ({
+              ...prev,
+              status: 'VALIDATED',
+              validationMetadata: {
+                validatedBy: payload.validatorName,
+                validatedAt: payload.approvedAt,
+                humanReviewCompleted: true,
+                reviewNotes: payload.reviewNotes,
+              },
+            }));
+          }}
+          onRejectDocument={(reason) => {
+            setActiveDoc((prev) => ({
+              ...prev,
+              status: 'REJECTED',
+              validationMetadata: {
+                validatedBy: `${currentUser?.firstName || ''} ${currentUser?.lastName || ''}`.trim() || 'Super Admin',
+                validatedAt: new Date().toISOString(),
+                humanReviewCompleted: true,
+                reviewNotes: `Rejeté : ${reason}`,
+              },
+            }));
+          }}
+        />
+      )}
 
-                {/* Bounding Boxes interactives représentées en zones cliquables */}
-                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#071E21] border border-slate-200 dark:border-teal-800/80 space-y-2">
-                  <p className="text-[11px] font-bold text-slate-700 dark:text-teal-300">
-                    Zones de détection OCR interactives (cliquez pour cibler un champ) :
-                  </p>
-                  <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
-                    {ocrDocument.fields.map((f) => (
-                      <button
-                        key={f.key}
-                        type="button"
-                        onClick={() => setActiveSelectedField(f.key)}
-                        className={`p-2 rounded-lg text-start border transition-all ${
-                          activeSelectedField === f.key
-                            ? 'border-[#E85D22] bg-[#E85D22]/10 text-[#E85D22] font-bold'
-                            : 'border-slate-200 dark:border-teal-900 bg-white dark:bg-[#0B2D31] text-slate-700 dark:text-slate-200'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span>{f.label}</span>
-                          <span className="text-[9px] text-emerald-500 font-bold">
-                            {(f.confidence * 100).toFixed(0)}%
-                          </span>
-                        </div>
-                        <p className="truncate text-[10px] opacity-80">{f.value}</p>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Colonne Droite : Champs Extraits Côte-à-Côte & Correction Humaine */}
-            <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-teal-200">
-                  Champs Extraits Structurés (Validation Humaine)
-                </span>
-                <Badge variant="success">
-                  Confiance Globale : {(ocrDocument.globalConfidence * 100).toFixed(1)}%
-                </Badge>
-              </div>
-
-              {/* Formulaire des champs extraits modifiables en direct */}
-              <div className="space-y-3.5">
-                {ocrDocument.fields.map((f) => (
-                  <div key={f.key} className="relative">
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <span className="font-semibold text-slate-700 dark:text-slate-200">{f.label}</span>
-                      <div className="flex items-center gap-1.5">
-                        {f.isModified && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-600 dark:text-blue-300 font-bold">
-                            Corrigé manuellement
-                          </span>
-                        )}
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold">
-                          Confiance : {(f.confidence * 100).toFixed(1)}%
-                        </span>
-                      </div>
-                    </div>
-                    <input
-                      type="text"
-                      value={f.value}
-                      onChange={(e) => correctOcrField(f.key, e.target.value)}
-                      className={`w-full rounded-xl border px-3 py-2 text-xs bg-white dark:bg-[#0A292C] text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#E85D22] ${
-                        activeSelectedField === f.key
-                          ? 'border-[#E85D22] ring-2 ring-[#E85D22]/20'
-                          : 'border-slate-300 dark:border-teal-800'
-                      }`}
-                    />
-                  </div>
-                ))}
-
-                {/* Tableau des lignes d'articles extraites */}
-                <div className="pt-2 border-t border-slate-200 dark:border-teal-800 space-y-2">
-                  <p className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                    Tableau des Lignes d'Articles Extraites ({ocrDocument.lineItems.length} lignes) :
-                  </p>
-                  <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-teal-800">
-                    <table className="w-full text-[11px] text-start">
-                      <thead className="bg-slate-100 dark:bg-[#0A292C] border-b border-slate-200 dark:border-teal-800 font-bold">
-                        <tr>
-                          <th className="p-2 text-start">Ligne</th>
-                          <th className="p-2 text-start">Description</th>
-                          <th className="p-2 text-start">SKU</th>
-                          <th className="p-2 text-end">Qté</th>
-                          <th className="p-2 text-end">PU HT</th>
-                          <th className="p-2 text-end">Total HT</th>
-                          <th className="p-2 text-center">Confiance</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200 dark:divide-teal-900/60 bg-white dark:bg-[#062023]">
-                        {ocrDocument.lineItems.map((item) => (
-                          <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-teal-950/40">
-                            <td className="p-2 font-mono">#{item.lineNumber}</td>
-                            <td className="p-2 font-medium">{item.description}</td>
-                            <td className="p-2 font-mono text-[10px] text-slate-500">{item.sku}</td>
-                            <td className="p-2 text-end font-bold">{item.quantity}</td>
-                            <td className="p-2 text-end">{item.unitPrice} €</td>
-                            <td className="p-2 text-end font-bold text-[#E85D22]">{item.lineTotal} €</td>
-                            <td className="p-2 text-center">
-                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-600 font-mono font-bold">
-                                {(item.confidence * 100).toFixed(0)}%
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Section Nouveau Champ Dynamique (Composant 39 : DynamicFieldBadge) */}
-                {ocrDocument.dynamicFields.map((df) => (
-                  <div
-                    key={df.id}
-                    className="p-3.5 rounded-xl bg-orange-500/10 border border-orange-500/30 space-y-2.5"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-[#E85D22]" />
-                        <span className="text-xs font-bold text-[#E85D22]">
-                          Nouveau Champ Dynamique Détecté par IDP (Composant 39)
-                        </span>
-                      </div>
+      {activeTab === 'HISTORY' && (
+        <Card
+          title="Historique des Documents Traités par l'IDP"
+          subtitle="Suivi complet des documents importés, validés ou en attente d'arbitrage humain."
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-start">
+              <thead className="bg-slate-100 dark:bg-[#0A292C] font-semibold text-slate-700 dark:text-teal-200 border-b border-slate-200 dark:border-teal-800">
+                <tr>
+                  <th className="p-3 text-start">Nom du fichier</th>
+                  <th className="p-3 text-start">Profil</th>
+                  <th className="p-3 text-start">Langue</th>
+                  <th className="p-3 text-center">Confiance</th>
+                  <th className="p-3 text-start">Statut</th>
+                  <th className="p-3 text-start">Validation Humaine</th>
+                  <th className="p-3 text-end">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-teal-900/60">
+                {recentDocuments.map((docItem) => (
+                  <tr key={docItem.id} className="hover:bg-slate-50 dark:hover:bg-teal-950/40">
+                    <td className="p-3 font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-[#E85D22]" />
+                      <span>{docItem.fileName}</span>
+                    </td>
+                    <td className="p-3">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-200 dark:bg-teal-900 text-slate-700 dark:text-teal-200">
+                        {docItem.profile}
+                      </span>
+                    </td>
+                    <td className="p-3 uppercase font-mono">{docItem.detectedLanguage}</td>
+                    <td className="p-3 text-center font-mono font-bold">
+                      {(docItem.globalConfidence * 100).toFixed(1)}%
+                    </td>
+                    <td className="p-3">
                       <Badge
                         variant={
-                          df.adminApprovalStatus === 'APPROVED'
+                          docItem.status === 'VALIDATED'
                             ? 'success'
-                            : df.adminApprovalStatus === 'REJECTED'
+                            : docItem.status === 'REJECTED'
                             ? 'danger'
                             : 'orange'
                         }
                       >
-                        {df.adminApprovalStatus === 'APPROVED'
-                          ? 'Approuvé par Admin'
-                          : df.adminApprovalStatus === 'REJECTED'
-                          ? 'Rejeté par Admin'
-                          : 'Validation Admin Requise'}
+                        {docItem.status}
                       </Badge>
-                    </div>
-
-                    <div className="text-xs space-y-1">
-                      <p className="font-semibold text-slate-800 dark:text-slate-200">{df.label} :</p>
-                      <p className="p-2 rounded-lg bg-white dark:bg-[#062023] border border-orange-300 dark:border-teal-700 font-mono text-[11px]">
-                        {df.value}
-                      </p>
-                      <p className="text-[10px] text-slate-500">
-                        Catégorie : <code>{df.detectedCategory}</code> • {df.adminComment}
-                      </p>
-                    </div>
-
-                    {/* Actions réservées à l'administrateur */}
-                    <div className="flex items-center justify-between pt-1">
-                      <span className="text-[10px] text-slate-500">
-                        {currentUser.role === 'ADMIN'
-                          ? 'En tant qu’Administrateur, validez l’incorporation au schéma permanent :'
-                          : 'Seul l’Administrateur peut approuver ou rejeter les champs non-standards.'}
-                      </span>
-                      {currentUser.role === 'ADMIN' && df.adminApprovalStatus === 'PENDING' && (
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            variant="primary"
-                            onClick={() => reviewDynamicField(df.id, 'APPROVED')}
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            Approuver (Admin)
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            onClick={() => reviewDynamicField(df.id, 'REJECTED')}
-                          >
-                            Rejeter
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                    </td>
+                    <td className="p-3 text-slate-500">
+                      {docItem.validationMetadata?.humanReviewCompleted
+                        ? `Certifié par ${docItem.validationMetadata.validatedBy}`
+                        : 'En attente'}
+                    </td>
+                    <td className="p-3 text-end">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          setActiveDoc(docItem);
+                          setActiveTab('STUDIO');
+                        }}
+                      >
+                        Ouvrir Studio
+                      </Button>
+                    </td>
+                  </tr>
                 ))}
-
-                {/* Historique des corrections manuelles (Traçabilité) */}
-                {ocrDocument.corrections.length > 0 && (
-                  <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#062023] border border-slate-200 dark:border-teal-800 text-[11px] space-y-1">
-                    <p className="font-bold text-slate-700 dark:text-slate-300">
-                      Journal des Corrections Humaines :
-                    </p>
-                    {ocrDocument.corrections.map((c, cIdx) => (
-                      <p key={cIdx} className="text-[10px] text-slate-500 font-mono">
-                        [{c.timestamp}] Champ <code>{c.fieldKey}</code> : "{c.originalValue}" → "{c.correctedValue}" par {c.correctedBy}
-                      </p>
-                    ))}
-                  </div>
-                )}
-
-                {/* Bouton de validation finale */}
-                <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-teal-800">
-                  <Button
-                    variant="primary"
-                    onClick={() => validateOcrDocument()}
-                  >
-                    <CheckCircle className="w-4 h-4" />
-                    Valider l’Extraction Humaine & Intégrer au Système
-                  </Button>
-                </div>
-              </div>
-            </div>
+              </tbody>
+            </table>
           </div>
-        </div>
-      </Card>
+        </Card>
+      )}
     </div>
   );
 };

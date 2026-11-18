@@ -2,7 +2,14 @@
 // TRADELINK V6.0 — TYPESCRIPT DOMAIN & ARCHITECTURE TYPES
 // ============================================================================
 
-import type { RagSourceCitation, VoiceLanguage } from '../services/aiIntelligenceEngine';
+import type {
+  RagSourceCitation,
+  VoiceLanguage,
+  OcrExtractedField,
+  OcrTableLineItem,
+  OcrDynamicField,
+  OcrCorrectionLog,
+} from '../services/aiIntelligenceEngine';
 
 export type Locale = 'fr' | 'en' | 'ar';
 export type ThemeMode = 'system' | 'light' | 'dark';
@@ -890,6 +897,112 @@ export interface VoicePunctuationCommand {
   language: VoiceLanguage;
   description: string;
 }
+
+// ============================================================================
+// TYPES SYSTÈME OCR & INTELLIGENCE DOCUMENTAIRE (PROMPT 05)
+// ============================================================================
+
+export type OcrDocumentProfile =
+  | 'KYC'
+  | 'INVOICE'
+  | 'QUOTE'
+  | 'PURCHASE_ORDER'
+  | 'DELIVERY_NOTE'
+  | 'TRANSPORT_CMR'
+  | 'ACCOUNTING';
+
+export type OcrProcessingStatus =
+  | 'QUEUED'
+  | 'PROCESSING'
+  | 'EXTRACTED_PENDING_REVIEW'
+  | 'VALIDATED'
+  | 'REJECTED'
+  | 'FAILED';
+
+export interface OcrDocumentDetail {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  fileSizeFormatted?: string;
+  fileType?: 'PDF' | 'IMAGE';
+  mimeType: string;
+  profile: OcrDocumentProfile;
+  status: 'EXTRACTED' | 'VALIDATED' | 'REJECTED' | OcrProcessingStatus;
+  processingStatus: OcrProcessingStatus;
+  contentHash: string;
+  sha256Hash: string;
+  previewUrl: string;
+  presignedUrl?: string;
+  presignedUrlExpiresAt?: string;
+  rawText: string;
+  extractedText: string;
+  detectedLanguage: 'fr' | 'en' | 'ar' | 'mixed';
+  globalConfidence: number;
+  uncertainFields: string[];
+  fields: OcrExtractedField[];
+  extractedFields: OcrExtractedField[];
+  lineItems: OcrTableLineItem[];
+  dynamicFields: OcrDynamicField[];
+  corrections: OcrCorrectionLog[];
+  correctionsLog: OcrCorrectionLog[];
+  validationMetadata?: {
+    validatedBy?: string;
+    validatedAt?: string;
+    humanReviewCompleted: boolean;
+    reviewNotes?: string;
+  };
+  validatedBy?: string;
+  validatedAt?: string;
+  uploadedById: string;
+  uploadedByName?: string;
+  rejectionReason?: string | null;
+  deletedAt?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface OcrQueueJob {
+  id: string;
+  documentId: string;
+  profile: OcrDocumentProfile;
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  progressPercentage: number;
+  attempts: number;
+  maxAttempts: number;
+  errorMessage?: string | null;
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface OcrUploadPayload {
+  fileName: string;
+  fileBytesBase64?: string;
+  base64Data?: string;
+  fileSize?: number;
+  fileSizeBytes?: number;
+  mimeType: string;
+  profile: OcrDocumentProfile;
+  targetLanguage?: 'fr' | 'en' | 'ar';
+  languagePreference?: 'fr' | 'en' | 'ar';
+}
+
+export interface OcrFieldCorrectionPayload {
+  fieldKey: string;
+  newValue: string;
+  reason?: string;
+}
+
+export interface OcrValidationPayload {
+  documentId?: string;
+  validatorUserId?: string;
+  validatorName?: string;
+  reviewNotes?: string;
+  approvedAt?: string;
+  confirmedFields?: Record<string, string>;
+  notes?: string;
+}
+
 
 
 

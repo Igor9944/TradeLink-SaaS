@@ -76,7 +76,20 @@ import {
   VoiceInteractionRecord,
   VoiceTranscribePayload,
   VoiceTranscribeResponse,
+  OcrDocumentDetail,
+  OcrDocumentProfile,
+  OcrProcessingStatus,
+  OcrQueueJob,
+  OcrCorrectionLog,
 } from '../../types';
+import {
+  validateFileMagicBytes,
+  calculateDocumentSha256,
+  generateOcrPresignedUrl,
+  extractDocumentFieldsWithProfile,
+  commitHumanReviewValidation,
+  OCR_MAX_FILE_SIZE_BYTES,
+} from '../../services/ocrDocumentEngine';
 import {
   formatDictatedSpeech,
   detectLanguageFromSample,
@@ -4256,6 +4269,349 @@ export class TradeLinkDomainServices {
       punctuationsApplied: punctuationCount,
       interactionId,
       zeroRetentionEnforced: true,
+    };
+  }
+
+  // ============================================================================
+  // SERVICES SYSTÈME OCR, INTELLIGENCE DOCUMENTAIRE & VALIDATION (PROMPT 05)
+  // ============================================================================
+
+  public uploadAndAnalyzeOcrDocumentService(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    fileName: string;
+    fileBytesBase64?: string;
+    fileSizeBytes: number;
+    mimeType: string;
+    profile: OcrDocumentProfile;
+    correlationId: string;
+    ipAddress?: string;
+  }): { document: OcrDocumentDetail; job?: OcrQueueJob } {
+    const { actor, fileName, fileBytesBase64, fileSizeBytes, mimeType, profile, correlationId, ipAddress = '127.0.0.1' } = params;
+
+    // 1. Validation de la taille maximale (15 Mo max)
+    if (fileSizeBytes > OCR_MAX_FILE_SIZE_BYTES) {
+      throw new AppError(
+        400,
+        'FILE_TOO_LARGE',
+        `La taille du fichier (${(fileSizeBytes / (1024 * 1024)).toFixed(2)} Mo) dépasse la limite autorisée de 15 Mo.`
+      );
+    }
+
+    // 2. Décodage du buffer et contrôle strict des Magic Bytes (rejet malwares et faux formats)
+    const rawBuffer = fileBytesBase64
+      ? Buffer.from(fileBytesBase64, 'base64')
+      : Buffer.from(`%PDF-1.7\nSimulated TRADELINK OCR Document for ${fileName}\nTotal: 31680.00 EUR`, 'utf-8');
+
+    const magicCheck = validateFileMagicBytes(rawBuffer);
+    if (!magicCheck.isValid) {
+      throw new AppError(400, 'INVALID_FILE_SIGNATURE', magicCheck.error || 'Signature de fichier invalide ou format interdit.');
+    }
+
+    // 3. Calcul du hachage cryptographique SHA-256 pour intégrité et détection des doublons
+    const sha256Hash = calculateDocumentSha256(rawBuffer);
+    const existingDuplicate = this.repo.findOcrDocumentByHash(sha256Hash);
+    if (existingDuplicate) {
+      throw new AppError(
+        409,
+        'DOCUMENT_DUPLICATE_DETECTED',
+        `Ce document a déjà été importé sur la plateforme sous la référence "${existingDuplicate.fileName}" (ID: ${existingDuplicate.id}).`
+      );
+    }
+
+    const docId = `ocr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const effectiveMime = magicCheck.detectedMimeType || mimeType;
+
+    // 4. Extraction textuelle et détection structurée selon profil
+    const rawText = rawBuffer.toString('utf-8');
+    const { fields, lineItems, globalConfidence, detectedLanguage, hasUncertainFields } =
+      extractDocumentFieldsWithProfile(rawText, profile, fileName);
+
+    // 5. Génération d'une URL présignée temporaire (15 min) avec signature HMAC
+    const { url: presignedUrl, expiresAt: presignedUrlExpiresAt } = generateOcrPresignedUrl(docId, fileName);
+
+    // 6. Gestion de la file d'attente (pour documents volumineux > 5 Mo)
+    const isHeavyDocument = fileSizeBytes > 5 * 1024 * 1024;
+    let job: OcrQueueJob | undefined;
+
+    if (isHeavyDocument) {
+      job = this.repo.enqueueOcrJob({
+        id: `job-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        documentId: docId,
+        profile,
+        status: 'RUNNING',
+        progressPercentage: 65,
+        attempts: 1,
+        maxAttempts: 3,
+        createdAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+      });
+    }
+
+    const docRecord: OcrDocumentDetail = {
+      id: docId,
+      fileName,
+      fileSize: fileSizeBytes,
+      fileType: effectiveMime.includes('pdf') ? 'PDF' : 'IMAGE',
+      fileSizeFormatted: `${(fileSizeBytes / (1024 * 1024)).toFixed(2)} Mo`,
+      status: 'EXTRACTED',
+      processingStatus: isHeavyDocument ? 'PROCESSING' : 'EXTRACTED_PENDING_REVIEW',
+      contentHash: sha256Hash,
+      sha256Hash,
+      globalConfidence,
+      rawText,
+      extractedText: rawText,
+      fields,
+      extractedFields: fields,
+      lineItems,
+      dynamicFields: [],
+      corrections: [],
+      correctionsLog: [],
+      uncertainFields: hasUncertainFields ? fields.filter((f) => f.confidence < 0.8).map((f) => f.key) : [],
+      previewUrl: presignedUrl,
+      presignedUrl,
+      presignedUrlExpiresAt,
+      profile,
+      mimeType: effectiveMime,
+      uploadedById: actor.id,
+      uploadedByName: actor.companyName || actor.email,
+      detectedLanguage,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const savedDoc = this.repo.saveOcrDocument(docRecord);
+
+    // Finaliser le job si c'était un gros fichier
+    if (job) {
+      this.repo.updateOcrJob(job.id, 100, 'COMPLETED');
+      savedDoc.processingStatus = 'EXTRACTED_PENDING_REVIEW';
+      this.repo.saveOcrDocument(savedDoc);
+    }
+
+    // 7. Audit log immuable
+    this.repo.addAuditLog({
+      id: `audit-ocr-upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      action: 'OCR_DOCUMENT_UPLOADED',
+      targetType: 'DOCUMENT_OCR',
+      targetId: docId,
+      actorName: actor.email,
+      actorRole: actor.role,
+      timestamp: new Date().toISOString(),
+      correlationId,
+      ipAddress,
+      result: 'SUCCESS',
+      details: JSON.stringify({
+        fileName,
+        profile,
+        sha256Hash,
+        globalConfidence,
+        detectedLanguage,
+        hasUncertainFields,
+      }),
+    });
+
+    return { document: savedDoc, job };
+  }
+
+  public listOcrDocumentsService(actor: NonNullable<ServerRequestContext['user']>, params: {
+    profile?: OcrDocumentProfile;
+    status?: OcrProcessingStatus;
+  }): OcrDocumentDetail[] {
+    const isElevated = actor.role === 'ADMIN' || actor.role === 'COMPTABLE' || actor.role === 'SUPPORT';
+    const targetUserId = isElevated ? undefined : actor.id;
+    return this.repo.listOcrDocuments(targetUserId, params.profile, params.status);
+  }
+
+  public getOcrDocumentByIdService(
+    documentId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): OcrDocumentDetail {
+    const doc = this.repo.getOcrDocumentById(documentId);
+    if (!doc) {
+      throw new AppError(404, 'DOCUMENT_NOT_FOUND', `Document OCR "${documentId}" introuvable.`);
+    }
+
+    // Anti-IDOR : propriétaire ou rôles habilités (ADMIN, COMPTABLE, SUPPORT)
+    const isElevated = actor.role === 'ADMIN' || actor.role === 'COMPTABLE' || actor.role === 'SUPPORT';
+    if (doc.uploadedById !== actor.id && !isElevated) {
+      throw new AppError(403, 'FORBIDDEN_IDOR_DOCUMENT_ACCESS', 'Accès interdit : vous ne pouvez consulter que les documents de votre organisation.');
+    }
+
+    // Renouveler l'URL présignée si nécessaire
+    const now = Date.now();
+    const expiresAtMs = doc.presignedUrlExpiresAt ? new Date(doc.presignedUrlExpiresAt).getTime() : 0;
+    if (now >= expiresAtMs - 60000) {
+      const refreshed = generateOcrPresignedUrl(doc.id, doc.fileName);
+      doc.previewUrl = refreshed.url;
+      doc.presignedUrlExpiresAt = refreshed.expiresAt;
+      this.repo.saveOcrDocument(doc);
+    }
+
+    return doc;
+  }
+
+  public correctOcrFieldService(params: {
+    documentId: string;
+    fieldKey: string;
+    newValue: string;
+    reason?: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress?: string;
+  }): OcrDocumentDetail {
+    const { documentId, fieldKey, newValue, reason, actor, correlationId, ipAddress = '127.0.0.1' } = params;
+    const doc = this.getOcrDocumentByIdService(documentId, actor);
+
+    const targetField = doc.fields.find((f) => f.key === fieldKey);
+    if (!targetField) {
+      throw new AppError(404, 'FIELD_NOT_FOUND', `Le champ "${fieldKey}" n'existe pas dans l'extraction de ce document.`);
+    }
+
+    const originalValue = targetField.value;
+    targetField.value = newValue;
+    targetField.isModified = true;
+    targetField.confidence = 1.0; // Validé par l'humain
+
+    const correctionEntry: OcrCorrectionLog = {
+      fieldKey,
+      originalValue,
+      correctedValue: newValue,
+      correctedBy: actor.email,
+      timestamp: new Date().toISOString(),
+    };
+    doc.corrections.push(correctionEntry);
+
+    const savedDoc = this.repo.saveOcrDocument(doc);
+
+    // Audit log
+    this.repo.addAuditLog({
+      id: `audit-ocr-corr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      action: 'OCR_FIELD_CORRECTED',
+      targetType: 'DOCUMENT_OCR',
+      targetId: documentId,
+      actorName: actor.email,
+      actorRole: actor.role,
+      timestamp: new Date().toISOString(),
+      correlationId,
+      ipAddress,
+      result: 'SUCCESS',
+      details: JSON.stringify({
+        fieldKey,
+        originalValue,
+        newValue,
+        reason: reason || 'Correction manuelle opérateur',
+      }),
+    });
+
+    return savedDoc;
+  }
+
+  public validateOcrDocumentHumanReviewService(params: {
+    documentId: string;
+    confirmedFields: Record<string, string>;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress?: string;
+  }): { success: boolean; document: OcrDocumentDetail; message: string } {
+    const { documentId, confirmedFields, actor, correlationId, ipAddress = '127.0.0.1' } = params;
+    const doc = this.getOcrDocumentByIdService(documentId, actor);
+
+    // Exécution de la validation humaine avec contrôle mathématique
+    const result = commitHumanReviewValidation(
+      doc,
+      { id: actor.id, email: actor.email, role: actor.role },
+      confirmedFields || {}
+    );
+
+    const savedDoc = this.repo.saveOcrDocument(result.validatedDocument);
+
+    // Audit log
+    this.repo.addAuditLog({
+      id: `audit-ocr-val-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      action: 'OCR_DOCUMENT_VALIDATED',
+      targetType: 'DOCUMENT_OCR',
+      targetId: documentId,
+      actorName: actor.email,
+      actorRole: actor.role,
+      timestamp: new Date().toISOString(),
+      correlationId,
+      ipAddress,
+      result: 'SUCCESS',
+      details: JSON.stringify({
+        fileName: doc.fileName,
+        validatedBy: actor.email,
+        confirmedFieldsCount: Object.keys(confirmedFields || {}).length,
+      }),
+    });
+
+    return {
+      success: true,
+      document: savedDoc,
+      message: result.message,
+    };
+  }
+
+  public rejectOcrDocumentService(params: {
+    documentId: string;
+    reason: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress?: string;
+  }): { success: boolean; document: OcrDocumentDetail } {
+    const { documentId, reason, actor, correlationId, ipAddress = '127.0.0.1' } = params;
+    if (!reason || !reason.trim()) {
+      throw new AppError(400, 'REJECTION_REASON_REQUIRED', 'Un motif explicite est obligatoirement requis pour rejeter un document OCR.');
+    }
+
+    const doc = this.getOcrDocumentByIdService(documentId, actor);
+    doc.status = 'REJECTED';
+    doc.processingStatus = 'REJECTED';
+    doc.rejectionReason = reason.trim();
+
+    const savedDoc = this.repo.saveOcrDocument(doc);
+
+    // Audit log
+    this.repo.addAuditLog({
+      id: `audit-ocr-rej-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      action: 'OCR_DOCUMENT_REJECTED',
+      targetType: 'DOCUMENT_OCR',
+      targetId: documentId,
+      actorName: actor.email,
+      actorRole: actor.role,
+      timestamp: new Date().toISOString(),
+      correlationId,
+      ipAddress,
+      result: 'SUCCESS',
+      details: JSON.stringify({
+        fileName: doc.fileName,
+        reason: doc.rejectionReason,
+        rejectedBy: actor.email,
+      }),
+    });
+
+    return { success: true, document: savedDoc };
+  }
+
+  public softDeleteOcrDocumentService(
+    documentId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { success: boolean } {
+    const isAdmin = actor.role === 'ADMIN';
+    const deleted = this.repo.softDeleteOcrDocument(documentId, actor.id, isAdmin);
+    if (!deleted) {
+      throw new AppError(404, 'DOCUMENT_NOT_FOUND', `Document OCR "${documentId}" introuvable.`);
+    }
+    return { success: true };
+  }
+
+  public getOcrQueueStatusService(): { queue: OcrQueueJob[]; totalPending: number; totalCompleted: number } {
+    const jobs = this.repo.getOcrQueueJobs();
+    const totalPending = jobs.filter((j) => j.status === 'PENDING' || j.status === 'RUNNING').length;
+    const totalCompleted = jobs.filter((j) => j.status === 'COMPLETED').length;
+    return {
+      queue: jobs,
+      totalPending,
+      totalCompleted,
     };
   }
 }
