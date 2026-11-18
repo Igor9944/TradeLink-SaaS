@@ -647,6 +647,42 @@ export interface TranslationGlossaryTerm {
   targetTextAr: string;
   isStrict: boolean;
   contextNotes?: string;
+  status?: 'VALIDATED' | 'PENDING_REVIEW' | 'DRAFT';
+  validatedBy?: string;
+  validatedAt?: string;
+}
+
+export type TranslationJobStatus = 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+
+export interface TranslationJob {
+  id: string;
+  sourceLang: SupportedLocale;
+  targetLang: SupportedLocale;
+  entityType: TranslationEntityType;
+  totalItems: number;
+  processedItems: number;
+  progressPercentage: number;
+  status: TranslationJobStatus;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface SmartTranslatedMessage {
+  id: string;
+  conversationId?: string;
+  senderId: string;
+  senderName?: string;
+  senderRole?: string;
+  recipientId: string;
+  recipientName?: string;
+  originalText: string;
+  sourceLang: SupportedLocale;
+  translatedText: string;
+  targetLang: SupportedLocale;
+  isTranslated: boolean;
+  translationNotice?: string;
+  createdAt: string;
 }
 
 export interface LanguageDetectionResult {

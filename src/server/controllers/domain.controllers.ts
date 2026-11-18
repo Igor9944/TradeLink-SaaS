@@ -26,7 +26,6 @@ import { TradeLinkDomainServices } from '../services/domain.services';
 import { buildOpenApiSpecification } from '../openapi/openapi.spec';
 import { evaluateKYCDossierRule, APM_TELEMETRY } from '../../services/backendServices';
 import { CentralTranslationService } from '../../services/translationEngine';
-import { TradeGlossaryManager } from '../../services/tradeGlossary';
 
 export class TradeLinkApiApplication {
   private readonly services: TradeLinkDomainServices;
@@ -1363,6 +1362,36 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, result, 200);
     }
 
+    // 21C-bis. Messagerie intelligente entre acteurs (détection automatique de la langue du destinataire)
+    if (method === 'POST' && path === '/api/v1/translation/smart-message') {
+      requireAuthenticatedSession(ctx);
+      const { recipientId, text, conversationId, recipientName } = ctx.body || {};
+      if (!recipientId || !text) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'recipientId et text sont requis pour la messagerie intelligente.');
+      }
+      const result = this.services.translateSmartMessageService({
+        senderId: ctx.user!.id,
+        senderName: `${ctx.user!.email}`,
+        senderRole: ctx.user!.role,
+        recipientId,
+        recipientName,
+        text,
+        conversationId,
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 21C-ter. Traduction de procès-verbal / compte-rendu certifié Room Live
+    if (method === 'POST' && path === '/api/v1/translation/meeting-report') {
+      requireAuthenticatedSession(ctx);
+      const { reportText, targetLang } = ctx.body || {};
+      if (!reportText || !targetLang) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'reportText et targetLang sont requis.');
+      }
+      const result = CentralTranslationService.translateMeetingReport(reportText, targetLang);
+      return this.ok(ctx, result, 200);
+    }
+
     // 21D. Traduction de produit de catalogue
     if (method === 'POST' && path.startsWith('/api/v1/translation/product/')) {
       const productId = path.replace('/api/v1/translation/product/', '');
@@ -1374,27 +1403,83 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, result, 200);
     }
 
-    // 21E. Consultation du glossaire officiel TradeLink
+    // 21E. Consultation et filtrage du glossaire officiel TradeLink
     if (method === 'GET' && path === '/api/v1/translation/glossary') {
-      const terms = TradeGlossaryManager.getAllTerms();
+      const { category, status, search } = ctx.query || {};
+      const terms = this.services.listGlossaryTermsService({
+        category: category as any,
+        status: status as any,
+        search: search as any,
+      });
       return this.ok(ctx, { terms, count: terms.length }, 200);
     }
 
     // 21F. Ajout d'un terme au glossaire (Admin uniquement)
     if (method === 'POST' && path === '/api/v1/translation/glossary') {
       enforceRBACAndOwnership(ctx, ['ADMIN']);
+      const user = ctx.user!;
       const { category, termFr, termEn, termAr, context } = ctx.body || {};
       if (!category || !termFr || !termEn || !termAr) {
         throw new AppError(400, 'INVALID_PAYLOAD', 'Tous les termes (FR, EN, AR) et la catégorie sont requis.');
       }
-      const newTerm = TradeGlossaryManager.addDynamicTerm({
+      const newTerm = this.services.addGlossaryTermService({
         category,
         termFr,
         termEn,
         termAr,
         context,
+        isAdmin: true,
+        adminEmail: user.email,
       });
       return this.ok(ctx, newTerm, 201);
+    }
+
+    // 21F-bis. Validation administrative d'un terme
+    if (method === 'POST' && path.startsWith('/api/v1/translation/glossary/') && path.endsWith('/validate')) {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
+      const user = ctx.user!;
+      const termId = path.replace('/api/v1/translation/glossary/', '').replace('/validate', '');
+      const validated = this.services.validateGlossaryTermService(termId, user.email);
+      return this.ok(ctx, validated, 200);
+    }
+
+    // 21F-ter. Mise à jour administrative d'un terme
+    if (method === 'PUT' && path.startsWith('/api/v1/translation/glossary/')) {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
+      const termId = path.replace('/api/v1/translation/glossary/', '');
+      const updated = this.services.updateGlossaryTermService(termId, ctx.body || {});
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 21F-quater. Suppression d'un terme du glossaire
+    if (method === 'DELETE' && path.startsWith('/api/v1/translation/glossary/')) {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
+      const termId = path.replace('/api/v1/translation/glossary/', '');
+      const deleted = this.services.deleteGlossaryTermService(termId);
+      return this.ok(ctx, { deleted }, 200);
+    }
+
+    // 21F-quinquies. File d'attente asynchrone pour lots de traduction
+    if (method === 'POST' && path === '/api/v1/translation/jobs') {
+      requireAuthenticatedSession(ctx);
+      const { sourceLang, targetLang, entityType, totalItems } = ctx.body || {};
+      if (!sourceLang || !targetLang || !entityType) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'sourceLang, targetLang et entityType requis.');
+      }
+      const job = this.services.createTranslationJobService({
+        sourceLang,
+        targetLang,
+        entityType,
+        totalItems: Number(totalItems) || 1,
+      });
+      return this.ok(ctx, job, 201);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/translation/jobs/')) {
+      requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/translation/jobs/', '');
+      const job = this.services.getTranslationJobService(jobId);
+      return this.ok(ctx, job, 200);
     }
 
     // 21G. Métriques et quotas du moteur de traduction

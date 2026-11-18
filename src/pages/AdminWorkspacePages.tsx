@@ -41,6 +41,7 @@ import { InteractiveLogisticsMap } from '../components/logistics/InteractiveLogi
 import { AccountingEngine, AmortizationScheduleRow } from '../services/accountingEngine';
 import { INITIAL_SHIPMENT_WAYPOINTS } from '../services/logisticsEngine';
 import { SUPPORTED_AI_MODELS } from '../services/aiIntelligenceEngine';
+import { TranslationGlossaryAdminView } from '../components/translation/TranslationGlossaryAdminView';
 import {
   ImportExportFormat,
   EnvelopeCipherResult,
@@ -148,6 +149,9 @@ export const AdminWorkspacePage: React.FC<{
 
   // États Section 6 (Logistique)
   const [logisticsTab, setLogisticsTab] = useState<'fleet' | 'shipments' | 'map' | 'incidents' | 'pod'>('fleet');
+
+  // États Section 7 (IA, OCR & Traduction)
+  const [aiTab, setAiTab] = useState<'models-ocr' | 'glossary'>('models-ocr');
 
   // États Section 8 (Room Live)
   const [roomTab, setRoomTab] = useState<'active' | 'create' | 'records'>('active');
@@ -292,7 +296,7 @@ export const AdminWorkspacePage: React.FC<{
             { to: '/admin/commercial', label: '4. Commercial' },
             { to: '/admin/finance', label: '5. Finance & Compta' },
             { to: '/admin/logistique', label: '6. Logistique' },
-            { to: '/admin/ai-config', label: '7. IA & OCR' },
+            { to: '/admin/ai-config', label: '7. IA, OCR & Traduction' },
             { to: '/admin/room-live', label: '8. Room Live' },
             { to: '/admin/security', label: '9. Sécurité & KMS' },
             { to: '/admin/import-export', label: 'Sandbox Import' },
@@ -2248,136 +2252,159 @@ export const AdminWorkspacePage: React.FC<{
       {/* ===================================================================== */}
       {section === 'ai-config' && (
         <div className="space-y-6">
-          <Card
-            title="Gouvernance de l'Intelligence Artificielle, RAG & Studio OCR / IDP"
-            subtitle="Modèles pris en charge (Gemini 1.5 Pro / Flash, GPT-4o, Claude 3.7, Ollama Local), filtrage strict par rôle RBAC et supervision des clés côté serveur"
-          >
-            <div className="space-y-6">
-              {/* SÉLECTION DU MODÈLE ET CLÉS SERVEUR MASQUÉES */}
-              <div className="grid md:grid-cols-2 gap-6 text-xs">
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3">
-                  <p className="font-bold text-sm text-slate-900 dark:text-white">
-                    Fournisseur LLM & Moteur de Raisonnement Principal
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {[
-                      { id: 'GOOGLE_GEMINI', label: 'Google Gemini 1.5' },
-                      { id: 'OPENAI', label: 'OpenAI GPT-4o' },
-                      { id: 'ANTHROPIC', label: 'Claude 3.7 Sonnet' },
-                      { id: 'OLLAMA', label: 'Ollama (Local Souverain)' },
-                    ].map((p) => (
-                      <Button
-                        key={p.id}
-                        size="sm"
-                        variant={llmProvider === p.id ? 'primary' : 'secondary'}
-                        onClick={() => {
-                          setLlmProvider(p.id as any);
-                          notifyToast(`Fournisseur LLM basculé sur ${p.label}`, 'info');
-                        }}
-                      >
-                        {p.label}
-                      </Button>
-                    ))}
-                  </div>
-                  <p className="text-slate-500 pt-1">
-                    Filtrage RAG strict activé : les documents cités dans les réponses respectent strictement la matrice de permission du rôle utilisateur actif.
-                  </p>
-                </div>
+          {/* SÉLECTEUR DE SOUS-ONGLET SECTION 7 */}
+          <div className="flex flex-wrap gap-2 text-xs">
+            {[
+              { id: 'models-ocr', label: 'Modèles IA, Quotas & Studio OCR / IDP' },
+              { id: 'glossary', label: 'Glossaire & Moteur de Traduction B2B (FR / EN / AR)' },
+            ].map((tab) => (
+              <Button
+                key={tab.id}
+                size="sm"
+                variant={aiTab === tab.id ? 'primary' : 'secondary'}
+                onClick={() => setAiTab(tab.id as any)}
+              >
+                {tab.label}
+              </Button>
+            ))}
+          </div>
 
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3">
-                  <p className="font-bold text-sm text-slate-900 dark:text-white">
-                    Consommation de Tokens & Quotas Mensuels
-                  </p>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-500">Tokens utilisés ce mois :</span>
-                      <strong className="font-mono text-emerald-600 dark:text-emerald-400">
-                        {aiQuota.dailyTokensConsumed.toLocaleString()} / {aiQuota.dailyTokensLimit.toLocaleString()}
-                      </strong>
+          {aiTab === 'models-ocr' && (
+            <Card
+              title="Gouvernance de l'Intelligence Artificielle, RAG & Studio OCR / IDP"
+              subtitle="Modèles pris en charge (Gemini 1.5 Pro / Flash, GPT-4o, Claude 3.7, Ollama Local), filtrage strict par rôle RBAC et supervision des clés côté serveur"
+            >
+              <div className="space-y-6">
+                {/* SÉLECTION DU MODÈLE ET CLÉS SERVEUR MASQUÉES */}
+                <div className="grid md:grid-cols-2 gap-6 text-xs">
+                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3">
+                    <p className="font-bold text-sm text-slate-900 dark:text-white">
+                      Fournisseur LLM & Moteur de Raisonnement Principal
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { id: 'GOOGLE_GEMINI', label: 'Google Gemini 1.5' },
+                        { id: 'OPENAI', label: 'OpenAI GPT-4o' },
+                        { id: 'ANTHROPIC', label: 'Claude 3.7 Sonnet' },
+                        { id: 'OLLAMA', label: 'Ollama (Local Souverain)' },
+                      ].map((p) => (
+                        <Button
+                          key={p.id}
+                          size="sm"
+                          variant={llmProvider === p.id ? 'primary' : 'secondary'}
+                          onClick={() => {
+                            setLlmProvider(p.id as any);
+                            notifyToast(`Fournisseur LLM basculé sur ${p.label}`, 'info');
+                          }}
+                        >
+                          {p.label}
+                        </Button>
+                      ))}
                     </div>
-                    <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-teal-900 overflow-hidden">
-                      <div
-                        className="h-full bg-emerald-500 rounded-full"
-                        style={{ width: `${Math.min(100, (aiQuota.dailyTokensConsumed / aiQuota.dailyTokensLimit) * 100)}%` }}
-                      />
-                    </div>
-                    <p className="text-[11px] text-slate-400">
-                      Coût estimé des requêtes LLM : <strong>0,28 €</strong> (99.8% sous enveloppe gratuite Gemini Pro Vertex).
+                    <p className="text-slate-500 pt-1">
+                      Filtrage RAG strict activé : les documents cités dans les réponses respectent strictement la matrice de permission du rôle utilisateur actif.
                     </p>
                   </div>
-                </div>
-              </div>
 
-              {/* LISTE DES MODÈLES SUPPORTÉS */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-bold text-slate-700 dark:text-teal-200 uppercase tracking-wide">
-                  Catalogue des Modèles d'Intelligence Artificielle Déclarés :
-                </h4>
-                <div className="grid md:grid-cols-2 gap-3 text-xs">
-                  {SUPPORTED_AI_MODELS.map((m) => (
-                    <div
-                      key={m.id}
-                      className="p-3.5 rounded-xl bg-white dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 space-y-1.5"
-                    >
+                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3">
+                    <p className="font-bold text-sm text-slate-900 dark:text-white">
+                      Consommation de Tokens & Quotas Mensuels
+                    </p>
+                    <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <span className="font-bold text-slate-900 dark:text-white">{m.name}</span>
-                        <Badge variant={m.isLocal ? 'orange' : 'info'}>
-                          {m.isLocal ? 'Local Souverain' : 'Cloud Vertex'}
-                        </Badge>
+                        <span className="text-slate-500">Tokens utilisés ce mois :</span>
+                        <strong className="font-mono text-emerald-600 dark:text-emerald-400">
+                          {aiQuota.dailyTokensConsumed.toLocaleString()} / {aiQuota.dailyTokensLimit.toLocaleString()}
+                        </strong>
                       </div>
-                      <p className="text-slate-500 text-[11px]">{m.description}</p>
-                      <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-100 dark:border-teal-800">
-                        <span>Fenêtre : {m.contextWindowTokens.toLocaleString()} tokens</span>
-                        <span>Débit max : {m.rateLimitPerMinute} req/min</span>
+                      <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-teal-900 overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 rounded-full"
+                          style={{ width: `${Math.min(100, (aiQuota.dailyTokensConsumed / aiQuota.dailyTokensLimit) * 100)}%` }}
+                        />
                       </div>
+                      <p className="text-[11px] text-slate-400">
+                        Coût estimé des requêtes LLM : <strong>0,28 €</strong> (99.8% sous enveloppe gratuite Gemini Pro Vertex).
+                      </p>
                     </div>
-                  ))}
+                  </div>
                 </div>
-              </div>
 
-              {/* SUPERVISION DU STUDIO OCR / IDP & VALIDATION DES CHAMPS DYNAMIQUES */}
-              <div className="p-4 rounded-2xl bg-teal-500/10 border-2 border-teal-500/30 space-y-3 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-sm text-teal-800 dark:text-teal-200 flex items-center gap-1.5">
-                    <Sparkles className="w-4 h-4 text-[#E85D22]" />
-                    Champ Dynamique IDP Proposé par l'IA : <code className="ltr-preserve">incoterm_insurance_clause</code>
-                  </span>
-                  <Badge variant="warning">Confiance OCR : 96.8%</Badge>
+                {/* LISTE DES MODÈLES SUPPORTÉS */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-slate-700 dark:text-teal-200 uppercase tracking-wide">
+                    Catalogue des Modèles d'Intelligence Artificielle Déclarés :
+                  </h4>
+                  <div className="grid md:grid-cols-2 gap-3 text-xs">
+                    {SUPPORTED_AI_MODELS.map((m) => (
+                      <div
+                        key={m.id}
+                        className="p-3.5 rounded-xl bg-white dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-slate-900 dark:text-white">{m.name}</span>
+                          <Badge variant={m.isLocal ? 'orange' : 'info'}>
+                            {m.isLocal ? 'Local Souverain' : 'Cloud Vertex'}
+                          </Badge>
+                        </div>
+                        <p className="text-slate-500 text-[11px]">{m.description}</p>
+                        <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-100 dark:border-teal-800">
+                          <span>Fenêtre : {m.contextWindowTokens.toLocaleString()} tokens</span>
+                          <span>Débit max : {m.rateLimitPerMinute} req/min</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <p className="text-slate-600 dark:text-slate-300">
-                  Détecté automatiquement sur 14 factures d’import maritime. Conformément à la règle de validation administrative, ce champ requiert l'approbation d'un administrateur avant d'être persisté dans le schéma relationnel de production.
-                </p>
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() =>
-                      notifyToast('Champ dynamique IDP validé et scellé dans le schéma PostgreSQL !', 'success')
-                    }
-                  >
-                    <Check className="w-4 h-4" />
-                    Valider le champ IDP
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() =>
-                      notifyToast('Rejet motivé consigné dans le journal d\'audit.', 'warning')
-                    }
-                  >
-                    <X className="w-4 h-4" />
-                    Rejeter
-                  </Button>
-                  <Link to="/ocr-idp">
-                    <Button size="sm" variant="secondary">
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      Ouvrir le Studio IDP Interactif
+
+                {/* SUPERVISION DU STUDIO OCR / IDP & VALIDATION DES CHAMPS DYNAMIQUES */}
+                <div className="p-4 rounded-2xl bg-teal-500/10 border-2 border-teal-500/30 space-y-3 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-sm text-teal-800 dark:text-teal-200 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-[#E85D22]" />
+                      Champ Dynamique IDP Proposé par l'IA : <code className="ltr-preserve">incoterm_insurance_clause</code>
+                    </span>
+                    <Badge variant="warning">Confiance OCR : 96.8%</Badge>
+                  </div>
+                  <p className="text-slate-600 dark:text-slate-300">
+                    Détecté automatiquement sur 14 factures d’import maritime. Conformément à la règle de validation administrative, ce champ requiert l'approbation d'un administrateur avant d'être persisté dans le schéma relationnel de production.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() =>
+                        notifyToast('Champ dynamique IDP validé et scellé dans le schéma PostgreSQL !', 'success')
+                      }
+                    >
+                      <Check className="w-4 h-4" />
+                      Valider le champ IDP
                     </Button>
-                  </Link>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() =>
+                        notifyToast('Rejet motivé consigné dans le journal d\'audit.', 'warning')
+                      }
+                    >
+                      <X className="w-4 h-4" />
+                      Rejeter
+                    </Button>
+                    <Link to="/ocr-idp">
+                      <Button size="sm" variant="secondary">
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Ouvrir le Studio IDP Interactif
+                      </Button>
+                    </Link>
+                  </div>
                 </div>
               </div>
-            </div>
-          </Card>
+            </Card>
+          )}
+
+          {aiTab === 'glossary' && (
+            <TranslationGlossaryAdminView />
+          )}
         </div>
       )}
 

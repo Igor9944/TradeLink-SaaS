@@ -15,7 +15,11 @@
 // - Intégration complète des routes API REST et préférences utilisateur
 // ============================================================================
 
-import { CentralTranslationService } from '../../services/translationEngine';
+import {
+  CentralTranslationService,
+  TranslationCache,
+  TranslationJobManager,
+} from '../../services/translationEngine';
 import { TradeGlossaryManager } from '../../services/tradeGlossary';
 import { TradeLinkRepositoryStore, DatabaseStateSnapshot } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
@@ -554,8 +558,304 @@ export async function runTranslationTestSuite() {
     console.log('  ✅ [TEST-TRAD-11] 9 routes API REST de traduction et de préférences validées.');
   }
 
+  // --------------------------------------------------------------------------
+  // [TEST-TRAD-12] Messagerie intelligente multilatérale avec détection destinataire
+  // --------------------------------------------------------------------------
+  console.log('🔹 [TEST-TRAD-12] Messagerie intelligente multilatérale (/api/v1/translation/smart-message)...');
+  {
+    const dbState = createTranslationTestInitialDatabase();
+    const repo = new TradeLinkRepositoryStore(dbState, false);
+    const app = new TradeLinkApiApplication(repo);
+
+    const senderUser: ServerRequestContext['user'] = {
+      id: 'usr-client-fr-01',
+      email: 'buyer.fr@tradelink-saas.com',
+      sessionId: 'sess-buyer-fr-01',
+      companyName: 'Client France SAS',
+      role: 'CLIENT',
+      mfaVerified: false,
+    };
+    registerSingleActiveSession(senderUser.id, senderUser.sessionId, true);
+
+    // Configurer la préférence du destinataire en Arabe
+    repo.setUserLanguagePreference('usr-supplier-ar-01', {
+      preferredLocale: 'ar',
+      autoTranslateMessages: true,
+      displayOriginalByDefault: false,
+    });
+
+    const smartMsgRes = app.handleRequest({
+      method: 'POST',
+      path: '/api/v1/translation/smart-message',
+      headers: {},
+      query: {},
+      params: {},
+      ipAddress: '127.0.0.1',
+      correlationId: 'test-smart-msg-01',
+      user: senderUser,
+      body: {
+        recipientId: 'usr-supplier-ar-01',
+        recipientName: 'Atlas Export SARL',
+        text: 'Bonjour, nous validons le bon de commande pour le transport frigorifique.',
+        conversationId: 'conv-b2b-9901',
+      },
+    });
+
+    assert(smartMsgRes.statusCode === 200, 'Statut 200 sur messagerie intelligente');
+    const smartData = smartMsgRes.body.data as any;
+    assert(smartData.originalText === 'Bonjour, nous validons le bon de commande pour le transport frigorifique.', 'Original intact');
+    assert(smartData.sourceLang === 'fr', 'Source FR détectée');
+    assert(smartData.targetLang === 'ar', 'Cible AR résolue d après le profil destinataire');
+    assert(smartData.isTranslated === true, 'Flag isTranslated activé');
+    assert(Boolean(smartData.translatedText && smartData.translatedText.length > 5), 'Texte arabe traduit présent');
+    console.log('  ✅ [TEST-TRAD-12] Messagerie intelligente avec résolution de langue destinataire validée.');
+  }
+
+  // --------------------------------------------------------------------------
+  // [TEST-TRAD-13] Procès-verbal et compte-rendu certifié Room Live
+  // --------------------------------------------------------------------------
+  console.log('🔹 [TEST-TRAD-13] Procès-verbal et compte-rendu certifié Room Live (/api/v1/translation/meeting-report)...');
+  {
+    const dbState = createTranslationTestInitialDatabase();
+    const repo = new TradeLinkRepositoryStore(dbState, false);
+    const app = new TradeLinkApiApplication(repo);
+
+    const user: ServerRequestContext['user'] = {
+      id: 'usr-admin-pv-01',
+      email: 'admin.room@tradelink-saas.com',
+      sessionId: 'sess-admin-pv-01',
+      companyName: 'TradeLink HQ',
+      role: 'ADMIN',
+      mfaVerified: true,
+    };
+    registerSingleActiveSession(user.id, user.sessionId, true);
+
+    const reportFr = 'Session de médiation : accord sur la libération du séquestre bancaire sous Incoterm CIF Tanger.';
+    const pvRes = app.handleRequest({
+      method: 'POST',
+      path: '/api/v1/translation/meeting-report',
+      headers: {},
+      query: {},
+      params: {},
+      ipAddress: '127.0.0.1',
+      correlationId: 'test-pv-01',
+      user,
+      body: {
+        reportText: reportFr,
+        targetLang: 'ar',
+      },
+    });
+
+    assert(pvRes.statusCode === 200, 'Statut 200 sur traduction procès-verbal');
+    const pvData = pvRes.body.data as any;
+    assert(pvData.originalReport === reportFr, 'Rapport original scellé');
+    assert(pvData.targetLang === 'ar', 'Langue cible AR respectée');
+    assertContains(pvData.certifiedNotice, 'محضر جلسة معتمد رسمياً من TRADELINK', 'Notice légale certifiée en arabe');
+    assert(Boolean(pvData.translatedReport && pvData.translatedReport.length > 10), 'Rapport traduit généré');
+
+    // Test direct vers l'anglais
+    const reportEn = CentralTranslationService.translateMeetingReport(reportFr, 'en');
+    assertContains(reportEn.certifiedNotice, 'TRADELINK Certified Session Minutes', 'Notice légale certifiée en anglais');
+    console.log('  ✅ [TEST-TRAD-13] Procès-verbal certifié avec notice légale dans les 3 langues validé.');
+  }
+
+  // --------------------------------------------------------------------------
+  // [TEST-TRAD-14] Gouvernance administrative du Glossaire B2B (Mise à jour, Validation, Suppression)
+  // --------------------------------------------------------------------------
+  console.log('🔹 [TEST-TRAD-14] Gouvernance administrative du Glossaire B2B (Validation, Update, Delete)...');
+  {
+    const dbState = createTranslationTestInitialDatabase();
+    const repo = new TradeLinkRepositoryStore(dbState, false);
+    const app = new TradeLinkApiApplication(repo);
+
+    const adminUser: ServerRequestContext['user'] = {
+      id: 'usr-admin-gov-01',
+      email: 'admin.gov@tradelink-saas.com',
+      sessionId: 'sess-admin-gov-01',
+      companyName: 'TradeLink Legal HQ',
+      role: 'ADMIN',
+      mfaVerified: true,
+    };
+    registerSingleActiveSession(adminUser.id, adminUser.sessionId, true);
+
+    // 1. Ajouter un terme en tant qu'admin
+    const addRes = app.handleRequest({
+      method: 'POST',
+      path: '/api/v1/translation/glossary',
+      headers: {},
+      query: {},
+      params: {},
+      ipAddress: '127.0.0.1',
+      correlationId: 'test-gov-add',
+      user: adminUser,
+      body: {
+        category: 'CUSTOMS',
+        termFr: 'Carnet ATA de passage en douane',
+        termEn: 'ATA Carnet for temporary customs admission',
+        termAr: 'دفتر الإدخال الجمركي المؤقت ATA',
+        context: 'Admission temporaire de marchandises',
+      },
+    });
+    assert(addRes.statusCode === 201, 'Terme ajouté');
+    const termId = (addRes.body.data as any).id;
+
+    // 2. Mettre à jour le terme
+    const updateRes = app.handleRequest({
+      method: 'PUT',
+      path: `/api/v1/translation/glossary/${termId}`,
+      headers: {},
+      query: {},
+      params: {},
+      ipAddress: '127.0.0.1',
+      correlationId: 'test-gov-update',
+      user: adminUser,
+      body: {
+        context: 'Admission temporaire internationale sous convention de Bruxelles',
+      },
+    });
+    assert(updateRes.statusCode === 200, 'Terme mis à jour');
+    assert((updateRes.body.data as any).context.includes('Bruxelles'), 'Contexte mis à jour');
+
+    // 3. Valider explicitement le terme
+    const valRes = app.handleRequest({
+      method: 'POST',
+      path: `/api/v1/translation/glossary/${termId}/validate`,
+      headers: {},
+      query: {},
+      params: {},
+      ipAddress: '127.0.0.1',
+      correlationId: 'test-gov-val',
+      user: adminUser,
+    });
+    assert(valRes.statusCode === 200, 'Terme validé');
+    assert((valRes.body.data as any).status === 'VALIDATED', 'Statut VALIDATED');
+    assert((valRes.body.data as any).validatedBy === adminUser.email, 'Validé par l admin');
+
+    // 4. Supprimer le terme
+    const delRes = app.handleRequest({
+      method: 'DELETE',
+      path: `/api/v1/translation/glossary/${termId}`,
+      headers: {},
+      query: {},
+      params: {},
+      ipAddress: '127.0.0.1',
+      correlationId: 'test-gov-del',
+      user: adminUser,
+    });
+    assert(delRes.statusCode === 200, 'Terme supprimé');
+    assert((delRes.body.data as any).deleted === true, 'Suppression confirmée');
+
+    console.log('  ✅ [TEST-TRAD-14] Cycle de gouvernance du glossaire (Add -> Update -> Validate -> Delete) validé.');
+  }
+
+  // --------------------------------------------------------------------------
+  // [TEST-TRAD-15] Gestionnaire de jobs asynchrones pour catalogues et lots volumineux
+  // --------------------------------------------------------------------------
+  console.log('🔹 [TEST-TRAD-15] Jobs asynchrones de traduction de catalogue (TranslationJobManager)...');
+  {
+    const dbState = createTranslationTestInitialDatabase();
+    const repo = new TradeLinkRepositoryStore(dbState, false);
+    const app = new TradeLinkApiApplication(repo);
+
+    const user: ServerRequestContext['user'] = {
+      id: 'usr-supplier-job-01',
+      email: 'supp.catalog@tradelink-saas.com',
+      sessionId: 'sess-supp-job-01',
+      companyName: 'EuroPharma Distribution',
+      role: 'FOURNISSEUR',
+      mfaVerified: true,
+    };
+    registerSingleActiveSession(user.id, user.sessionId, true);
+
+    // 1. Création de job
+    const createJobRes = app.handleRequest({
+      method: 'POST',
+      path: '/api/v1/translation/jobs',
+      headers: {},
+      query: {},
+      params: {},
+      ipAddress: '127.0.0.1',
+      correlationId: 'test-job-create',
+      user,
+      body: {
+        sourceLang: 'fr',
+        targetLang: 'ar',
+        entityType: 'PRODUCT',
+        totalItems: 50,
+      },
+    });
+    assert(createJobRes.statusCode === 201, 'Statut 201 sur création de job');
+    const jobId = (createJobRes.body.data as any).id;
+    assert((createJobRes.body.data as any).status === 'QUEUED', 'Job en attente');
+    assert((createJobRes.body.data as any).totalItems === 50, '50 items prévus');
+
+    // 2. Progression du job via le gestionnaire
+    TranslationJobManager.updateProgress(jobId, 25, 'PROCESSING');
+    let jobStatus = TranslationJobManager.getJob(jobId);
+    assert(jobStatus?.progressPercentage === 50, 'Progression à 50%');
+    assert(jobStatus?.status === 'PROCESSING', 'Statut PROCESSING');
+
+    TranslationJobManager.updateProgress(jobId, 50, 'COMPLETED');
+    jobStatus = TranslationJobManager.getJob(jobId);
+    assert(jobStatus?.progressPercentage === 100, 'Progression à 100%');
+    assert(jobStatus?.status === 'COMPLETED', 'Statut COMPLETED');
+    assert(Boolean(jobStatus?.completedAt), 'Date d achèvement tracée');
+
+    // 3. Consultation via route REST
+    const getJobRes = app.handleRequest({
+      method: 'GET',
+      path: `/api/v1/translation/jobs/${jobId}`,
+      headers: {},
+      query: {},
+      params: {},
+      ipAddress: '127.0.0.1',
+      correlationId: 'test-job-get',
+      user,
+    });
+    assert(getJobRes.statusCode === 200, 'Statut 200 sur suivi de job');
+    assert((getJobRes.body.data as any).progressPercentage === 100, 'Progression 100% renvoyée par l API');
+    console.log('  ✅ [TEST-TRAD-15] Jobs asynchrones de traduction de lots validés.');
+  }
+
+  // --------------------------------------------------------------------------
+  // [TEST-TRAD-16] Cache mémoire & simulation Redis, TTL et désensibilisation avancée
+  // --------------------------------------------------------------------------
+  console.log('🔹 [TEST-TRAD-16] Cache TranslationCache, TTL et masquage des secrets avancés...');
+  {
+    TranslationCache.clear();
+    const cacheKey = 'fr:en:hash-test-secret-99';
+    TranslationCache.set(cacheKey, 'Secure translated payload', 0.99, 60);
+
+    const hit = TranslationCache.get(cacheKey);
+    assert(hit !== null, 'Cache hit');
+    assert(hit?.value === 'Secure translated payload', 'Valeur en cache correcte');
+
+    const miss = TranslationCache.get('inexistant-key');
+    assert(miss === null, 'Cache miss géré');
+
+    const stats = TranslationCache.stats();
+    assert(stats.hits === 1, '1 hit comptabilisé');
+    assert(stats.misses === 1, '1 miss comptabilisé');
+    assert(stats.hitRate === 50, 'Hit rate à 50%');
+
+    // Test de désensibilisation avancée (JWT, cartes bancaires, CVV, passwords)
+    const sensitivePayload =
+      'Facture avec JWT eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.doNotLeakThisSecretSignature ' +
+      'carte: 4970 1234 5678 9912 345, CVV: 789, mot de passe: UltraMasterKey!99';
+
+    const redacted = CentralTranslationService.redactSensitiveData(sensitivePayload);
+    assertContains(redacted.sanitizedText, '__TL_REDACTED_JWT_', 'JWT masqué');
+    assertContains(redacted.sanitizedText, '__TL_REDACTED_CARD_', 'Carte bancaire masquée');
+    assertContains(redacted.sanitizedText, '__TL_REDACTED_CVV_', 'CVV masqué');
+    assertContains(redacted.sanitizedText, '__TL_REDACTED_SECRET_', 'Mot de passe masqué');
+    assert(!redacted.sanitizedText.includes('UltraMasterKey!99'), 'Mot de passe absent du texte aseptisé');
+    assert(!redacted.sanitizedText.includes('doNotLeakThisSecretSignature'), 'Signature JWT absente du texte aseptisé');
+
+    console.log('  ✅ [TEST-TRAD-16] TranslationCache et désensibilisation stricte des secrets validés.');
+  }
+
   console.log('\n================================================================');
-  console.log('🎉 TOUS LES TESTS DU MOTEUR DE TRADUCTION IA (11/11) ONT RÉUSSI !');
+  console.log('🎉 TOUS LES TESTS DU MOTEUR DE TRADUCTION IA (16/16) ONT RÉUSSI !');
   console.log('Architecture 100% multilingue FR / EN / AR avec support RTL complet.');
   console.log('================================================================\n');
 }

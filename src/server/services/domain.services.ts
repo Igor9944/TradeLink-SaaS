@@ -72,6 +72,10 @@ import {
   SupportedLocale,
   TranslationRecord,
   UserLanguagePreferenceRecord,
+  TranslationGlossaryTerm,
+  TranslationJob,
+  TranslationEntityType,
+  SmartTranslatedMessage,
   UserRoleCode,
   VoiceInteractionRecord,
   VoiceTranscribePayload,
@@ -97,7 +101,11 @@ import {
   VOICE_MAX_DURATION_SECONDS,
   PUNCTUATION_DICTIONARY,
 } from '../../services/voiceDictationEngine';
-import { CentralTranslationService } from '../../services/translationEngine';
+import {
+  CentralTranslationService,
+  TranslationJobManager,
+} from '../../services/translationEngine';
+import { TradeGlossaryManager } from '../../services/tradeGlossary';
 import {
   CommercialEngine,
   INITIAL_PRODUCT_CATEGORIES,
@@ -3811,6 +3819,103 @@ export class TradeLinkDomainServices {
     targetLang: SupportedLocale
   ) {
     return CentralTranslationService.translateCommercialDocumentSync(doc, targetLang);
+  }
+
+  public translateSmartMessageService(params: {
+    senderId: string;
+    senderName?: string;
+    senderRole?: string;
+    recipientId: string;
+    recipientName?: string;
+    text: string;
+    conversationId?: string;
+  }): SmartTranslatedMessage {
+    const recipientPref = this.repo.getUserLanguagePreference(params.recipientId);
+    const recipientPreferredLocale = recipientPref?.preferredLocale || 'fr';
+
+    const smartMsg = CentralTranslationService.translateSmartMessage({
+      ...params,
+      recipientPreferredLocale,
+    });
+
+    // Enregistrer dans les logs de traduction
+    const record: TranslationRecord = {
+      id: `tr-smart-${smartMsg.id}`,
+      entityType: 'MESSAGE',
+      entityId: smartMsg.id,
+      field: 'smart_body',
+      sourceLang: smartMsg.sourceLang,
+      targetLang: smartMsg.targetLang,
+      originalText: smartMsg.originalText,
+      translatedText: smartMsg.translatedText,
+      status: 'TRANSLATED',
+      engineVersion: 'tradelink-neural-v6.0-enterprise',
+      confidenceScore: 0.99,
+      isInformativeOnly: false,
+      glossaryApplied: true,
+      contentHashSha256: smartMsg.id,
+      createdAt: smartMsg.createdAt,
+    };
+    this.repo.saveTranslation(record);
+
+    return smartMsg;
+  }
+
+  public listGlossaryTermsService(params?: { category?: string; status?: string; search?: string }): TranslationGlossaryTerm[] {
+    return TradeGlossaryManager.filterTerms(params);
+  }
+
+  public addGlossaryTermService(params: {
+    category: TranslationGlossaryTerm['category'];
+    termFr: string;
+    termEn: string;
+    termAr: string;
+    context?: string;
+    isAdmin?: boolean;
+    adminEmail?: string;
+  }): TranslationGlossaryTerm {
+    const term = TradeGlossaryManager.addDynamicTerm({
+      category: params.category,
+      termFr: params.termFr,
+      termEn: params.termEn,
+      termAr: params.termAr,
+      context: params.context,
+      status: params.isAdmin ? 'VALIDATED' : 'PENDING_REVIEW',
+    });
+    if (params.isAdmin && params.adminEmail) {
+      term.validatedBy = params.adminEmail;
+      term.validatedAt = new Date().toISOString();
+    }
+    return term;
+  }
+
+  public updateGlossaryTermService(id: string, updates: Partial<TranslationGlossaryTerm>): TranslationGlossaryTerm {
+    return TradeGlossaryManager.updateTerm(id, updates);
+  }
+
+  public validateGlossaryTermService(id: string, validatorEmail: string): TranslationGlossaryTerm {
+    return TradeGlossaryManager.validateTerm(id, validatorEmail);
+  }
+
+  public deleteGlossaryTermService(id: string): boolean {
+    return TradeGlossaryManager.deleteTerm(id);
+  }
+
+  public createTranslationJobService(params: {
+    sourceLang: SupportedLocale;
+    targetLang: SupportedLocale;
+    entityType: TranslationEntityType;
+    totalItems: number;
+  }): TranslationJob {
+    return TranslationJobManager.createJob(params);
+  }
+
+  public getTranslationJobService(jobId: string): TranslationJob {
+    const job = TranslationJobManager.getJob(jobId);
+    if (!job) {
+      throw new AppError(404, 'TRANSLATION_JOB_NOT_FOUND', `Job de traduction "${jobId}" introuvable.`);
+    }
+    return job;
   }
 
   // ============================================================================

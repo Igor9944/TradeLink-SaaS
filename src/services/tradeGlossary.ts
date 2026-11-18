@@ -309,7 +309,12 @@ export class TradeGlossaryManager {
   static {
     // Initialisation avec le glossaire officiel
     for (const term of OFFICIAL_TRADE_GLOSSARY) {
-      this.dynamicTerms.set(term.termKey, term);
+      this.dynamicTerms.set(term.termKey, {
+        ...term,
+        status: 'VALIDATED',
+        validatedBy: 'TRADELINK Standards Committee',
+        validatedAt: '2026-01-01T00:00:00Z',
+      });
     }
   }
 
@@ -318,6 +323,35 @@ export class TradeGlossaryManager {
    */
   public static getAllTerms(): TranslationGlossaryTerm[] {
     return Array.from(this.dynamicTerms.values());
+  }
+
+  /**
+   * Filtrage des termes par catégorie, statut ou mot-clé
+   */
+  public static filterTerms(params?: {
+    category?: string;
+    status?: string;
+    search?: string;
+  }): TranslationGlossaryTerm[] {
+    let list = Array.from(this.dynamicTerms.values());
+    if (params?.category && params.category !== 'ALL') {
+      list = list.filter((t) => t.category === params.category);
+    }
+    if (params?.status && params.status !== 'ALL') {
+      list = list.filter((t) => t.status === params.status);
+    }
+    if (params?.search) {
+      const q = params.search.toLowerCase();
+      list = list.filter(
+        (t) =>
+          t.termKey.toLowerCase().includes(q) ||
+          t.sourceTextFr.toLowerCase().includes(q) ||
+          t.targetTextEn.toLowerCase().includes(q) ||
+          t.targetTextAr.includes(params.search!) ||
+          t.contextNotes?.toLowerCase().includes(q)
+      );
+    }
+    return list;
   }
 
   /**
@@ -330,6 +364,8 @@ export class TradeGlossaryManager {
     }
     return Array.from(this.dynamicTerms.values()).find(
       (t) =>
+        t.id === query ||
+        t.termKey.toUpperCase() === q ||
         t.sourceTextFr.toUpperCase() === q ||
         t.targetTextEn.toUpperCase() === q ||
         t.targetTextAr === query.trim()
@@ -349,7 +385,51 @@ export class TradeGlossaryManager {
       sourceTextFr: term.sourceTextFr.trim(),
       targetTextEn: term.targetTextEn.trim(),
       targetTextAr: term.targetTextAr.trim(),
+      status: term.status || 'VALIDATED',
     });
+  }
+
+  /**
+   * Validation administrative d'un terme
+   */
+  public static validateTerm(id: string, validatorEmail: string): TranslationGlossaryTerm {
+    const term = Array.from(this.dynamicTerms.values()).find((t) => t.id === id || t.termKey === id);
+    if (!term) {
+      throw new Error(`Terme de glossaire "${id}" introuvable.`);
+    }
+    term.status = 'VALIDATED';
+    term.validatedBy = validatorEmail;
+    term.validatedAt = new Date().toISOString();
+    this.dynamicTerms.set(term.termKey, term);
+    return term;
+  }
+
+  /**
+   * Mise à jour administrative d'un terme
+   */
+  public static updateTerm(id: string, updates: Partial<TranslationGlossaryTerm>): TranslationGlossaryTerm {
+    const term = Array.from(this.dynamicTerms.values()).find((t) => t.id === id || t.termKey === id);
+    if (!term) {
+      throw new Error(`Terme de glossaire "${id}" introuvable.`);
+    }
+    const updated: TranslationGlossaryTerm = {
+      ...term,
+      ...updates,
+      sourceTextFr: updates.sourceTextFr !== undefined ? updates.sourceTextFr.trim() : term.sourceTextFr,
+      targetTextEn: updates.targetTextEn !== undefined ? updates.targetTextEn.trim() : term.targetTextEn,
+      targetTextAr: updates.targetTextAr !== undefined ? updates.targetTextAr.trim() : term.targetTextAr,
+    };
+    this.dynamicTerms.set(term.termKey, updated);
+    return updated;
+  }
+
+  /**
+   * Suppression d'un terme du glossaire
+   */
+  public static deleteTerm(id: string): boolean {
+    const term = Array.from(this.dynamicTerms.values()).find((t) => t.id === id || t.termKey === id);
+    if (!term) return false;
+    return this.dynamicTerms.delete(term.termKey);
   }
 
   public static addDynamicTerm(params: {
@@ -358,6 +438,7 @@ export class TradeGlossaryManager {
     termEn: string;
     termAr: string;
     context?: string;
+    status?: 'VALIDATED' | 'PENDING_REVIEW' | 'DRAFT';
   }): TranslationGlossaryTerm {
     const key = `DYN_${Date.now()}_${params.termFr.slice(0, 8).toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
     const term: TranslationGlossaryTerm = {
@@ -369,6 +450,7 @@ export class TradeGlossaryManager {
       targetTextAr: params.termAr.trim(),
       isStrict: true,
       contextNotes: params.context || 'Terme dynamique TradeLink B2B',
+      status: params.status || 'PENDING_REVIEW',
     };
     this.upsertTerm(term);
     return term;
@@ -437,3 +519,5 @@ export class TradeGlossaryManager {
 function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+export const TranslationGlossary = TradeGlossaryManager;

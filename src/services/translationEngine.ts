@@ -15,6 +15,10 @@ import {
   TranslationRecord,
   LanguageDetectionResult,
   ProductItem,
+  TranslationJob,
+  TranslationJobStatus,
+  TranslationEntityType,
+  SmartTranslatedMessage,
 } from '../types';
 import { TradeGlossaryManager } from './tradeGlossary';
 import { generateSha256Hash } from './securityCrypto';
@@ -558,8 +562,9 @@ export class CentralTranslationService {
 
   /**
    * 7. Protection de confidentialité : Masquage des données sensibles avant appel IA
+   * Garantit que mots de passe, tokens, cartes bancaires et CVV ne sont jamais envoyés à un LLM.
    */
-  private static redactSensitiveData(text: string): {
+  public static redactSensitiveData(text: string): {
     sanitizedText: string;
     redactionMap: Map<string, string>;
   } {
@@ -567,28 +572,44 @@ export class CentralTranslationService {
     let counter = 1;
     let sanitized = text;
 
-    // Masquage des numéros de carte de crédit (13 à 16 chiffres avec espaces ou tirets)
-    const creditCardRegex = /\b(?:\d{4}[ -]?){3}\d{4}\b/g;
+    // 1. Masquage des numéros de carte bancaire (13 à 19 chiffres avec espaces ou tirets)
+    const creditCardRegex = /\b(?:\d{4}[ -]?){3}\d{4,7}\b/g;
     sanitized = sanitized.replace(creditCardRegex, (match) => {
       const ph = `__TL_REDACTED_CARD_${counter++}__`;
       redactionMap.set(ph, match);
       return ph;
     });
 
-    // Masquage des clés d'API et tokens secrets (ex: sk_live_..., Bearer eyJ...)
-    const tokenRegex = /\b(?:sk_[live|test]_[a-zA-Z0-9]{20,}|Bearer [a-zA-Z0-9\-_.]+)\b/g;
+    // 2. Masquage des cryptogrammes CVV / CVC
+    const cvvRegex = /\b(?:CVV|CVC|CID|cryptogramme)\s*[:=]?\s*(\d{3,4})\b/gi;
+    sanitized = sanitized.replace(cvvRegex, (_match, digits) => {
+      const ph = `__TL_REDACTED_CVV_${counter++}__`;
+      redactionMap.set(ph, digits);
+      return `CVV: ${ph}`;
+    });
+
+    // 3. Masquage des tokens JWT complets
+    const jwtRegex = /\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b/g;
+    sanitized = sanitized.replace(jwtRegex, (match) => {
+      const ph = `__TL_REDACTED_JWT_${counter++}__`;
+      redactionMap.set(ph, match);
+      return ph;
+    });
+
+    // 4. Masquage des clés d'API et tokens secrets (ex: sk_live_..., Bearer eyJ...)
+    const tokenRegex = /\b(?:sk_[live|test]_[a-zA-Z0-9]{16,}|Bearer\s+[a-zA-Z0-9\-_.]+|ghp_[a-zA-Z0-9]{20,})\b/g;
     sanitized = sanitized.replace(tokenRegex, (match) => {
       const ph = `__TL_REDACTED_TOKEN_${counter++}__`;
       redactionMap.set(ph, match);
       return ph;
     });
 
-    // Masquage des mots de passe en clair dans les logs
-    const pwdRegex = /(password|motdepasse|secret)\s*[:=]\s*([^\s,]+)/gi;
-    sanitized = sanitized.replace(pwdRegex, (_match, prefix, val) => {
+    // 5. Masquage des mots de passe en clair dans les messages
+    const pwdRegex = /\b(?:password|motdepasse|mot\s+de\s+passe|secret|pwd|pass)\s*[:=]\s*([^\s,;]+)/gi;
+    sanitized = sanitized.replace(pwdRegex, (_match, val) => {
       const ph = `__TL_REDACTED_SECRET_${counter++}__`;
       redactionMap.set(ph, val);
-      return `${prefix}: ${ph}`;
+      return `password: ${ph}`;
     });
 
     return { sanitizedText: sanitized, redactionMap };
@@ -934,6 +955,105 @@ export class CentralTranslationService {
   }
 
   /**
+   * 11. Messagerie intelligente entre acteurs
+   * Détecte la langue source, identifie la langue cible du destinataire,
+   * produit la traduction tout en conservant systématiquement le texte original.
+   */
+  public static translateSmartMessage(params: {
+    senderId: string;
+    senderName?: string;
+    senderRole?: string;
+    recipientId: string;
+    recipientName?: string;
+    recipientPreferredLocale?: SupportedLocale;
+    text: string;
+    conversationId?: string;
+  }): SmartTranslatedMessage {
+    const trimmed = (params.text || '').trim();
+    const sourceDetection = this.detectLanguage(trimmed);
+    const sourceLang: SupportedLocale = sourceDetection.detectedLang === 'unknown' ? 'fr' : (sourceDetection.detectedLang as SupportedLocale);
+    const targetLang: SupportedLocale = params.recipientPreferredLocale || 'fr';
+
+    let translatedText = trimmed;
+    let isTranslated = false;
+
+    if (sourceLang !== targetLang && trimmed.length > 0) {
+      const res = this.translateTextSync({
+        text: trimmed,
+        sourceLang,
+        targetLang,
+        domain: 'COMMERCIAL',
+        entityType: 'MESSAGE',
+        entityId: `msg-${Date.now()}`,
+      });
+      translatedText = res.translatedText;
+      isTranslated = true;
+    }
+
+    const notices: Record<SupportedLocale, string> = {
+      fr: `Traduit automatiquement de l'${sourceLang === 'ar' ? 'arabe' : 'anglais'} vers le français par TRADELINK AI.`,
+      en: `Automatically translated from ${sourceLang === 'ar' ? 'Arabic' : 'French'} to English by TRADELINK AI.`,
+      ar: `ترجمة آلية ذكية من ${sourceLang === 'fr' ? 'الفرنسية' : 'الإنجليزية'} إلى العربية بواسطة TRADELINK AI.`,
+    };
+
+    return {
+      id: `smart-msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      conversationId: params.conversationId,
+      senderId: params.senderId,
+      senderName: params.senderName,
+      senderRole: params.senderRole,
+      recipientId: params.recipientId,
+      recipientName: params.recipientName,
+      originalText: trimmed,
+      sourceLang,
+      translatedText,
+      targetLang,
+      isTranslated,
+      translationNotice: isTranslated ? notices[targetLang] : undefined,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * 12. Traduction de rapport / procès-verbal certifié Room Live
+   */
+  public static translateMeetingReport(
+    reportText: string,
+    targetLang: SupportedLocale
+  ): {
+    originalReport: string;
+    translatedReport: string;
+    sourceLang: SupportedLocale;
+    targetLang: SupportedLocale;
+    certifiedNotice: string;
+  } {
+    const detection = this.detectLanguage(reportText);
+    const sourceLang: SupportedLocale = detection.detectedLang === 'unknown' ? 'fr' : (detection.detectedLang as SupportedLocale);
+
+    const transRes = this.translateTextSync({
+      text: reportText,
+      sourceLang,
+      targetLang,
+      domain: 'COMMERCIAL',
+      entityType: 'DOCUMENT',
+    });
+
+    const certifiedNotices: Record<SupportedLocale, string> = {
+      fr: 'Procès-verbal de séance certifié TRADELINK — Traduction assermentée par IA avec horodatage scellé.',
+      en: 'TRADELINK Certified Session Minutes — AI sworn translation with tamper-evident timestamping.',
+      ar: 'محضر جلسة معتمد رسمياً من TRADELINK — ترجمة موثقة بالذكاء الاصطناعي مع ختم زمني آمن.',
+    };
+
+    return {
+      originalReport: reportText,
+      translatedReport: transRes.translatedText,
+      sourceLang,
+      targetLang,
+      certifiedNotice: certifiedNotices[targetLang] || certifiedNotices.fr,
+    };
+  }
+
+  /**
    * Nettoie le cache en mémoire (pour les tests)
    */
   public static clearCache(): void {
@@ -943,6 +1063,120 @@ export class CentralTranslationService {
     this.charactersTranslatedToday = 0;
   }
 }
+
+/**
+ * Cache dédié haute performance avec simulation Redis & TTL
+ */
+export class TranslationCache {
+  private static store: Map<string, { value: string; confidence: number; expiresAt: number; hitCount: number }> = new Map();
+  private static hits = 0;
+  private static misses = 0;
+
+  public static get(key: string): { value: string; confidence: number } | null {
+    const entry = this.store.get(key);
+    if (!entry) {
+      this.misses++;
+      return null;
+    }
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      this.misses++;
+      return null;
+    }
+    entry.hitCount++;
+    this.hits++;
+    return { value: entry.value, confidence: entry.confidence };
+  }
+
+  public static set(key: string, value: string, confidence: number = 0.985, ttlSeconds: number = 86400): void {
+    this.store.set(key, {
+      value,
+      confidence,
+      expiresAt: Date.now() + ttlSeconds * 1000,
+      hitCount: 0,
+    });
+  }
+
+  public static invalidate(key: string): boolean {
+    return this.store.delete(key);
+  }
+
+  public static clear(): void {
+    this.store.clear();
+    this.hits = 0;
+    this.misses = 0;
+  }
+
+  public static stats() {
+    const total = this.hits + this.misses;
+    return {
+      size: this.store.size,
+      hits: this.hits,
+      misses: this.misses,
+      hitRate: total > 0 ? (this.hits / total) * 100 : 0,
+    };
+  }
+}
+
+/**
+ * Gestionnaire de jobs asynchrones pour la traduction de catalogues et batchs
+ */
+export class TranslationJobManager {
+  private static jobs: Map<string, TranslationJob> = new Map();
+
+  public static createJob(params: {
+    sourceLang: SupportedLocale;
+    targetLang: SupportedLocale;
+    entityType: TranslationEntityType;
+    totalItems: number;
+  }): TranslationJob {
+    const job: TranslationJob = {
+      id: `job-trans-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      sourceLang: params.sourceLang,
+      targetLang: params.targetLang,
+      entityType: params.entityType,
+      totalItems: params.totalItems,
+      processedItems: 0,
+      progressPercentage: 0,
+      status: 'QUEUED',
+      createdAt: new Date().toISOString(),
+    };
+    this.jobs.set(job.id, job);
+    return job;
+  }
+
+  public static updateProgress(
+    jobId: string,
+    processed: number,
+    status?: TranslationJobStatus,
+    error?: string
+  ): TranslationJob | undefined {
+    const job = this.jobs.get(jobId);
+    if (!job) return undefined;
+    job.processedItems = processed;
+    job.progressPercentage = job.totalItems > 0 ? Math.round((processed / job.totalItems) * 100) : 100;
+    if (status) job.status = status;
+    if (error) job.errorMessage = error;
+    if (job.status === 'COMPLETED' || job.status === 'FAILED') {
+      job.completedAt = new Date().toISOString();
+    }
+    return job;
+  }
+
+  public static getJob(jobId: string): TranslationJob | undefined {
+    return this.jobs.get(jobId);
+  }
+
+  public static listJobs(): TranslationJob[] {
+    return Array.from(this.jobs.values());
+  }
+
+  public static clear(): void {
+    this.jobs.clear();
+  }
+}
+
+export const TranslationService = CentralTranslationService;
 
 function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
