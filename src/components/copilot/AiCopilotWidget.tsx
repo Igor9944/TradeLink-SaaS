@@ -12,7 +12,6 @@ import {
   X,
   Minimize2,
   Send,
-  Mic,
   Paperclip,
   Plus,
   Trash2,
@@ -36,6 +35,7 @@ import {
   processAndSummarizeAttachment,
 } from '../../services/copilotEngine';
 import { AiCopilotFloatingButton } from './AiCopilotFloatingButton';
+import { VoiceDictationButton } from '../voice/VoiceDictationButton';
 
 export const AiCopilotWidget: React.FC = () => {
   const { currentUser, locale, notifyToast } = useApp();
@@ -82,7 +82,6 @@ Comment puis-je vous assister aujourd'hui sur la page actuelle (\`${location.pat
   const [isStreaming, setIsStreaming] = useState(false);
   const [abortController, setAbortController] = useState<{ aborted: boolean }>({ aborted: false });
   const [attachments, setAttachments] = useState<CopilotAttachment[]>([]);
-  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -362,21 +361,6 @@ Comment puis-je vous assister aujourd'hui sur la page actuelle (\`${location.pat
     }
 
     notifyToast(`Action "${action.title}" exécutée avec succès !`, 'success');
-  };
-
-  // Simulation dictée vocale
-  const handleToggleVoiceDictation = () => {
-    if (isRecordingVoice) {
-      setIsRecordingVoice(false);
-      notifyToast('Dictée vocale enregistrée.', 'info');
-    } else {
-      setIsRecordingVoice(true);
-      notifyToast('Microphone actif : dictée en cours...', 'info');
-      setTimeout(() => {
-        setIsRecordingVoice(false);
-        setInputValue((prev) => (prev ? `${prev} ` : '') + 'Explique-moi les règles KYC et la protection J+7.');
-      }, 2500);
-    }
   };
 
   return (
@@ -742,20 +726,11 @@ Comment puis-je vous assister aujourd'hui sur la page actuelle (\`${location.pat
                 <Paperclip className="w-4 h-4" />
               </button>
 
-              {/* Bouton Dictée Vocale */}
-              <button
-                type="button"
-                onClick={handleToggleVoiceDictation}
-                title="Dicter la question vocalement"
-                aria-label="Dictée vocale"
-                className={`p-2 transition-colors rounded-xl ${
-                  isRecordingVoice
-                    ? 'bg-red-500 text-white animate-pulse'
-                    : 'text-slate-500 dark:text-teal-300 hover:text-emerald-500 hover:bg-slate-100 dark:hover:bg-teal-900/40'
-                }`}
-              >
-                <Mic className="w-4 h-4" />
-              </button>
+              {/* Bouton Dictée Vocale Intelligente */}
+              <VoiceDictationButton
+                onTranscript={(t) => setInputValue((prev) => (prev ? `${prev} ${t}` : t))}
+                size="md"
+              />
 
               {/* Zone de texte */}
               <textarea

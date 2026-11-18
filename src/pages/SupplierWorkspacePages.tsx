@@ -40,6 +40,7 @@ import {
   X,
   FileSpreadsheet,
 } from 'lucide-react';
+import { VoiceDictationButton } from '../components/voice/VoiceDictationButton';
 import { useApp } from '../contexts/AppContext';
 import { formatCurrency, translateStatus, downloadDataExport } from '../i18n/translations';
 import { ActorKycWorkspaceView } from '../components/kyc/KycModuleViews';
@@ -836,7 +837,14 @@ export const SupplierWorkspacePage: React.FC<{
 
               <div className="grid sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold mb-1">Description détaillée (FR)</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold">Description détaillée (FR)</label>
+                    <VoiceDictationButton
+                      language="fr-FR"
+                      onTranscript={(t) => setNewDescFr((prev) => (prev ? `${prev} ${t}` : t))}
+                      size="sm"
+                    />
+                  </div>
                   <textarea
                     rows={3}
                     value={newDescFr}
@@ -845,7 +853,14 @@ export const SupplierWorkspacePage: React.FC<{
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold mb-1">Detailed Description (EN)</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold">Detailed Description (EN)</label>
+                    <VoiceDictationButton
+                      language="en-US"
+                      onTranscript={(t) => setNewDescEn((prev) => (prev ? `${prev} ${t}` : t))}
+                      size="sm"
+                    />
+                  </div>
                   <textarea
                     rows={3}
                     value={newDescEn}
@@ -854,7 +869,14 @@ export const SupplierWorkspacePage: React.FC<{
                   />
                 </div>
                 <div dir="rtl">
-                  <label className="block text-xs font-semibold mb-1">الوصف التفصيلي (AR)</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold">الوصف التفصيلي (AR)</label>
+                    <VoiceDictationButton
+                      language="ar-SA"
+                      onTranscript={(t) => setNewDescAr((prev) => (prev ? `${prev} ${t}` : t))}
+                      size="sm"
+                    />
+                  </div>
                   <textarea
                     rows={3}
                     value={newDescAr}

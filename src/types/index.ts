@@ -2,7 +2,7 @@
 // TRADELINK V6.0 — TYPESCRIPT DOMAIN & ARCHITECTURE TYPES
 // ============================================================================
 
-import type { RagSourceCitation } from '../services/aiIntelligenceEngine';
+import type { RagSourceCitation, VoiceLanguage } from '../services/aiIntelligenceEngine';
 
 export type Locale = 'fr' | 'en' | 'ar';
 export type ThemeMode = 'system' | 'light' | 'dark';
@@ -829,5 +829,67 @@ export interface CopilotExecuteActionPayload {
   confirmed: boolean;
   actionPayload: Record<string, any>;
 }
+
+// ============================================================================
+// TYPES SYSTÈME DE DICTÉE VOCALE INTELLIGENTE (PROMPT 04)
+// ============================================================================
+
+export type VoiceDictationStatus = 'IDLE' | 'REQUESTING_PERMISSION' | 'LISTENING' | 'PROCESSING' | 'ERROR' | 'SUCCESS';
+
+export interface VoiceInteractionRecord {
+  id: string;
+  userId: string;
+  locale: VoiceLanguage;
+  durationSeconds: number;
+  intentDetected?: string | null;
+  transcriptSnippet?: string;
+  consentGranted: boolean;
+  confidenceScore: number;
+  createdAt: string;
+}
+
+export interface VoiceConsentPayload {
+  userId?: string;
+  granted: boolean;
+  purpose?: string;
+}
+
+export interface VoiceConsentState {
+  userId: string;
+  granted: boolean;
+  grantedAt?: string;
+  revokedAt?: string;
+  storageRetentionPolicy: 'ZERO_RETENTION_RAM_ONLY';
+}
+
+export interface VoiceTranscribePayload {
+  audioBase64?: string;
+  mimeType?: string;
+  language: VoiceLanguage;
+  durationSeconds: number;
+  consentGranted: boolean;
+  autoFormatPunctuation?: boolean;
+  targetField?: string;
+}
+
+export interface VoiceTranscribeResponse {
+  success: boolean;
+  transcript: string;
+  rawTranscript: string;
+  language: VoiceLanguage;
+  durationSeconds: number;
+  confidence: number;
+  punctuationsApplied: number;
+  interactionId: string;
+  zeroRetentionEnforced: true;
+}
+
+export interface VoicePunctuationCommand {
+  keyword: string;
+  replacement: string;
+  language: VoiceLanguage;
+  description: string;
+}
+
 
 

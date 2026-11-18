@@ -54,6 +54,7 @@ import {
   Input,
   SearchBar,
 } from '../components/ui/DesignSystem';
+import { VoiceDictationButton } from '../components/voice/VoiceDictationButton';
 import { ThemeMode } from '../types';
 import {
   ProofOfDeliveryData,
@@ -1307,7 +1308,13 @@ export const CarrierWorkspacePage: React.FC<{
                 required
               />
               <div>
-                <label className="block text-xs font-semibold mb-1">Réserves de livraison éventuelles :</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold">Réserves de livraison éventuelles :</label>
+                  <VoiceDictationButton
+                    onTranscript={(t) => setPodNotes((prev) => (prev ? `${prev} ${t}` : t))}
+                    size="sm"
+                  />
+                </div>
                 <input
                   type="text"
                   value={podNotes}
@@ -1409,7 +1416,13 @@ export const CarrierWorkspacePage: React.FC<{
               </div>
 
               <div>
-                <label className="block text-xs font-semibold mb-1">Description détaillée du constat :</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold">Description détaillée du constat (ou dictée) :</label>
+                  <VoiceDictationButton
+                    onTranscript={(t) => setIncDesc((prev) => (prev ? `${prev} ${t}` : t))}
+                    size="sm"
+                  />
+                </div>
                 <textarea
                   rows={3}
                   value={incDesc}

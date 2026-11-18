@@ -1509,6 +1509,63 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, config, 200);
     }
 
+    // ============================================================================
+    // 23. CONTRÔLEURS DE SAISIE ET DICTÉE VOCALE INTELLIGENTE (PROMPT 04)
+    // ============================================================================
+
+    // 23A. Référentiel des langues de dictée vocale (FR/EN/AR) & métadonnées
+    if (method === 'GET' && path === '/api/v1/voice/languages') {
+      const data = this.services.getSupportedVoiceLanguagesService();
+      return this.ok(ctx, data, 200);
+    }
+
+    // 23B. Consultation du statut de consentement de l'utilisateur (RGPD/CNDP)
+    if (method === 'GET' && path === '/api/v1/voice/consent') {
+      const user = requireAuthenticatedSession(ctx);
+      const consent = this.services.getVoiceConsentService(user.id);
+      return this.ok(ctx, consent, 200);
+    }
+
+    // 23C. Enregistrement ou mise à jour du consentement de l'utilisateur
+    if (method === 'POST' && path === '/api/v1/voice/consent') {
+      const user = requireAuthenticatedSession(ctx);
+      const { granted } = ctx.body || {};
+      if (typeof granted !== 'boolean') {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'Le champ booléen "granted" est obligatoire.');
+      }
+      const result = this.services.saveVoiceConsentService(user.id, granted, ctx.ipAddress);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 23D. Transcription vocale sécurisée (fallback serveur & ponctuation automatique)
+    if (method === 'POST' && path === '/api/v1/voice/transcribe') {
+      const user = requireAuthenticatedSession(ctx);
+      const {
+        audioBase64,
+        mimeType,
+        language,
+        durationSeconds,
+        consentGranted,
+        autoFormatPunctuation,
+        targetField,
+      } = ctx.body || {};
+
+      const result = this.services.transcribeVoiceAudioService(
+        user.id,
+        {
+          audioBase64,
+          mimeType,
+          language: language || 'fr-FR',
+          durationSeconds: Number(durationSeconds) || 5,
+          consentGranted: Boolean(consentGranted),
+          autoFormatPunctuation: autoFormatPunctuation !== false,
+          targetField,
+        },
+        ctx.ipAddress
+      );
+      return this.ok(ctx, result, 200);
+    }
+
     throw new AppError(404, 'ENDPOINT_NOT_FOUND', `Route API introuvable : ${method} ${path}`);
   }
 }

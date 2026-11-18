@@ -20,6 +20,7 @@ import {
   Inbox,
   Check,
 } from 'lucide-react';
+import { VoiceDictationButton } from '../voice/VoiceDictationButton';
 
 // 1. Button (ui/Button.tsx)
 export const Button: React.FC<
@@ -125,6 +126,7 @@ export const InputVoice: React.FC<{
   onVoiceTrigger?: () => void;
 }> = ({ label, value, onChange, placeholder, onVoiceTrigger }) => {
   const id = useId();
+  const inputRef = useRef<HTMLInputElement | null>(null);
   return (
     <div className="flex flex-col gap-1.5">
       {label && (
@@ -134,22 +136,27 @@ export const InputVoice: React.FC<{
       )}
       <div className="relative flex items-center">
         <input
+          ref={inputRef}
           id={id}
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full rounded-xl border ps-3.5 pe-11 py-2 text-sm bg-white dark:bg-[#0A292C] text-slate-900 dark:text-slate-100 border-slate-300 dark:border-teal-800 focus:border-[#E85D22] focus:outline-none"
+          className="w-full rounded-xl border ps-3.5 pe-12 py-2 text-sm bg-white dark:bg-[#0A292C] text-slate-900 dark:text-slate-100 border-slate-300 dark:border-teal-800 focus:border-[#E85D22] focus:outline-none"
         />
-        <button
-          type="button"
-          onClick={onVoiceTrigger}
-          title="Dictée vocale STT (FR/EN/AR)"
-          aria-label="Activer la dictée vocale"
-          className="absolute inset-inline-end-2 p-1.5 rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-[#E85D22] transition-colors"
-        >
-          <Mic className="w-4 h-4" />
-        </button>
+        <div className="absolute inset-inline-end-2">
+          <VoiceDictationButton
+            targetRef={inputRef}
+            targetInputId={id}
+            onTranscript={(text) => {
+              if (onVoiceTrigger) {
+                onVoiceTrigger();
+              }
+              onChange(value ? `${value} ${text}` : text);
+            }}
+            size="sm"
+          />
+        </div>
       </div>
     </div>
   );
@@ -840,19 +847,22 @@ export const DatePicker: React.FC<{
   <Input label={label} type="date" value={value} onChange={(e) => onChange(e.target.value)} />
 );
 
-// 24. SearchBar (ui/SearchBar.tsx) — Support Debounce natif pour fluidité de frappe et économie de rendus
+// 24. SearchBar (ui/SearchBar.tsx) — Support Debounce natif & Dictée vocale STT intégrée
 export const SearchBar: React.FC<{
   value: string;
   onChange: (val: string) => void;
   placeholder?: string;
   debounceMs?: number;
+  enableVoice?: boolean;
 }> = ({
   value,
   onChange,
   placeholder = 'Rechercher une référence, SKU, commande, dossier KYC...',
   debounceMs,
+  enableVoice = true,
 }) => {
   const [internalVal, setInternalVal] = useState(value);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setInternalVal(value);
@@ -886,22 +896,35 @@ export const SearchBar: React.FC<{
     <div className="relative flex items-center w-full">
       <Search className="w-4 h-4 text-slate-400 absolute inset-inline-start-3.5 pointer-events-none" />
       <input
+        ref={inputRef}
         type="search"
         value={internalVal}
         onChange={handleChange}
         placeholder={placeholder}
-        className="w-full ps-10 pe-9 py-2 text-sm rounded-xl border border-slate-300 dark:border-teal-800 bg-white dark:bg-[#0A292C] text-slate-900 dark:text-slate-100 focus:border-[#E85D22] focus:outline-none"
+        className="w-full ps-10 pe-16 py-2 text-sm rounded-xl border border-slate-300 dark:border-teal-800 bg-white dark:bg-[#0A292C] text-slate-900 dark:text-slate-100 focus:border-[#E85D22] focus:outline-none"
       />
-      {internalVal && (
-        <button
-          type="button"
-          onClick={handleClear}
-          aria-label="Effacer la recherche"
-          className="absolute inset-inline-end-2.5 p-1 text-slate-400 hover:text-slate-600"
-        >
-          <X className="w-4 h-4" />
-        </button>
-      )}
+      <div className="absolute inset-inline-end-2 flex items-center gap-1">
+        {internalVal && (
+          <button
+            type="button"
+            onClick={handleClear}
+            aria-label="Effacer la recherche"
+            className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+        {enableVoice && (
+          <VoiceDictationButton
+            targetRef={inputRef}
+            onTranscript={(text) => {
+              setInternalVal(text);
+              onChange(text);
+            }}
+            size="sm"
+          />
+        )}
+      </div>
     </div>
   );
 };

@@ -46,6 +46,7 @@ import {
   SearchBar,
   Stepper,
 } from '../components/ui/DesignSystem';
+import { VoiceDictationButton } from '../components/voice/VoiceDictationButton';
 import { ProductItem, ThemeMode, IncidentRecord } from '../types';
 
 export const ClientWorkspacePage: React.FC<{
@@ -1126,6 +1127,26 @@ export const ClientWorkspacePage: React.FC<{
                 </Button>
               </div>
             </div>
+
+            {/* COMMENTAIRES & ÉVALUATION CLIENT DE LA COMMANDE */}
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-bold uppercase text-slate-400">
+                  Commentaires, Instructions & Avis sur la Commande :
+                </p>
+                <VoiceDictationButton
+                  onTranscript={(t) => {
+                    notifyToast(`Commentaire dicté : "${t}"`, 'info');
+                  }}
+                  size="sm"
+                />
+              </div>
+              <textarea
+                rows={2}
+                placeholder="Ajouter une instruction de livraison, un commentaire de réception ou une remarque qualité..."
+                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs"
+              />
+            </div>
           </div>
         </Card>
       )}
@@ -1275,6 +1296,26 @@ export const ClientWorkspacePage: React.FC<{
                 ))}
               </div>
             </div>
+
+            {/* COMMENTAIRES & ÉVALUATION CLIENT DE LA COMMANDE */}
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-bold uppercase text-slate-400">
+                  Commentaires, Instructions & Avis sur la Commande :
+                </p>
+                <VoiceDictationButton
+                  onTranscript={(t) => {
+                    notifyToast(`Commentaire dicté : "${t}"`, 'info');
+                  }}
+                  size="sm"
+                />
+              </div>
+              <textarea
+                rows={2}
+                placeholder="Ajouter une instruction de livraison, un commentaire de réception ou une remarque qualité..."
+                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs"
+              />
+            </div>
           </div>
         </Card>
       )}
@@ -1399,7 +1440,13 @@ export const ClientWorkspacePage: React.FC<{
           >
             <div className="grid sm:grid-cols-4 gap-3 items-end">
               <div className="sm:col-span-2">
-                <label className="font-bold text-slate-500 block mb-1">Désignation de l'équipement :</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-bold text-slate-500">Désignation de l'équipement (ou dictée) :</label>
+                  <VoiceDictationButton
+                    onTranscript={(t) => setNewQuoteDesc((prev) => (prev ? `${prev} ${t}` : t))}
+                    size="sm"
+                  />
+                </div>
                 <input
                   type="text"
                   value={newQuoteDesc}

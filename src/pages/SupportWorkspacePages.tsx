@@ -47,6 +47,7 @@ import {
   Input,
   SearchBar,
 } from '../components/ui/DesignSystem';
+import { VoiceDictationButton } from '../components/voice/VoiceDictationButton';
 import { ThemeMode } from '../types';
 import {
   SupportEngine,
@@ -1011,7 +1012,16 @@ export const SupportWorkspacePage: React.FC<{
                 </div>
               </div>
 
-              <div>
+              <div className="relative">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    {isInternalNote ? 'Contenu du Mémo / Note interne :' : 'Message de Réponse :'}
+                  </span>
+                  <VoiceDictationButton
+                    onTranscript={(t) => setReplyContent((prev) => (prev ? `${prev} ${t}` : t))}
+                    size="sm"
+                  />
+                </div>
                 <textarea
                   rows={4}
                   value={replyContent}
@@ -1771,13 +1781,23 @@ export const SupportWorkspacePage: React.FC<{
             </div>
 
             <form onSubmit={handleCreateTicketSubmit} className="space-y-3">
-              <Input
-                label="Objet de la demande / Sujet *"
-                value={newSubject}
-                onChange={(e) => setNewSubject(e.target.value)}
-                placeholder="Ex: Problème d'impression étiquettes thermiques SSCC"
-                required
-              />
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold">Objet de la demande / Sujet *</label>
+                  <VoiceDictationButton
+                    onTranscript={(t) => setNewSubject((prev) => (prev ? `${prev} ${t}` : t))}
+                    size="sm"
+                  />
+                </div>
+                <input
+                  type="text"
+                  value={newSubject}
+                  onChange={(e) => setNewSubject(e.target.value)}
+                  placeholder="Ex: Problème d'impression étiquettes thermiques SSCC"
+                  required
+                  className="w-full rounded-xl border px-3.5 py-2 text-sm bg-white dark:bg-[#0A292C] text-slate-900 dark:text-slate-100 border-slate-300 dark:border-teal-800 focus:border-[#E85D22] focus:outline-none"
+                />
+              </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -1828,7 +1848,13 @@ export const SupportWorkspacePage: React.FC<{
               </div>
 
               <div>
-                <label className="block text-xs font-semibold mb-1">Description détaillée du problème * :</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold">Description détaillée du problème * :</label>
+                  <VoiceDictationButton
+                    onTranscript={(t) => setNewDescription((prev) => (prev ? `${prev} ${t}` : t))}
+                    size="sm"
+                  />
+                </div>
                 <textarea
                   rows={4}
                   value={newDescription}

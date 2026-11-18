@@ -31,6 +31,7 @@ import {
   SupportedLocale,
   TranslationRecord,
   UserLanguagePreferenceRecord,
+  VoiceInteractionRecord,
 } from '../../types';
 import { PaginationAndFilterParams } from '../validators/schema.validator';
 import { StockMovementRecord } from '../../services/commercialEngine';
@@ -70,6 +71,7 @@ export interface DatabaseStateSnapshot {
   kycDecisions?: KYCDecisionHistoryRecord[];
   kycReminders?: KYCReminderLogRecord[];
   copilotThreads?: CopilotConversationThread[];
+  voiceInteractions?: VoiceInteractionRecord[];
 }
 
 export class TradeLinkRepositoryStore {
@@ -81,6 +83,7 @@ export class TradeLinkRepositoryStore {
   private refreshTokensStore: Map<string, RefreshTokenRecord> = new Map();
   private mfaConfigurationsStore: Map<string, MFAConfigurationRecord> = new Map();
   private authSessionsStore: Map<string, AuthSessionDetail> = new Map();
+  private voiceConsentsStore: Map<string, { userId: string; granted: boolean; timestamp: string }> = new Map();
 
   constructor(initialState: DatabaseStateSnapshot, isProdDbConnected = false) {
     this.state = structuredClone({
@@ -115,6 +118,7 @@ export class TradeLinkRepositoryStore {
       kycDecisions: initialState.kycDecisions ?? [],
       kycReminders: initialState.kycReminders ?? [],
       copilotThreads: initialState.copilotThreads ?? [],
+      voiceInteractions: initialState.voiceInteractions ?? [],
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
   }
@@ -413,6 +417,34 @@ export class TradeLinkRepositoryStore {
   public addAuditLog(entry: AuditLogRecord): AuditLogRecord {
     this.state.auditLogs.unshift(structuredClone(entry));
     return structuredClone(entry);
+  }
+
+  // ============================================================================
+  // GESTION DU CONSENTEMENT ET DES INTERACTIONS VOCALES (PROMPT 04)
+  // ============================================================================
+
+  public getVoiceConsent(userId: string): boolean {
+    const entry = this.voiceConsentsStore.get(userId);
+    return entry ? entry.granted : false;
+  }
+
+  public setVoiceConsent(userId: string, granted: boolean): void {
+    this.voiceConsentsStore.set(userId, {
+      userId,
+      granted,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  public recordVoiceInteraction(interaction: VoiceInteractionRecord): VoiceInteractionRecord {
+    this.state.voiceInteractions.unshift(structuredClone(interaction));
+    return structuredClone(interaction);
+  }
+
+  public getVoiceInteractions(userId?: string): VoiceInteractionRecord[] {
+    const all = this.state.voiceInteractions;
+    if (!userId) return all.map((i) => structuredClone(i));
+    return all.filter((i) => i.userId === userId).map((i) => structuredClone(i));
   }
 
   public getSnapshot(): Readonly<Required<DatabaseStateSnapshot>> {

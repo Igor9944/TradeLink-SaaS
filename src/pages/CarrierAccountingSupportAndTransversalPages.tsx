@@ -40,6 +40,7 @@ import {
   VideoOff,
   Wallet,
 } from 'lucide-react';
+import { VoiceDictationButton } from '../components/voice/VoiceDictationButton';
 import { useApp } from '../contexts/AppContext';
 import { downloadDataExport, formatCurrency, translateStatus } from '../i18n/translations';
 import { ActorKycWorkspaceView } from '../components/kyc/KycModuleViews';
@@ -4272,15 +4273,23 @@ export const RoomLiveSessionPage: React.FC = () => {
                 sendRoomChatMessage(chatInput);
                 setChatInput('');
               }}
-              className="flex gap-2 pt-3 border-t border-teal-800 mt-3"
+              className="flex items-center gap-2 pt-3 border-t border-teal-800 mt-3"
             >
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                placeholder="Message aux participants..."
-                className="flex-1 rounded-xl bg-black/40 border border-teal-700 px-3 py-1.5 text-xs text-white focus:outline-none focus:border-[#E85D22]"
-              />
+              <div className="relative flex-1 flex items-center">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Message aux participants..."
+                  className="w-full rounded-xl bg-black/40 border border-teal-700 px-3 pe-9 py-1.5 text-xs text-white focus:outline-none focus:border-[#E85D22]"
+                />
+                <div className="absolute inset-inline-end-1.5">
+                  <VoiceDictationButton
+                    onTranscript={(t) => setChatInput((prev) => (prev ? `${prev} ${t}` : t))}
+                    size="sm"
+                  />
+                </div>
+              </div>
               <Button type="submit" size="sm" variant="primary">
                 <Send className="w-3.5 h-3.5" />
               </Button>
