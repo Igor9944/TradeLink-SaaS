@@ -48,6 +48,11 @@ import {
 } from '../../services/adminAdvancedEngine';
 import {
   AuthSessionDetail,
+  CopilotAssistedAction,
+  CopilotAttachment,
+  CopilotContextState,
+  CopilotConversationThread,
+  CopilotMessage,
   DayCountBasis,
   IncidentRecord,
   InvoiceRecord,
@@ -59,6 +64,7 @@ import {
   OrderRecord,
   ProductItem,
   QuoteRecord,
+  RagSourceCitation,
   RoomLiveRecord,
   ShipmentRecord,
   ShipmentStatus,
@@ -98,6 +104,15 @@ import {
   CHARTS_OF_ACCOUNTS,
   STANDARD_JOURNALS,
 } from '../../services/accountingEngine';
+import {
+  generateCopilotAnswer,
+  processAndSummarizeAttachment,
+  getCopilotCacheMetrics,
+} from '../../services/copilotEngine';
+import {
+  checkAndConsumeAiTokens,
+  SUPPORTED_AI_MODELS,
+} from '../../services/aiIntelligenceEngine';
 
 export interface RegisteredAccountRecord {
   userId: string;
@@ -3774,5 +3789,278 @@ export class TradeLinkDomainServices {
   ) {
     return CentralTranslationService.translateCommercialDocumentSync(doc, targetLang);
   }
+
+  // ============================================================================
+  // ASSISTANT IA FLOTTANT — AI COPILOT SERVICES (PROMPT 03)
+  // ============================================================================
+
+  public processCopilotChatTransactional(params: {
+    message: string;
+    threadId?: string;
+    modelId?: string;
+    context?: CopilotContextState;
+    attachments?: CopilotAttachment[];
+    actor: { id: string; email: string; role: UserRoleCode; companyName?: string };
+    correlationId: string;
+    ipAddress: string;
+  }): {
+    thread: CopilotConversationThread;
+    assistantMessage: CopilotMessage;
+    sources: RagSourceCitation[];
+    assistedAction?: CopilotAssistedAction;
+    quotaRemainingPct: number;
+  } {
+    const model =
+      SUPPORTED_AI_MODELS.find((m) => m.id === params.modelId) || SUPPORTED_AI_MODELS[0];
+    const estimatedTokens = Math.ceil(params.message.length / 4) + 150;
+
+    // 1. Contrôle des quotas et du débit (rate limit)
+    const quotaCheck = checkAndConsumeAiTokens(params.actor.id, model, estimatedTokens);
+    if (!quotaCheck.allowed) {
+      throw new AppError(429, 'AI_QUOTA_EXCEEDED', quotaCheck.reason || 'Quota IA dépassé.');
+    }
+
+    // 2. Récupération ou création du thread de conversation
+    let thread = params.threadId ? this.repo.getCopilotThread(params.threadId) : null;
+    if (thread && thread.userId !== params.actor.id && params.actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_IDOR_THREAD_ACCESS', 'Accès interdit à ce fil de discussion.');
+    }
+
+    const nowIso = new Date().toISOString();
+    const timeFormatted = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    if (!thread) {
+      const threadId = params.threadId || `th-copilot-${Date.now()}`;
+      thread = {
+        id: threadId,
+        title: params.message.slice(0, 45) || 'Nouvelle conversation Copilot',
+        userId: params.actor.id,
+        userRole: params.actor.role,
+        currentPath: params.context?.currentPath || '/',
+        modelId: model.id,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        messages: [],
+        totalTokensConsumed: 0,
+      };
+    }
+
+    // 3. Synthèse des éventuelles pièces jointes fournies
+    const attachmentSummaries: string[] = [];
+    if (params.attachments && params.attachments.length > 0) {
+      for (const att of params.attachments) {
+        const attRes = processAndSummarizeAttachment({
+          name: att.name,
+          size: att.size,
+          mimeType: att.mimeType,
+        });
+        if (attRes.ok && attRes.summary) {
+          attachmentSummaries.push(attRes.summary);
+          att.summary = attRes.summary;
+        }
+      }
+    }
+
+    // 4. Message utilisateur
+    const userMessage: CopilotMessage = {
+      id: `msg-usr-${Date.now()}`,
+      threadId: thread.id,
+      sender: 'USER',
+      text: params.message,
+      timestamp: timeFormatted,
+      attachments: params.attachments,
+    };
+    thread.messages.push(userMessage);
+
+    // 5. Génération de la réponse via le moteur Copilot avec RAG et détection d'actions
+    const genResult = generateCopilotAnswer({
+      query: params.message,
+      userRole: params.actor.role,
+      companyName: params.actor.companyName,
+      currentPath: params.context?.currentPath || thread.currentPath || '/',
+      locale: params.context?.locale || 'fr',
+      modelId: model.id,
+      conversationHistory: thread.messages,
+      attachmentSummaries,
+    });
+
+    // 6. Message assistant
+    const assistantMessage: CopilotMessage = {
+      id: `msg-ast-${Date.now()}`,
+      threadId: thread.id,
+      sender: 'ASSISTANT',
+      text: genResult.text,
+      timestamp: timeFormatted,
+      ragSources: genResult.sources,
+      tokensUsed: genResult.tokensUsed,
+      modelUsed: genResult.modelUsed,
+      isFiltered: genResult.isRestricted,
+      assistedAction: genResult.assistedAction,
+    };
+    thread.messages.push(assistantMessage);
+    thread.totalTokensConsumed += genResult.tokensUsed;
+    thread.updatedAt = nowIso;
+
+    // 7. Persistance
+    this.repo.saveCopilotThread(thread);
+
+    // 8. Audit log immuable
+    this.repo.addAuditLog({
+      id: `aud-copilot-${Date.now()}`,
+      action: 'COPILOT_CHAT_QUERY',
+      targetType: 'CopilotEngine',
+      targetId: thread.id,
+      actorName: params.actor.email,
+      actorRole: params.actor.role,
+      timestamp: nowIso,
+      ipAddress: params.ipAddress,
+      correlationId: params.correlationId,
+      result: genResult.isRestricted ? 'WARNING' : 'SUCCESS',
+      details: `Requête Copilot par ${params.actor.email} (${params.actor.role}) sur ${thread.currentPath}. Modèle: ${model.id}. Sources RAG: ${genResult.sources.length}.`,
+    });
+
+    return {
+      thread,
+      assistantMessage,
+      sources: genResult.sources,
+      assistedAction: genResult.assistedAction,
+      quotaRemainingPct: quotaCheck.remainingQuotaPct,
+    };
+  }
+
+  public listCopilotConversations(actor: { id: string; role: UserRoleCode }): CopilotConversationThread[] {
+    return this.repo.listCopilotThreads(actor.id);
+  }
+
+  public getCopilotConversation(threadId: string, actor: { id: string; role: UserRoleCode }): CopilotConversationThread {
+    const thread = this.repo.getCopilotThread(threadId);
+    if (!thread) {
+      throw new AppError(404, 'THREAD_NOT_FOUND', `Fil de discussion introuvable : ${threadId}`);
+    }
+    if (thread.userId !== actor.id && actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_IDOR_THREAD_ACCESS', 'Accès interdit à ce fil de discussion.');
+    }
+    return thread;
+  }
+
+  public deleteCopilotConversation(threadId: string, actor: { id: string; role: UserRoleCode }): { deleted: boolean; threadId: string } {
+    const thread = this.repo.getCopilotThread(threadId);
+    if (!thread) {
+      throw new AppError(404, 'THREAD_NOT_FOUND', `Fil de discussion introuvable : ${threadId}`);
+    }
+    if (thread.userId !== actor.id && actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_IDOR_THREAD_ACCESS', 'Accès interdit à ce fil de discussion.');
+    }
+    this.repo.deleteCopilotThread(threadId, actor.id, actor.role === 'ADMIN');
+    return { deleted: true, threadId };
+  }
+
+  public executeCopilotAssistedAction(params: {
+    actionId: string;
+    actionType: string;
+    payload: Record<string, any>;
+    confirmed: boolean;
+    isCritical?: boolean;
+    actor: { id: string; email: string; role: UserRoleCode };
+    correlationId: string;
+    ipAddress: string;
+  }): { executed: boolean; message: string; actionId: string; targetPath?: string } {
+    // GARDE-FOU ABSOLU DE SÉCURITÉ : Interdiction formelle des opérations sensibles pour l'IA
+    if (
+      params.isCritical ||
+      params.actionType === 'BLOCKED_SENSITIVE_ACTION' ||
+      JSON.stringify(params.payload).toLowerCase().includes('paiement') ||
+      JSON.stringify(params.payload).toLowerCase().includes('supprimer') ||
+      JSON.stringify(params.payload).toLowerCase().includes('validate_kyc_bypass')
+    ) {
+      throw new AppError(
+        403,
+        'CRITICAL_ACTION_PROHIBITED_FOR_AI',
+        'Garde-fou de sécurité : L’Assistant IA ne peut en aucun cas valider de paiements, supprimer de données ou court-circuiter les validations administratives.'
+      );
+    }
+
+    if (!params.confirmed) {
+      throw new AppError(400, 'ACTION_CONFIRMATION_REQUIRED', 'La confirmation explicite de l’utilisateur est requise avant exécution.');
+    }
+
+    // Traitement selon le type d'action assistée autorisée
+    let executionMessage = 'Action assistée exécutée avec succès.';
+    let targetPath: string | undefined;
+
+    switch (params.actionType) {
+      case 'PREFILL_PRODUCT':
+        executionMessage = `Fiche produit préparée avec succès pour le SKU ${params.payload.sku || 'Nouveau'}.`;
+        targetPath = '/fournisseur/catalogue/nouveau';
+        break;
+      case 'PREPARE_QUOTE_RESPONSE':
+        executionMessage = `Offre de devis préparée avec remise de ${params.payload.proposedDiscountPct || 0}%.`;
+        targetPath = '/fournisseur/devis';
+        break;
+      case 'SUMMARIZE_ORDER':
+        executionMessage = `Synthèse de commande ${params.payload.orderNumber || ''} prête.`;
+        targetPath = '/client/commandes';
+        break;
+      case 'NAVIGATE':
+        executionMessage = `Navigation autorisée vers ${params.payload.path || '/'}.`;
+        targetPath = params.payload.path;
+        break;
+      case 'CALCULATE_FINANCE':
+        executionMessage = `Calcul financier certifié : ${params.payload.calculatedInterestEur || '0.00'} EUR d'intérêts.`;
+        targetPath = '/comptable/calcul';
+        break;
+      default:
+        executionMessage = `Action assistée ${params.actionType} prise en compte.`;
+    }
+
+    this.repo.addAuditLog({
+      id: `aud-act-${Date.now()}`,
+      action: 'COPILOT_ACTION_EXECUTED',
+      targetType: 'CopilotAssistedAction',
+      targetId: params.actionId,
+      actorName: params.actor.email,
+      actorRole: params.actor.role,
+      timestamp: new Date().toISOString(),
+      ipAddress: params.ipAddress,
+      correlationId: params.correlationId,
+      result: 'SUCCESS',
+      details: `Action ${params.actionType} confirmée et exécutée par ${params.actor.email} (${params.actor.role}).`,
+    });
+
+    return {
+      executed: true,
+      message: executionMessage,
+      actionId: params.actionId,
+      targetPath,
+    };
+  }
+
+  public summarizeCopilotAttachment(attachment: {
+    name: string;
+    size: number;
+    mimeType: string;
+  }): { ok: boolean; summary: string } {
+    const result = processAndSummarizeAttachment(attachment);
+    if (!result.ok || !result.summary) {
+      throw new AppError(400, 'INVALID_ATTACHMENT_FOR_SUMMARY', result.error || 'Erreur lors du traitement du fichier.');
+    }
+    return { ok: true, summary: result.summary };
+  }
+
+  public getCopilotConfig(): {
+    models: typeof SUPPORTED_AI_MODELS;
+    cacheMetrics: { hits: number; misses: number; hitRatePct: number };
+    maxAttachmentSizeBytes: number;
+    supportedFormats: string[];
+  } {
+    // Clés API JAMAIS exposées au client !
+    return {
+      models: SUPPORTED_AI_MODELS,
+      cacheMetrics: getCopilotCacheMetrics(),
+      maxAttachmentSizeBytes: 10 * 1024 * 1024,
+      supportedFormats: ['PDF', 'JPG', 'PNG', 'WEBP', 'TXT', 'CSV', 'XLSX'],
+    };
+  }
 }
+
 

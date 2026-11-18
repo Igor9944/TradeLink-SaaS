@@ -13,6 +13,7 @@ import { AppProvider } from './contexts/AppContext';
 import { AppLayout } from './components/layout/AppLayout';
 import { RoleGuard } from './components/security/RouteGuards';
 import { PageSkeletonLoader } from './components/ui/DesignSystem';
+import { AiCopilotWidget } from './components/copilot/AiCopilotWidget';
 
 // Code-splitting asynchrone par domaine pour accélérer le chargement initial < 2s
 const LandingPage = lazy(() =>
@@ -210,6 +211,8 @@ export const App: React.FC = () => {
             />
           </Routes>
         </Suspense>
+        {/* ASSISTANT IA FLOTTANT UNIVERSEL TRADELINK COPILOT (PROMPT 03) */}
+        <AiCopilotWidget />
       </BrowserRouter>
     </AppProvider>
   );

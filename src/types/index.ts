@@ -2,6 +2,8 @@
 // TRADELINK V6.0 — TYPESCRIPT DOMAIN & ARCHITECTURE TYPES
 // ============================================================================
 
+import type { RagSourceCitation } from '../services/aiIntelligenceEngine';
+
 export type Locale = 'fr' | 'en' | 'ar';
 export type ThemeMode = 'system' | 'light' | 'dark';
 
@@ -738,6 +740,94 @@ export interface SmartRedirectInfo {
   accountStatus: 'ACTIVE' | 'SUSPENDED' | 'PENDING_MFA' | 'PENDING_KYC';
   reason?: string;
   kycDaysRemaining?: number;
+}
+
+// ============================================================================
+// PROMPT 03 — ASSISTANT IA FLOTTANT (AI COPILOT) TYPES DÉDIÉS
+// ============================================================================
+
+export type CopilotAssistedActionType =
+  | 'NAVIGATE'
+  | 'PREFILL_FORM'
+  | 'PREPARE_QUOTE_RESPONSE'
+  | 'SUMMARIZE_ORDER'
+  | 'PREFILL_PRODUCT'
+  | 'CREATE_SUPPORT_TICKET'
+  | 'CALCULATE_FINANCE'
+  | 'BLOCKED_SENSITIVE_ACTION';
+
+export interface CopilotAssistedAction {
+  id: string;
+  type: CopilotAssistedActionType;
+  title: string;
+  description: string;
+  targetPath?: string;
+  payload: Record<string, any>;
+  requiresConfirmation: boolean;
+  isCritical: boolean; // Si true (paiement, suppression, validation admin), strictement bloqué !
+  status: 'PENDING' | 'CONFIRMED' | 'REJECTED' | 'EXECUTED' | 'BLOCKED_BY_GUARDRAIL';
+}
+
+export interface CopilotAttachment {
+  id: string;
+  name: string;
+  size: number;
+  mimeType: string;
+  url?: string;
+  summary?: string;
+}
+
+export interface CopilotMessage {
+  id: string;
+  threadId: string;
+  sender: 'USER' | 'ASSISTANT' | 'SYSTEM';
+  text: string;
+  timestamp: string;
+  ragSources?: RagSourceCitation[];
+  tokensUsed?: number;
+  modelUsed?: string;
+  isFiltered?: boolean;
+  attachments?: CopilotAttachment[];
+  assistedAction?: CopilotAssistedAction;
+}
+
+export interface CopilotConversationThread {
+  id: string;
+  title: string;
+  userId: string;
+  userRole: UserRoleCode;
+  currentPath?: string;
+  modelId: string;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt?: string | null;
+  messages: CopilotMessage[];
+  totalTokensConsumed: number;
+  isPinned?: boolean;
+}
+
+export interface CopilotContextState {
+  currentPath: string;
+  activeRole: UserRoleCode;
+  locale: Locale;
+  pageTitle?: string;
+  companyName?: string;
+  entityContext?: { type: string; id: string; data?: any };
+}
+
+export interface CopilotChatRequestPayload {
+  message: string;
+  threadId?: string;
+  modelId?: string;
+  context?: CopilotContextState;
+  attachments?: CopilotAttachment[];
+}
+
+export interface CopilotExecuteActionPayload {
+  actionId: string;
+  threadId: string;
+  confirmed: boolean;
+  actionPayload: Record<string, any>;
 }
 
 

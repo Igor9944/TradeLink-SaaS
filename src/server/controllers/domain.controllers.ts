@@ -1416,6 +1416,99 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, pref, 200);
     }
 
+    // ============================================================================
+    // 22. ASSISTANT IA FLOTTANT — AI COPILOT API (PROMPT 03)
+    // ============================================================================
+
+    // 22A. Envoi d'une requête au Copilot & Génération contextuelle
+    if (method === 'POST' && path === '/api/v1/copilot/chat') {
+      requireAuthenticatedSession(ctx);
+      const { message, threadId, modelId, context, attachments } = ctx.body || {};
+      if (!message || typeof message !== 'string' || !message.trim()) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'Le message de la requête est obligatoire.');
+      }
+      const result = this.services.processCopilotChatTransactional({
+        message: message.trim(),
+        threadId,
+        modelId,
+        context,
+        attachments,
+        actor: {
+          id: ctx.user!.id,
+          email: ctx.user!.email,
+          role: ctx.user!.role,
+          companyName: (ctx.user as any).companyName,
+        },
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 22B. Liste des conversations de l'utilisateur actif
+    if (method === 'GET' && path === '/api/v1/copilot/conversations') {
+      requireAuthenticatedSession(ctx);
+      const list = this.services.listCopilotConversations(ctx.user!);
+      return this.ok(ctx, { conversations: list, count: list.length }, 200);
+    }
+
+    // 22C. Récupération d'une conversation par ID
+    if (method === 'GET' && path.startsWith('/api/v1/copilot/conversations/')) {
+      requireAuthenticatedSession(ctx);
+      const threadId = path.replace('/api/v1/copilot/conversations/', '');
+      const thread = this.services.getCopilotConversation(threadId, ctx.user!);
+      return this.ok(ctx, thread, 200);
+    }
+
+    // 22D. Suppression d'une conversation (Anti-IDOR)
+    if (method === 'DELETE' && path.startsWith('/api/v1/copilot/conversations/')) {
+      requireAuthenticatedSession(ctx);
+      const threadId = path.replace('/api/v1/copilot/conversations/', '');
+      const result = this.services.deleteCopilotConversation(threadId, ctx.user!);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 22E. Exécution sécurisée d'une action assistée
+    if (method === 'POST' && path === '/api/v1/copilot/action/execute') {
+      requireAuthenticatedSession(ctx);
+      const { actionId, actionType, payload, confirmed, isCritical } = ctx.body || {};
+      if (!actionId || !actionType) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'actionId et actionType requis.');
+      }
+      const result = this.services.executeCopilotAssistedAction({
+        actionId,
+        actionType,
+        payload: payload || {},
+        confirmed: Boolean(confirmed),
+        isCritical: Boolean(isCritical),
+        actor: ctx.user!,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 22F. Synthèse d'une pièce jointe
+    if (method === 'POST' && path === '/api/v1/copilot/summarize-document') {
+      requireAuthenticatedSession(ctx);
+      const { name, size, mimeType } = ctx.body || {};
+      if (!name || size === undefined) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'name et size requis pour analyser la pièce jointe.');
+      }
+      const result = this.services.summarizeCopilotAttachment({
+        name,
+        size: Number(size),
+        mimeType: mimeType || 'application/octet-stream',
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 22G. Configuration publique du Copilot (sans clés privées)
+    if (method === 'GET' && path === '/api/v1/copilot/config') {
+      const config = this.services.getCopilotConfig();
+      return this.ok(ctx, config, 200);
+    }
+
     throw new AppError(404, 'ENDPOINT_NOT_FOUND', `Route API introuvable : ${method} ${path}`);
   }
 }

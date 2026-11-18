@@ -12,6 +12,7 @@ import {
   AuthSessionDetail,
   BackupRecord,
   CalculationResultRecord,
+  CopilotConversationThread,
   IncidentRecord,
   InvoiceRecord,
   KYCDossier,
@@ -68,6 +69,7 @@ export interface DatabaseStateSnapshot {
   kycJurisdictions?: KYCJurisdictionConfigRecord[];
   kycDecisions?: KYCDecisionHistoryRecord[];
   kycReminders?: KYCReminderLogRecord[];
+  copilotThreads?: CopilotConversationThread[];
 }
 
 export class TradeLinkRepositoryStore {
@@ -112,6 +114,7 @@ export class TradeLinkRepositoryStore {
             })),
       kycDecisions: initialState.kycDecisions ?? [],
       kycReminders: initialState.kycReminders ?? [],
+      copilotThreads: initialState.copilotThreads ?? [],
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
   }
@@ -367,6 +370,49 @@ export class TradeLinkRepositoryStore {
       }
     }
     return count;
+  }
+
+  // ============================================================================
+  // COPILOT THREADS & MESSAGES PERSISTENCE (PROMPT 03)
+  // ============================================================================
+
+  public listCopilotThreads(userId: string): CopilotConversationThread[] {
+    return this.state.copilotThreads
+      .filter((t) => t.userId === userId && !t.deletedAt)
+      .map((t) => structuredClone(t));
+  }
+
+  public getCopilotThread(threadId: string): CopilotConversationThread | null {
+    const thread = this.state.copilotThreads.find((t) => t.id === threadId && !t.deletedAt);
+    return thread ? structuredClone(thread) : null;
+  }
+
+  public saveCopilotThread(thread: CopilotConversationThread): CopilotConversationThread {
+    const idx = this.state.copilotThreads.findIndex((t) => t.id === thread.id);
+    if (idx >= 0) {
+      this.state.copilotThreads[idx] = structuredClone(thread);
+    } else {
+      this.state.copilotThreads.unshift(structuredClone(thread));
+    }
+    return structuredClone(thread);
+  }
+
+  public deleteCopilotThread(threadId: string, actorId: string, isAdmin = false): boolean {
+    const thread = this.state.copilotThreads.find((t) => t.id === threadId);
+    if (!thread) return false;
+    // Anti-IDOR : propriétaire ou Admin uniquement
+    if (thread.userId !== actorId && !isAdmin) {
+      const err = new Error('FORBIDDEN_IDOR_THREAD_OWNERSHIP');
+      (err as any).statusCode = 403;
+      throw err;
+    }
+    thread.deletedAt = new Date().toISOString();
+    return true;
+  }
+
+  public addAuditLog(entry: AuditLogRecord): AuditLogRecord {
+    this.state.auditLogs.unshift(structuredClone(entry));
+    return structuredClone(entry);
   }
 
   public getSnapshot(): Readonly<Required<DatabaseStateSnapshot>> {

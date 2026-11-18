@@ -671,10 +671,10 @@ export const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children })
         </div>
       </div>
 
-      {/* BOUTONS FLOTTANTS CONFIGURABLES (Composant 29 : FloatingButtons) */}
-      <div className="fixed bottom-5 inset-inline-end-5 z-40 flex flex-col gap-2.5">
+      {/* BOUTONS FLOTTANTS COMPLÉMENTAIRES (WhatsApp, Dictée Vocale) */}
+      <div className="fixed bottom-24 inset-inline-end-6 z-40 flex flex-col gap-2">
         {floatingButtons
-          .filter((fb) => fb.isEnabled)
+          .filter((fb) => fb.isEnabled && fb.code !== 'AI_ASSISTANT')
           .sort((a, b) => a.displayOrder - b.displayOrder)
           .map((fb) => (
             <button

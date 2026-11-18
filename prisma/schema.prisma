@@ -775,14 +775,18 @@ model VoiceInteraction {
 
 // 32. AIConversation — Conversations Assistant IA (RAG filtré par rôle/ownership)
 model AIConversation {
-  id        String      @id @default(uuid())
-  userId    String
-  userRole  String
-  title     String
-  provider  String      @default("OPENAI") // OPENAI | OLLAMA
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
-  deletedAt DateTime?
+  id                  String      @id @default(uuid())
+  userId              String
+  userRole            String
+  title               String
+  provider            String      @default("OPENAI") // OPENAI | GOOGLE_GEMINI | ANTHROPIC | OLLAMA
+  modelId             String      @default("gemini-1.5-pro")
+  currentPath         String?
+  totalTokensConsumed Int         @default(0)
+  isPinned            Boolean     @default(false)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  deletedAt           DateTime?
 
   user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages AIMessage[]
@@ -794,9 +798,13 @@ model AIConversation {
 model AIMessage {
   id             String         @id @default(uuid())
   conversationId String
-  sender         String         // USER | ASSISTANT
+  sender         String         // USER | ASSISTANT | SYSTEM
   content        String
   sourcesRefs    String[]       // Références RAG autorisées uniquement
+  tokensUsed     Int?
+  modelUsed      String?
+  assistedAction Json?
+  attachments    Json?
   createdAt      DateTime       @default(now())
 
   conversation AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
