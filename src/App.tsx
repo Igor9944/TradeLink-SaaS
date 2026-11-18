@@ -33,9 +33,7 @@ const SupplierWorkspacePage = lazy(() =>
   import('./pages/SupplierWorkspacePages').then((m) => ({ default: m.SupplierWorkspacePage }))
 );
 const CarrierWorkspacePage = lazy(() =>
-  import('./pages/CarrierAccountingSupportAndTransversalPages').then((m) => ({
-    default: m.CarrierWorkspacePage,
-  }))
+  import('./pages/CarrierWorkspacePages').then((m) => ({ default: m.CarrierWorkspacePage }))
 );
 const AccountingWorkspacePage = lazy(() =>
   import('./pages/CarrierAccountingSupportAndTransversalPages').then((m) => ({
@@ -159,6 +157,8 @@ export const App: React.FC = () => {
                       <Route path="/transporteur/expeditions" element={<RoleGuard allowedRoles={['TRANSPORTEUR', 'ADMIN']} workspaceLabel="Espace Transporteur"><CarrierWorkspacePage section="expeditions" /></RoleGuard>} />
                       <Route path="/transporteur/documents" element={<RoleGuard allowedRoles={['TRANSPORTEUR', 'ADMIN']} workspaceLabel="Espace Transporteur"><CarrierWorkspacePage section="documents" /></RoleGuard>} />
                       <Route path="/transporteur/incidents" element={<RoleGuard allowedRoles={['TRANSPORTEUR', 'ADMIN']} workspaceLabel="Espace Transporteur"><CarrierWorkspacePage section="incidents" /></RoleGuard>} />
+                      <Route path="/transporteur/communication" element={<RoleGuard allowedRoles={['TRANSPORTEUR', 'ADMIN']} workspaceLabel="Espace Transporteur"><CarrierWorkspacePage section="communication" /></RoleGuard>} />
+                      <Route path="/transporteur/ia" element={<RoleGuard allowedRoles={['TRANSPORTEUR', 'ADMIN']} workspaceLabel="Espace Transporteur"><CarrierWorkspacePage section="assistant-ia" /></RoleGuard>} />
                       <Route path="/transporteur/room-live" element={<RoleGuard allowedRoles={['TRANSPORTEUR', 'ADMIN']} workspaceLabel="Espace Transporteur"><CarrierWorkspacePage section="room-live" /></RoleGuard>} />
                       <Route path="/transporteur/parametres" element={<RoleGuard allowedRoles={['TRANSPORTEUR', 'ADMIN']} workspaceLabel="Espace Transporteur"><CarrierWorkspacePage section="parametres" /></RoleGuard>} />
 
