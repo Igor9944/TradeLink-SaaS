@@ -1321,6 +1321,22 @@ interface AppContextValue {
   ) => void;
   triggerKycScheduledCron: (simulatedDayOverride?: number) => KycCronExecutionReport;
   recordKycDocumentPreview: (dossierId: string, docId: string, fileName: string) => void;
+  updateKycProfile: (
+    dossierId: string,
+    profile: {
+      companyLegalType?: string;
+      registrationNumber?: string;
+      representativeName?: string;
+      representativeIdNumber?: string;
+      representativeNationality?: string;
+      businessAddress?: string;
+      city?: string;
+      postalCode?: string;
+      phoneNumber?: string;
+      legalCapital?: number;
+      incorporationDate?: string;
+    }
+  ) => void;
   calcHistory: CalculationResultRecord[];
   runFinancialCalculation: (
     principalStr: string,
@@ -2541,6 +2557,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
+  const updateKycProfile = (
+    dossierId: string,
+    profile: {
+      companyLegalType?: string;
+      registrationNumber?: string;
+      representativeName?: string;
+      representativeIdNumber?: string;
+      representativeNationality?: string;
+      businessAddress?: string;
+      city?: string;
+      postalCode?: string;
+      phoneNumber?: string;
+      legalCapital?: number;
+      incorporationDate?: string;
+    }
+  ) => {
+    const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    const authorName = `${currentUser.firstName} ${currentUser.lastName} (${currentUser.role})`;
+    setKycDossiers((prev) =>
+      prev.map((d) => {
+        if (d.id !== dossierId) return d;
+        return {
+          ...d,
+          ...profile,
+          history: [
+            {
+              id: `khist-${Date.now()}`,
+              timestamp: nowStr,
+              actorName: authorName,
+              actorRole: currentUser.role,
+              action: 'PROFILE_INFO_UPDATED',
+              summary: `Mise à jour des informations juridiques et du représentant (${profile.representativeName ?? d.companyName}).`,
+            },
+            ...(d.history ?? []),
+          ],
+        };
+      })
+    );
+    addAuditLog('KYC_PROFILE_UPDATED', 'KYC', dossierId, 'SUCCESS', 'Informations légales et représentant mises à jour.');
+    notifyToast('Informations juridiques et du représentant enregistrées avec succès.', 'success');
+  };
+
   const runFinancialCalculation = (
     principalStr: string,
     annualRatePctStr: string,
@@ -3319,6 +3377,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addAdminKycComment,
         triggerKycScheduledCron,
         recordKycDocumentPreview,
+        updateKycProfile,
         calcHistory,
         runFinancialCalculation,
         rooms,

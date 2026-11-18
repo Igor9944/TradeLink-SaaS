@@ -31,6 +31,7 @@ import {
   checkMandatoryKycCompletion,
   encryptAndStoreKycDocument,
   executeKycCronBatch,
+  generateKycPresignedDocumentUrl,
   KYC_REQUIRED_DOCUMENTS_BY_PROFILE,
   KycActorProfile,
 } from '../../services/kycEngine';
@@ -51,6 +52,9 @@ import {
   IncidentRecord,
   InvoiceRecord,
   KMSKeyRecord,
+  KYCDecisionHistoryRecord,
+  KYCJurisdictionConfigRecord,
+  KYCPresignedUrlResponse,
   LoginAttemptRecord,
   OrderRecord,
   ProductItem,
@@ -1714,7 +1718,7 @@ export class TradeLinkDomainServices {
         },
       ];
 
-      const completion = checkMandatoryKycCompletion(dos.actorType, dos.documents);
+      const completion = checkMandatoryKycCompletion(dos.actorType, dos.documents, dos.jurisdiction);
       const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
       if (completion.allMandatoryUploaded && dos.daysElapsed < 7 && dos.status !== 'VALIDATED') {
@@ -1937,6 +1941,25 @@ export class TradeLinkDomainServices {
         ...(dos.history ?? []),
       ];
 
+      // Enregistrement de la décision administrative dans l'audit trail immuable
+      const decisionRec: KYCDecisionHistoryRecord = {
+        id: `dec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        kycId: dos.id,
+        adminUserId: params.actor.id,
+        adminEmail: params.actor.email,
+        action:
+          params.decision === 'VALIDATED'
+            ? 'VALIDATE'
+            : params.decision === 'REJECTED'
+            ? 'REJECT'
+            : params.decision === 'COMPLEMENT_REQUESTED'
+            ? 'REQUEST_COMPLEMENT'
+            : 'REACTIVATE',
+        reason: params.reason,
+        createdAt: nowIso,
+      };
+      tx.kycDecisions = [decisionRec, ...(tx.kycDecisions ?? [])];
+
       const ruleEvaluation = evaluateKYCDossierRule(dos);
 
       tx.auditLogs.unshift({
@@ -1962,7 +1985,7 @@ export class TradeLinkDomainServices {
           : `Dossier KYC ${params.decision}.`,
       });
 
-      return { dossier: dos, ruleEvaluation };
+      return { dossier: dos, ruleEvaluation, decision: decisionRec };
     });
   }
 
@@ -1975,6 +1998,30 @@ export class TradeLinkDomainServices {
   }) {
     return this.repo.executeTransaction((tx) => {
       const report = executeKycCronBatch(tx.kycDossiers, params.simulatedDayOverride);
+
+      // Journalisation des rappels et suspensions automatiques
+      for (const r of report.remindersTriggered) {
+        tx.kycReminders?.push({
+          id: `rem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          kycId: r.dossierId,
+          userId: tx.kycDossiers.find((d) => d.id === r.dossierId)?.userId ?? '',
+          milestone: r.milestone,
+          channel: 'EMAIL',
+          status: 'SENT',
+          sentAt: report.executedAt,
+        });
+      }
+      for (const s of report.suspendedAtJ7) {
+        tx.kycReminders?.push({
+          id: `rem-j7-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          kycId: s.dossierId,
+          userId: tx.kycDossiers.find((d) => d.id === s.dossierId)?.userId ?? '',
+          milestone: 'J+7',
+          channel: 'EMAIL',
+          status: 'SENT',
+          sentAt: report.executedAt,
+        });
+      }
 
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
@@ -1992,6 +2039,336 @@ export class TradeLinkDomainServices {
 
       return report;
     });
+  }
+
+  // 3G. KYCService — Référentiel des juridictions configurables (MA, FR, DE, ES, AE, INTL)
+  public listKycJurisdictions(): KYCJurisdictionConfigRecord[] {
+    return this.repo.getSnapshot().kycJurisdictions ?? [];
+  }
+
+  public updateKycJurisdiction(params: {
+    countryCode: string;
+    patch: Partial<KYCJurisdictionConfigRecord>;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    if (params.actor.role !== 'ADMIN') {
+      throw new AppError(
+        403,
+        'FORBIDDEN_ADMIN_ONLY',
+        'Seul un Administrateur peut modifier la configuration juridictionnelle KYC.'
+      );
+    }
+    return this.repo.executeTransaction((tx) => {
+      const code = params.countryCode.toUpperCase();
+      let jur = (tx.kycJurisdictions ?? []).find((j) => j.countryCode.toUpperCase() === code);
+      if (!jur) {
+        throw new AppError(404, 'KYC_JURISDICTION_NOT_FOUND', `Juridiction ${code} introuvable.`);
+      }
+      Object.assign(jur, params.patch, { updatedAt: new Date().toISOString() });
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'KYC_JURISDICTION_CONFIG_UPDATED',
+        targetType: 'KYCJurisdictionConfig',
+        targetId: code,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Mise à jour des exigences documentaires KYC pour le pays ${code}.`,
+      });
+      return jur;
+    });
+  }
+
+  // 3H. KYCService — Mise à jour des informations d'entreprise et du représentant légal
+  public updateKycCompanyProfile(params: {
+    dossierId: string;
+    profile: {
+      companyLegalType?: string;
+      registrationNumber?: string;
+      representativeName?: string;
+      representativeIdNumber?: string;
+      representativeNationality?: string;
+      businessAddress?: string;
+      city?: string;
+      postalCode?: string;
+      phoneNumber?: string;
+      legalCapital?: number;
+      incorporationDate?: string;
+    };
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    return this.repo.executeTransaction((tx) => {
+      const dos = tx.kycDossiers.find((d) => d.id === params.dossierId);
+      if (!dos) {
+        throw new AppError(404, 'KYC_DOSSIER_NOT_FOUND', 'Dossier KYC introuvable.');
+      }
+      if (params.actor.role !== 'ADMIN' && dos.userId !== params.actor.id) {
+        throw new AppError(
+          403,
+          'RESOURCE_OWNERSHIP_VIOLATION',
+          'Interdit (Protection IDOR) : vous ne pouvez modifier que votre propre dossier KYC.'
+        );
+      }
+      Object.assign(dos, params.profile);
+      const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      dos.history = [
+        {
+          id: `khist-${Date.now()}`,
+          timestamp: nowIso,
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'PROFILE_INFO_UPDATED',
+          summary: `Mise à jour des informations d'entreprise et du représentant légal (${dos.representativeName ?? dos.companyName}).`,
+        },
+        ...(dos.history ?? []),
+      ];
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: nowIso,
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'KYC_PROFILE_UPDATED',
+        targetType: 'KYC',
+        targetId: dos.id,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Informations légales et représentant mises à jour pour ${dos.companyName}.`,
+      });
+      return dos;
+    });
+  }
+
+  // 3I. KYCService — Génération d'URL présignée temporaire (15 min / 900s) avec signature HMAC-SHA256
+  public generateKycPresignedUrl(params: {
+    dossierId: string;
+    docId: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+    expiresInSeconds?: number;
+  }): KYCPresignedUrlResponse {
+    const dos = this.repo.getSnapshot().kycDossiers.find((d) => d.id === params.dossierId);
+    if (!dos) {
+      throw new AppError(404, 'KYC_DOSSIER_NOT_FOUND', 'Dossier KYC introuvable.');
+    }
+    if (params.actor.role !== 'ADMIN' && dos.userId !== params.actor.id) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Interdit (Protection IDOR) : accès non autorisé aux pièces du dossier KYC.'
+      );
+    }
+    const doc = dos.documents.find((d) => d.id === params.docId);
+    if (!doc) {
+      throw new AppError(404, 'KYC_DOCUMENT_NOT_FOUND', 'Document introuvable dans le dossier KYC.');
+    }
+    const presigned = generateKycPresignedDocumentUrl({
+      dossierId: dos.id,
+      docId: doc.id,
+      fileName: doc.fileName,
+      s3ObjectKey: doc.encryptedVaultUri?.replace('s3://tradelink-kyc-encrypted-vault/', 'vault/'),
+      expiresInSeconds: params.expiresInSeconds ?? 900,
+    });
+    return this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'KYC_PRESIGNED_URL_GENERATED',
+        targetType: 'KYCDocument',
+        targetId: `${dos.id}:${doc.id}`,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `URL temporaire 15 min générée pour ${doc.fileName} (SHA-256: ${doc.sha256.slice(0, 16)}...).`,
+      });
+      return presigned;
+    });
+  }
+
+  // 3J. KYCService — Demande de complément avec spécification des pièces et motif
+  public requestKycComplementsTransactional(params: {
+    dossierId: string;
+    complementDocs: string[];
+    reason: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    if (params.actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_ADMIN_ONLY', 'Action réservée aux administrateurs TRADELINK.');
+    }
+    if (!params.reason || params.reason.trim().length === 0) {
+      throw new AppError(400, 'VALIDATION_REASON_MANDATORY', 'Le motif de la demande de complément est obligatoire.');
+    }
+    return this.repo.executeTransaction((tx) => {
+      const dos = tx.kycDossiers.find((d) => d.id === params.dossierId);
+      if (!dos) {
+        throw new AppError(404, 'KYC_DOSSIER_NOT_FOUND', 'Dossier KYC introuvable.');
+      }
+      const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      dos.status = 'COMPLEMENT_REQUESTED';
+      dos.complementReason = params.reason;
+      dos.complementRequestedDocs = params.complementDocs;
+      dos.reviewedAt = nowIso;
+      dos.reviewedBy = params.actor.email;
+
+      if (params.complementDocs && params.complementDocs.length > 0) {
+        dos.documents = dos.documents.map((d) =>
+          params.complementDocs.includes(d.docType)
+            ? { ...d, status: 'COMPLEMENT_NEEDED' as const, rejectionComment: params.reason }
+            : d
+        );
+      }
+
+      const decisionRec: KYCDecisionHistoryRecord = {
+        id: `dec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        kycId: dos.id,
+        adminUserId: params.actor.id,
+        adminEmail: params.actor.email,
+        action: 'REQUEST_COMPLEMENT',
+        reason: params.reason,
+        complementDocs: params.complementDocs,
+        createdAt: nowIso,
+      };
+      tx.kycDecisions = [decisionRec, ...(tx.kycDecisions ?? [])];
+
+      dos.history = [
+        {
+          id: `khist-${Date.now()}`,
+          timestamp: nowIso,
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'ADMIN_COMPLEMENT_REQUESTED',
+          summary: `Demande de complément par ${params.actor.email} (${params.complementDocs.join(', ')}) — Motif : ${params.reason}`,
+        },
+        ...(dos.history ?? []),
+      ];
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: nowIso,
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'KYC_COMPLEMENT_REQUESTED',
+        targetType: 'KYC',
+        targetId: dos.id,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Demande de complément (${params.complementDocs.join(', ')}) — Motif : ${params.reason}`,
+      });
+
+      return { dossier: dos, decision: decisionRec, ruleEvaluation: evaluateKYCDossierRule(dos) };
+    });
+  }
+
+  // 3K. KYCService — Réactivation d'un compte suspendu avec traçabilité
+  public reactivateKycAccountTransactional(params: {
+    dossierId: string;
+    reason: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    if (params.actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_ADMIN_ONLY', 'Action réservée aux administrateurs TRADELINK.');
+    }
+    if (!params.reason || params.reason.trim().length === 0) {
+      throw new AppError(400, 'VALIDATION_REASON_MANDATORY', 'Le motif de réactivation est obligatoire.');
+    }
+    return this.repo.executeTransaction((tx) => {
+      const dos = tx.kycDossiers.find((d) => d.id === params.dossierId);
+      if (!dos) {
+        throw new AppError(404, 'KYC_DOSSIER_NOT_FOUND', 'Dossier KYC introuvable.');
+      }
+      const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      dos.status = 'SUBMITTED_IN_TIME_PENDING_REVIEW';
+      dos.reactivatedAt = nowIso;
+      dos.reactivatedBy = params.actor.email;
+      dos.reviewedAt = nowIso;
+      dos.reviewedBy = params.actor.email;
+
+      const decisionRec: KYCDecisionHistoryRecord = {
+        id: `dec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        kycId: dos.id,
+        adminUserId: params.actor.id,
+        adminEmail: params.actor.email,
+        action: 'REACTIVATE',
+        reason: params.reason,
+        createdAt: nowIso,
+      };
+      tx.kycDecisions = [decisionRec, ...(tx.kycDecisions ?? [])];
+
+      dos.history = [
+        {
+          id: `khist-${Date.now()}`,
+          timestamp: nowIso,
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'ADMIN_ACCOUNT_REACTIVATED',
+          summary: `Réactivation administrative du compte par ${params.actor.email} — Motif : ${params.reason}`,
+        },
+        ...(dos.history ?? []),
+      ];
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: nowIso,
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'KYC_ACCOUNT_REACTIVATED',
+        targetType: 'KYC',
+        targetId: dos.id,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Compte réactivé — Motif : ${params.reason}`,
+      });
+
+      return { dossier: dos, decision: decisionRec, ruleEvaluation: evaluateKYCDossierRule(dos) };
+    });
+  }
+
+  // 3L. KYCService — Consultation de l'historique complet des décisions et rappels
+  public getKycDossierHistory(params: {
+    dossierId: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+  }) {
+    const dos = this.repo.getSnapshot().kycDossiers.find((d) => d.id === params.dossierId);
+    if (!dos) {
+      throw new AppError(404, 'KYC_DOSSIER_NOT_FOUND', 'Dossier KYC introuvable.');
+    }
+    if (params.actor.role !== 'ADMIN' && dos.userId !== params.actor.id) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Interdit : consultation de l’historique non autorisée.'
+      );
+    }
+    const decisions = (this.repo.getSnapshot().kycDecisions ?? []).filter((d) => d.kycId === dos.id);
+    const reminders = (this.repo.getSnapshot().kycReminders ?? []).filter((r) => r.kycId === dos.id);
+    return {
+      dossierId: dos.id,
+      companyName: dos.companyName,
+      status: dos.status,
+      history: dos.history ?? [],
+      decisions,
+      reminders,
+      adminComments:
+        params.actor.role === 'ADMIN'
+          ? dos.adminComments ?? []
+          : (dos.adminComments ?? []).filter((c) => c.visibility === 'SHARED_WITH_APPLICANT'),
+    };
   }
 
   // 4. RoomService — Création de salle Room Live (Interdite en création générale aux Clients)

@@ -9,12 +9,16 @@ import React, { useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
+  Building2,
   CheckCircle2,
   Clock,
+  ExternalLink,
   Eye,
   FileCheck2,
   FileText,
+  Globe,
   History,
+  Link2,
   Lock,
   MessageSquarePlus,
   Play,
@@ -28,6 +32,8 @@ import { translateStatus } from '../../i18n/translations';
 import { evaluateKYCDossierRule } from '../../services/backendServices';
 import {
   checkMandatoryKycCompletion,
+  generateKycPresignedDocumentUrl,
+  getRequiredDocsForDossier,
   KYC_REQUIRED_DOCUMENTS_BY_PROFILE,
   KycActorProfile,
   KycCronExecutionReport,
@@ -50,6 +56,7 @@ export const ActorKycWorkspaceView: React.FC<{
     kycDossiers,
     uploadKycDocumentForDossier,
     recordKycDocumentPreview,
+    updateKycProfile,
   } = useApp();
 
   const progressId = useId();
@@ -63,8 +70,8 @@ export const ActorKycWorkspaceView: React.FC<{
     kycDossiers.find((d) => d.actorType === actorProfile) ??
     kycDossiers[0];
 
-  const requiredSpecs = KYC_REQUIRED_DOCUMENTS_BY_PROFILE[actorProfile];
-  const completion = checkMandatoryKycCompletion(actorProfile, myDossier.documents);
+  const requiredSpecs = getRequiredDocsForDossier(actorProfile, myDossier.jurisdiction);
+  const completion = checkMandatoryKycCompletion(actorProfile, myDossier.documents, myDossier.jurisdiction);
   const ruleEval = evaluateKYCDossierRule(myDossier);
 
   const [selectedDocType, setSelectedDocType] = useState<string>(
@@ -76,6 +83,59 @@ export const ActorKycWorkspaceView: React.FC<{
   );
   const [refInputInvalid, setRefInputInvalid] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<KYCDocumentItem | null>(null);
+
+  // Formulaire d'informations juridiques et représentant légal (Prompt 02)
+  const [profileFormOpen, setProfileFormOpen] = useState(false);
+  const [representativeName, setRepresentativeName] = useState(
+    myDossier.representativeName ?? myDossier.userName
+  );
+  const [representativeIdNumber, setRepresentativeIdNumber] = useState(
+    myDossier.representativeIdNumber ?? 'CIN-AB98214'
+  );
+  const [representativeNationality, setRepresentativeNationality] = useState(
+    myDossier.representativeNationality ??
+      (myDossier.jurisdiction === 'MA'
+        ? 'Marocaine'
+        : myDossier.jurisdiction === 'FR'
+        ? 'Française'
+        : myDossier.jurisdiction === 'DE'
+        ? 'Allemande'
+        : 'Internationale')
+  );
+  const [companyLegalType, setCompanyLegalType] = useState(
+    myDossier.companyLegalType ?? 'SARL'
+  );
+  const [registrationNumber, setRegistrationNumber] = useState(
+    myDossier.registrationNumber ?? 'ICE-002948192000034'
+  );
+  const [businessAddress, setBusinessAddress] = useState(
+    myDossier.businessAddress ?? 'Zone Industrielle Ain Sebaâ, Boulevard Chefchaouni'
+  );
+  const [city, setCity] = useState(myDossier.city ?? 'Casablanca');
+  const [postalCode, setPostalCode] = useState(myDossier.postalCode ?? '20250');
+  const [phoneNumber, setPhoneNumber] = useState(
+    myDossier.phoneNumber ?? '+212 522 99 88 77'
+  );
+  const [legalCapital, setLegalCapital] = useState(
+    myDossier.legalCapital ? String(myDossier.legalCapital) : '100000'
+  );
+
+  const handleSaveLegalProfile = (e: React.FormEvent) => {
+    e.preventDefault();
+    updateKycProfile(myDossier.id, {
+      representativeName,
+      representativeIdNumber,
+      representativeNationality,
+      companyLegalType,
+      registrationNumber,
+      businessAddress,
+      city,
+      postalCode,
+      phoneNumber,
+      legalCapital: Number(legalCapital) || 100000,
+    });
+    setProfileFormOpen(false);
+  };
 
   const handleUploadSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -228,6 +288,200 @@ export const ActorKycWorkspaceView: React.FC<{
             ))}
           </div>
         </div>
+      </Card>
+
+      {/* Profil Juridique de l'Entreprise et du Représentant Légal (PROMPT 02) */}
+      <Card
+        title="Informations Légales & Identité du Représentant"
+        subtitle={`Raison sociale : ${myDossier.companyName} • Forme : ${myDossier.companyLegalType ?? 'SARL'} • Immatriculation : ${myDossier.registrationNumber ?? 'ICE / SIRET'}`}
+        action={
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setProfileFormOpen((prev) => !prev)}
+          >
+            <Building2 className="w-3.5 h-3.5" />
+            {profileFormOpen ? 'Fermer le formulaire' : 'Modifier les coordonnées légales'}
+          </Button>
+        }
+      >
+        {profileFormOpen ? (
+          <form onSubmit={handleSaveLegalProfile} className="space-y-4 text-xs">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div>
+                <label className="block font-bold mb-1 text-slate-700 dark:text-slate-200">
+                  Nom & Prénom du représentant :
+                </label>
+                <input
+                  type="text"
+                  value={representativeName}
+                  onChange={(e) => setRepresentativeName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1 text-slate-700 dark:text-slate-200">
+                  N° Pièce d'identité (CIN / Passeport) :
+                </label>
+                <input
+                  type="text"
+                  value={representativeIdNumber}
+                  onChange={(e) => setRepresentativeIdNumber(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1 text-slate-700 dark:text-slate-200">
+                  Nationalité du dirigeant :
+                </label>
+                <input
+                  type="text"
+                  value={representativeNationality}
+                  onChange={(e) => setRepresentativeNationality(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1 text-slate-700 dark:text-slate-200">
+                  Forme juridique de l'entreprise :
+                </label>
+                <select
+                  value={companyLegalType}
+                  onChange={(e) => setCompanyLegalType(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs"
+                >
+                  <option value="SARL">SARL / SARL-AU (Société à Responsabilité Limitée)</option>
+                  <option value="SA">SA (Société Anonyme)</option>
+                  <option value="SAS">SAS / SASU (Société par Actions Simplifiée)</option>
+                  <option value="GmbH">GmbH / AG (Allemagne)</option>
+                  <option value="LLC">LLC / FZE / Free Zone (UAE / Intl)</option>
+                  <option value="EI">Entreprise Individuelle / Auto-entrepreneur</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-bold mb-1 text-slate-700 dark:text-slate-200">
+                  N° Immatriculation (ICE / SIRET / RC) :
+                </label>
+                <input
+                  type="text"
+                  value={registrationNumber}
+                  onChange={(e) => setRegistrationNumber(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs font-mono"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1 text-slate-700 dark:text-slate-200">
+                  Capital social (€ ou équivalent) :
+                </label>
+                <input
+                  type="number"
+                  value={legalCapital}
+                  onChange={(e) => setLegalCapital(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs font-mono"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block font-bold mb-1 text-slate-700 dark:text-slate-200">
+                  Adresse du siège social :
+                </label>
+                <input
+                  type="text"
+                  value={businessAddress}
+                  onChange={(e) => setBusinessAddress(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1 text-slate-700 dark:text-slate-200">
+                  Ville & Code Postal :
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    placeholder="Ville"
+                    className="flex-1 rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs"
+                    required
+                  />
+                  <input
+                    type="text"
+                    value={postalCode}
+                    onChange={(e) => setPostalCode(e.target.value)}
+                    placeholder="CP"
+                    className="w-20 rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs font-mono"
+                    required
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block font-bold mb-1 text-slate-700 dark:text-slate-200">
+                  Téléphone professionnel vérifié :
+                </label>
+                <input
+                  type="tel"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-3 py-2 text-xs font-mono"
+                  required
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-teal-800">
+              <Button type="button" variant="secondary" onClick={() => setProfileFormOpen(false)}>
+                Annuler
+              </Button>
+              <Button type="submit" variant="primary">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Enregistrer les Coordonnées Légales
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800">
+              <span className="text-slate-400">Représentant légal :</span>
+              <p className="font-bold text-slate-800 dark:text-slate-100 mt-0.5">
+                {myDossier.representativeName ?? myDossier.userName}
+              </p>
+              <p className="text-[11px] text-slate-500 font-mono">
+                {myDossier.representativeIdNumber ?? 'CIN-AB98214'} ({myDossier.representativeNationality ?? 'Marocaine'})
+              </p>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800">
+              <span className="text-slate-400">Forme & Immatriculation :</span>
+              <p className="font-bold text-[#E85D22] mt-0.5">
+                {myDossier.companyLegalType ?? 'SARL'}
+              </p>
+              <p className="text-[11px] text-slate-500 font-mono">
+                N° : {myDossier.registrationNumber ?? 'ICE-002948192000034'}
+              </p>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800">
+              <span className="text-slate-400">Siège social :</span>
+              <p className="font-medium text-slate-800 dark:text-slate-100 mt-0.5 truncate">
+                {myDossier.businessAddress ?? 'Zone Industrielle Ain Sebaâ'}
+              </p>
+              <p className="text-[11px] text-slate-500">
+                {myDossier.city ?? 'Casablanca'} ({myDossier.postalCode ?? '20250'})
+              </p>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800">
+              <span className="text-slate-400">Juridiction & Contact :</span>
+              <p className="font-bold text-slate-800 dark:text-slate-100 mt-0.5">
+                {myDossier.jurisdiction} • {myDossier.phoneNumber ?? '+212 522 99 88 77'}
+              </p>
+              <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                Capital : {myDossier.legalCapital ? `${myDossier.legalCapital} EUR` : '100 000 EUR'}
+              </p>
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* Liste des documents requis selon le profil (CLIENT / FOURNISSEUR / TRANSPORTEUR) */}
@@ -575,6 +829,46 @@ export const ActorKycWorkspaceView: React.FC<{
               </p>
             </div>
 
+            {/* Lien Présigné Sécurisé (Validité 15 min / 900s) */}
+            {(() => {
+              const presigned = generateKycPresignedDocumentUrl({
+                dossierId: myDossier.id,
+                docId: previewDoc.id,
+                fileName: previewDoc.fileName,
+              });
+              return (
+                <div className="p-3.5 rounded-xl bg-orange-500/10 border border-orange-500/30 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold flex items-center gap-1.5 text-[#E85D22]">
+                      <Link2 className="w-4 h-4" />
+                      Lien de Téléchargement Présigné S3/MinIO (Valide 15 min)
+                    </span>
+                    <Badge variant="orange">900 s restantes</Badge>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Jeton HMAC-SHA256 éphémère restreint à votre identité. Évite toute exposition de clé d'API.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={presigned.url}
+                      className="flex-1 font-mono text-[10px] bg-white dark:bg-[#082225] border border-slate-300 dark:border-teal-700 rounded-lg px-2 py-1 truncate"
+                    />
+                    <a
+                      href={presigned.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1 bg-[#E85D22] text-white rounded-lg text-xs font-semibold flex items-center gap-1"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      Ouvrir
+                    </a>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="flex justify-end">
               <Button variant="primary" onClick={() => setPreviewDoc(null)}>
                 Fermer la visionneuse
@@ -604,10 +898,13 @@ export const AdminKycSupervisionView: React.FC<{
   } = useApp();
 
   const [profileFilter, setProfileFilter] = useState<'ALL' | KycActorProfile>('ALL');
+  const [jurisdictionFilter, setJurisdictionFilter] = useState<string>('ALL');
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [modalAction, setModalAction] = useState<{
     dossierId: string;
     decision: 'REJECTED' | 'COMPLEMENT_REQUESTED' | 'REACTIVATE';
   } | null>(null);
+  const [selectedComplementDocs, setSelectedComplementDocs] = useState<string[]>([]);
   const [decisionReason, setDecisionReason] = useState('');
   const [newAdminComment, setNewAdminComment] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<
@@ -619,9 +916,12 @@ export const AdminKycSupervisionView: React.FC<{
     doc: KYCDocumentItem;
   } | null>(null);
 
-  const filteredDossiers = kycDossiers.filter((d) =>
-    profileFilter === 'ALL' ? true : d.actorType === profileFilter
-  );
+  const filteredDossiers = kycDossiers.filter((d) => {
+    if (profileFilter !== 'ALL' && d.actorType !== profileFilter) return false;
+    if (jurisdictionFilter !== 'ALL' && d.jurisdiction !== jurisdictionFilter) return false;
+    if (statusFilter !== 'ALL' && d.status !== statusFilter) return false;
+    return true;
+  });
 
   const focusedDossier = selectedDossierIdParam
     ? kycDossiers.find((d) => d.id === selectedDossierIdParam) ?? kycDossiers[0]
@@ -656,7 +956,8 @@ export const AdminKycSupervisionView: React.FC<{
       >
         <div className="space-y-4 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-bold text-slate-500">Profil :</span>
               {(['ALL', 'CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR'] as const).map((prof) => (
                 <button
                   key={prof}
@@ -668,10 +969,47 @@ export const AdminKycSupervisionView: React.FC<{
                       : 'bg-slate-50 dark:bg-[#082225] border-slate-200 dark:border-teal-800'
                   }`}
                 >
-                  {prof === 'ALL' ? `Tous les profils (${kycDossiers.length})` : prof}
+                  {prof === 'ALL' ? `Tous (${kycDossiers.length})` : prof}
                 </button>
               ))}
             </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-bold text-slate-500 flex items-center gap-1">
+                <Globe className="w-3.5 h-3.5" /> Pays :
+              </span>
+              <select
+                value={jurisdictionFilter}
+                onChange={(e) => setJurisdictionFilter(e.target.value)}
+                className="rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-2.5 py-1.5 text-xs font-semibold"
+              >
+                <option value="ALL">Tous pays (Juridictions)</option>
+                <option value="MA">Maroc (MA)</option>
+                <option value="FR">France (FR)</option>
+                <option value="DE">Allemagne (DE)</option>
+                <option value="ES">Espagne (ES)</option>
+                <option value="AE">Émirats (AE)</option>
+                <option value="INTL">International (INTL)</option>
+              </select>
+
+              <span className="font-bold text-slate-500 ms-2">Statut :</span>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] px-2.5 py-1.5 text-xs font-semibold"
+              >
+                <option value="ALL">Tous statuts</option>
+                <option value="NON_COMMENCE">1. Non commencé</option>
+                <option value="EN_COURS">2. En cours</option>
+                <option value="DOCUMENTS_SOUMIS">3. Documents soumis</option>
+                <option value="EN_VERIFICATION">4. En vérification</option>
+                <option value="COMPLEMENT_DEMANDE">5. Complément demandé</option>
+                <option value="VALIDE">6. Validé</option>
+                <option value="REJETE">7. Rejeté</option>
+                <option value="SUSPENDU">8. Suspendu</option>
+              </select>
+            </div>
+
             <Badge variant="info">
               Seul l’Administrateur autorisé (MFA TOTP vérifié) peut valider, rejeter ou réactiver
             </Badge>
@@ -992,6 +1330,33 @@ export const AdminKycSupervisionView: React.FC<{
               ? 'Précisez les pièces à remplacer ou les informations complémentaires attendues de la part de l’entreprise.'
               : 'Indiquez le motif de réactivation administrative du compte.'}
           </p>
+          {modalAction?.decision === 'COMPLEMENT_REQUESTED' && (
+            <div>
+              <label className="block font-bold mb-1.5 text-slate-700 dark:text-slate-200">
+                Sélectionner les pièces requises en complément :
+              </label>
+              <div className="grid grid-cols-2 gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800">
+                {['CIN_DIRIGEANT', 'PATENTE_FISCAL', 'RNE_KBIS', 'RIB_ATTESTATION', 'LICENCE_TRANSPORT_INT', 'ISO_GDP_CERT'].map((d) => (
+                  <label key={d} className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedComplementDocs.includes(d)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedComplementDocs([...selectedComplementDocs, d]);
+                        } else {
+                          setSelectedComplementDocs(selectedComplementDocs.filter((x) => x !== d));
+                        }
+                      }}
+                      className="rounded"
+                    />
+                    <span className="font-mono text-[11px]">{d}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="block font-bold mb-1">
               Motif explicite ({modalAction?.decision}) — Obligatoire :
@@ -1053,6 +1418,46 @@ export const AdminKycSupervisionView: React.FC<{
                 <strong>Clé KMS :</strong> {previewDoc.doc.encryptionKeyId}
               </p>
             </div>
+
+            {/* Lien Présigné Sécurisé (Validité 15 min / 900s) */}
+            {(() => {
+              const presigned = generateKycPresignedDocumentUrl({
+                dossierId: previewDoc.dossier.id,
+                docId: previewDoc.doc.id,
+                fileName: previewDoc.doc.fileName,
+              });
+              return (
+                <div className="p-3.5 rounded-xl bg-orange-500/10 border border-orange-500/30 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold flex items-center gap-1.5 text-[#E85D22]">
+                      <Link2 className="w-4 h-4" />
+                      Lien Administrateur Présigné S3/MinIO (Valide 15 min)
+                    </span>
+                    <Badge variant="orange">Signature HMAC-SHA256</Badge>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    URL sécurisée avec jeton cryptographique à usage temporaire (900 s). Journalisation dans l’audit de consultation.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={presigned.url}
+                      className="flex-1 font-mono text-[10px] bg-white dark:bg-[#082225] border border-slate-300 dark:border-teal-700 rounded-lg px-2 py-1 truncate"
+                    />
+                    <a
+                      href={presigned.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1 bg-[#E85D22] text-white rounded-lg text-xs font-semibold flex items-center gap-1"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      Télécharger
+                    </a>
+                  </div>
+                </div>
+              );
+            })()}
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setPreviewDoc(null)}>
                 Fermer

@@ -67,11 +67,26 @@ export type Icon3DName =
   | 'doorstep-drop';
 
 export type KYCStatus =
+  // 8 États canoniques TRADELINK V6.0
+  | 'NON_COMMENCE'
+  | 'EN_COURS'
+  | 'DOCUMENTS_SOUMIS'
+  | 'EN_VERIFICATION'
+  | 'COMPLEMENT_DEMANDE'
+  | 'VALIDE'
+  | 'REJETE'
+  | 'SUSPENDU'
+  // Alias anglais & compatibilité historique
+  | 'NOT_STARTED'
+  | 'IN_PROGRESS'
   | 'PENDING_SUBMISSION'
+  | 'DOCUMENTS_SUBMITTED'
   | 'SUBMITTED_IN_TIME_PENDING_REVIEW'
+  | 'UNDER_REVIEW'
   | 'COMPLEMENT_REQUESTED'
   | 'VALIDATED'
   | 'REJECTED'
+  | 'SUSPENDED'
   | 'SUSPENDED_J7'
   | 'SUSPENDED_J7_UNSUBMITTED';
 
@@ -112,6 +127,51 @@ export interface KYCDocumentItem {
   virusScanStatus?: 'CLEAN' | 'QUARANTINED';
 }
 
+export interface KYCDecisionHistoryRecord {
+  id: string;
+  kycId: string;
+  adminUserId: string;
+  adminEmail: string;
+  action: 'VALIDATE' | 'REJECT' | 'REQUEST_COMPLEMENT' | 'REACTIVATE';
+  reason?: string;
+  complementDocs?: string[];
+  createdAt: string;
+}
+
+export interface KYCJurisdictionConfigRecord {
+  id: string;
+  countryCode: string;
+  countryName: string;
+  currency: string;
+  requiredDocs: string[];
+  optionalDocs: string[];
+  gracePeriodDays: number;
+  isActive: boolean;
+  updatedAt?: string;
+}
+
+export interface KYCReminderLogRecord {
+  id: string;
+  kycId: string;
+  userId: string;
+  milestone: 'J+1' | 'J+3' | 'J+5' | 'J+6' | 'J+7';
+  channel: 'EMAIL' | 'SMS' | 'IN_APP';
+  status: 'SENT' | 'FAILED';
+  errorMessage?: string;
+  sentAt: string;
+}
+
+export interface KYCPresignedUrlResponse {
+  url: string;
+  s3ObjectKey: string;
+  docType: string;
+  fileName: string;
+  expiresInSeconds: number;
+  expiresAt: string;
+  issuedAt: string;
+  signatureSha256: string;
+}
+
 export interface KYCDossier {
   id: string;
   userId: string;
@@ -129,9 +189,22 @@ export interface KYCDossier {
   reviewedBy?: string;
   rejectionReason?: string;
   complementReason?: string;
+  complementRequestedDocs?: string[];
   reactivatedAt?: string;
   reactivatedBy?: string;
   remindersSent: string[];
+  // Coordonnées et profil juridique d'entreprise
+  companyLegalType?: string;
+  registrationNumber?: string;
+  representativeName?: string;
+  representativeIdNumber?: string;
+  representativeNationality?: string;
+  businessAddress?: string;
+  city?: string;
+  postalCode?: string;
+  phoneNumber?: string;
+  legalCapital?: number;
+  incorporationDate?: string;
   documents: KYCDocumentItem[];
   adminComments?: {
     id: string;

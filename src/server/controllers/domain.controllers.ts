@@ -855,6 +855,126 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, report, 200);
     }
 
+    // 5B. Référentiel des exigences par juridiction (MA, FR, DE, ES, AE, INTL)
+    if (method === 'GET' && path === '/api/v1/kyc/jurisdictions') {
+      requireAuthenticatedSession(ctx);
+      const jurisdictions = this.services.listKycJurisdictions();
+      return this.ok(ctx, jurisdictions, 200);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/kyc/jurisdictions/')) {
+      const user = requireAuthenticatedSession(ctx);
+      if (user.role !== 'ADMIN') {
+        throw new AppError(403, 'FORBIDDEN_ADMIN_ONLY', 'Action réservée aux administrateurs TRADELINK.');
+      }
+      const countryCode = path.split('/').pop() ?? '';
+      const updated = this.services.updateKycJurisdiction({
+        countryCode,
+        patch: ctx.body,
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 5C. Mise à jour des informations d'entreprise et du représentant légal
+    if (method === 'PUT' && path.startsWith('/api/v1/kyc/') && path.endsWith('/profile')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const dossierId = parts[parts.length - 2];
+      const updated = this.services.updateKycCompanyProfile({
+        dossierId,
+        profile: ctx.body,
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 5D. Génération d'URL présignée temporaire (15 min / 900s) pour téléchargement sécurisé
+    if (
+      method === 'GET' &&
+      path.startsWith('/api/v1/kyc/') &&
+      (path.includes('/presigned-url/') || path.endsWith('/presigned-url'))
+    ) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      let dossierId = '';
+      let docId = '';
+      if (path.endsWith('/presigned-url')) {
+        // /api/v1/kyc/:id/documents/:docId/presigned-url
+        docId = parts[parts.length - 2];
+        dossierId = parts[parts.length - 4];
+      } else {
+        // /api/v1/kyc/:id/presigned-url/:docId
+        docId = parts[parts.length - 1];
+        dossierId = parts[parts.length - 3];
+      }
+      const expiresInSeconds = ctx.query.expiresIn ? Number(ctx.query.expiresIn) : 900;
+      const presigned = this.services.generateKycPresignedUrl({
+        dossierId,
+        docId,
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+        expiresInSeconds,
+      });
+      return this.ok(ctx, presigned, 200);
+    }
+
+    // 5E. Demande de complément documentaire administratif
+    if (method === 'POST' && path.startsWith('/api/v1/kyc/') && path.endsWith('/complements')) {
+      const user = requireAuthenticatedSession(ctx);
+      if (user.role !== 'ADMIN') {
+        throw new AppError(403, 'FORBIDDEN_ADMIN_ONLY', 'Action réservée aux administrateurs TRADELINK.');
+      }
+      const parts = path.split('/');
+      const dossierId = parts[parts.length - 2];
+      const { complementDocs, reason } = ctx.body;
+      const result = this.services.requestKycComplementsTransactional({
+        dossierId,
+        complementDocs: Array.isArray(complementDocs) ? complementDocs : [],
+        reason: String(reason ?? ''),
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 5F. Réactivation administrative d'un compte suspendu
+    if (method === 'POST' && path.startsWith('/api/v1/kyc/') && path.endsWith('/reactivate')) {
+      const user = requireAuthenticatedSession(ctx);
+      if (user.role !== 'ADMIN') {
+        throw new AppError(403, 'FORBIDDEN_ADMIN_ONLY', 'Action réservée aux administrateurs TRADELINK.');
+      }
+      const parts = path.split('/');
+      const dossierId = parts[parts.length - 2];
+      const { reason } = ctx.body;
+      const result = this.services.reactivateKycAccountTransactional({
+        dossierId,
+        reason: String(reason ?? 'Régularisation des pièces justificatives.'),
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 5G. Consultation de l'historique d'audit et des décisions du dossier KYC
+    if (method === 'GET' && path.startsWith('/api/v1/kyc/') && path.endsWith('/history')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const dossierId = parts[parts.length - 2];
+      const history = this.services.getKycDossierHistory({
+        dossierId,
+        actor: user,
+      });
+      return this.ok(ctx, history, 200);
+    }
+
     // 6. Room Live — Création contrôlée par rôle (Client interdit en création générale)
     if (method === 'POST' && path === '/api/v1/rooms') {
       const user = requireAuthenticatedSession(ctx);

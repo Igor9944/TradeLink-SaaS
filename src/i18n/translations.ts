@@ -166,6 +166,22 @@ export const translations: Record<Locale, Record<string, string>> = {
 };
 
 const STATUS_LABELS: Record<string, Record<Locale, string>> = {
+  // 8 États canoniques KYC TRADELINK V6.0
+  NON_COMMENCE: { fr: 'Non commencé', en: 'Not started', ar: 'لم يبدأ' },
+  EN_COURS: { fr: 'En cours', en: 'In progress', ar: 'قيد الإنجاز' },
+  DOCUMENTS_SOUMIS: { fr: 'Documents soumis', en: 'Documents submitted', ar: 'تم تقديم الوثائق' },
+  EN_VERIFICATION: { fr: 'En vérification', en: 'Under review', ar: 'قيد التحقق' },
+  COMPLEMENT_DEMANDE: { fr: 'Complément demandé', en: 'Complement requested', ar: 'مطلوب استكمال الوثائق' },
+  VALIDE: { fr: 'Validé', en: 'Validated', ar: 'معتمد' },
+  REJETE: { fr: 'Rejeté', en: 'Rejected', ar: 'مرفوض' },
+  SUSPENDU: { fr: 'Suspendu', en: 'Suspended', ar: 'معلق' },
+
+  // Alias anglais & compatibilité historique
+  NOT_STARTED: { fr: 'Non commencé', en: 'Not started', ar: 'لم يبدأ' },
+  IN_PROGRESS: { fr: 'En cours', en: 'In progress', ar: 'قيد الإنجاز' },
+  DOCUMENTS_SUBMITTED: { fr: 'Documents soumis', en: 'Documents submitted', ar: 'تم تقديم الوثائق' },
+  UNDER_REVIEW: { fr: 'En vérification', en: 'Under review', ar: 'قيد التحقق' },
+  SUSPENDED: { fr: 'Suspendu', en: 'Suspended', ar: 'معلق' },
   DRAFT: { fr: 'Brouillon', en: 'Draft', ar: 'مسودة' },
   PENDING: { fr: 'En attente', en: 'Pending', ar: 'قيد الانتظار' },
   ACCEPTED: { fr: 'Acceptée', en: 'Accepted', ar: 'مقبول' },

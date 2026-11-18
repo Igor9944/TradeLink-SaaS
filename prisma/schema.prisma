@@ -223,28 +223,88 @@ model Device {
 
 // 8. KYC — Dossier KYC et statut (Délai 7 jours J+1/J+3/J+5/J+6/J+7)
 model KYC {
-  id              String        @id @default(uuid())
-  userId          String        @unique
-  actorType       String        // CLIENT | FOURNISSEUR | TRANSPORTEUR
-  jurisdiction    String        @default("MA") // MA, FR, TN, AE, etc.
-  status          String        @default("PENDING_SUBMISSION") // PENDING_SUBMISSION | SUBMITTED_IN_TIME_PENDING_REVIEW | VALIDATED | REJECTED | SUSPENDED_J7
-  startedAt       DateTime      @default(now())
-  deadlineAt      DateTime      // J+7 calendaires
-  submittedAt     DateTime?
-  reviewedAt      DateTime?
-  reviewedById    String?
-  rejectionReason String?       // Motif explicite obligatoire en cas de rejet
-  remindersSent   String[]      // ["J+1", "J+3", "J+5", "J+6"]
-  createdBy       String?
-  updatedBy       String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id                      String        @id @default(uuid())
+  userId                  String        @unique
+  actorType               String        // CLIENT | FOURNISSEUR | TRANSPORTEUR
+  jurisdiction            String        @default("MA") // MA, FR, TN, AE, etc.
+  status                  String        @default("PENDING_SUBMISSION") // PENDING_SUBMISSION | SUBMITTED_IN_TIME_PENDING_REVIEW | VALIDATED | REJECTED | SUSPENDED_J7
+  startedAt               DateTime      @default(now())
+  deadlineAt              DateTime      // J+7 calendaires
+  submittedAt             DateTime?
+  reviewedAt              DateTime?
+  reviewedById            String?
+  rejectionReason         String?       // Motif explicite obligatoire en cas de rejet
+  remindersSent           String[]      // ["J+1", "J+3", "J+5", "J+6"]
+  companyLegalType        String?       // SARL, SA, SAS, SASU, GmbH, LLC, etc.
+  registrationNumber      String?       // ICE, SIRET, RC, Handelsregister, Trade License
+  representativeName      String?       // Nom et prénom du représentant légal
+  representativeIdNumber  String?       // Numéro de pièce d'identité du représentant
+  representativeNationality String?     // Nationalité du représentant
+  businessAddress         String?       // Adresse du siège social
+  city                    String?       // Ville
+  postalCode              String?       // Code postal
+  phoneNumber             String?       // Téléphone professionnel vérifié
+  legalCapital            Decimal?      @db.Decimal(18, 4) // Capital social
+  incorporationDate       DateTime?     // Date d'immatriculation / constitution
+  createdBy               String?
+  updatedBy               String?
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
 
-  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  documents KYCDocument[]
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents    KYCDocument[]
+  decisions    KYCDecisionHistory[]
+  reminders    KYCReminderLog[]
 
   @@index([status, deadlineAt])
   @@index([jurisdiction, actorType])
+}
+
+// 8b. KYCDecisionHistory — Audit trail immuable des décisions administratives KYC
+model KYCDecisionHistory {
+  id              String    @id @default(uuid())
+  kycId           String
+  adminUserId     String
+  adminEmail      String
+  action          String    // VALIDATE | REJECT | REQUEST_COMPLEMENT | REACTIVATE
+  reason          String?   // Motif explicite obligatoire en cas de rejet ou complément
+  complementDocs  String[]  // Types de documents demandés en complément
+  createdAt       DateTime  @default(now())
+
+  kyc             KYC       @relation(fields: [kycId], references: [id], onDelete: Cascade)
+
+  @@index([kycId, createdAt])
+}
+
+// 8c. KYCJurisdictionConfig — Référentiel des exigences documentaires configurables par juridiction
+model KYCJurisdictionConfig {
+  id              String    @id @default(uuid())
+  countryCode     String    @unique // MA, FR, DE, ES, AE, INTL
+  countryName     String
+  currency        String    @default("EUR")
+  requiredDocs    String[]  // ["CIN_DIRIGEANT", "PATENTE_FISCAL", "RNE_KBIS", ...]
+  optionalDocs    String[]  // ["RIB_ATTESTATION", ...]
+  gracePeriodDays Int       @default(7)
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// 8d. KYCReminderLog — Journalisation immuable des relances automatiques J+1, J+3, J+5, J+6, J+7
+model KYCReminderLog {
+  id            String    @id @default(uuid())
+  kycId         String
+  userId        String
+  milestone     String    // J+1 | J+3 | J+5 | J+6 | J+7
+  channel       String    // EMAIL | SMS | IN_APP
+  status        String    @default("SENT") // SENT | FAILED
+  errorMessage  String?
+  sentAt        DateTime  @default(now())
+
+  kyc           KYC       @relation(fields: [kycId], references: [id], onDelete: Cascade)
+
+  @@index([kycId, milestone])
+  @@index([userId, sentAt])
 }
 
 // 9. KYCDocument — Documents KYC chiffrés (AES-256-GCM) et métadonnées

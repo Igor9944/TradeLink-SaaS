@@ -15,6 +15,9 @@ import {
   IncidentRecord,
   InvoiceRecord,
   KYCDossier,
+  KYCJurisdictionConfigRecord,
+  KYCDecisionHistoryRecord,
+  KYCReminderLogRecord,
   LoginAttemptRecord,
   MFAConfigurationRecord,
   OrderRecord,
@@ -37,6 +40,7 @@ import {
   VehicleRecord,
 } from '../../services/logisticsEngine';
 import { AccountingEntryRecord } from '../../services/accountingEngine';
+import { KYC_JURISDICTION_REGISTRY } from '../../services/kycEngine';
 
 export interface SoftDeletableEntity {
   id: string;
@@ -61,6 +65,9 @@ export interface DatabaseStateSnapshot {
   logisticsMissions?: LogisticsMissionRecord[];
   vehicles?: VehicleRecord[];
   transportDocuments?: TransportDocumentRecord[];
+  kycJurisdictions?: KYCJurisdictionConfigRecord[];
+  kycDecisions?: KYCDecisionHistoryRecord[];
+  kycReminders?: KYCReminderLogRecord[];
 }
 
 export class TradeLinkRepositoryStore {
@@ -89,6 +96,22 @@ export class TradeLinkRepositoryStore {
           ? initialState.vehicles
           : structuredClone(INITIAL_CARRIER_VEHICLES),
       transportDocuments: initialState.transportDocuments ?? [],
+      kycJurisdictions:
+        initialState.kycJurisdictions && initialState.kycJurisdictions.length > 0
+          ? initialState.kycJurisdictions
+          : Object.values(KYC_JURISDICTION_REGISTRY).map((j) => ({
+              id: `jur-${j.countryCode.toLowerCase()}`,
+              countryCode: j.countryCode,
+              countryName: j.countryName,
+              currency: j.currency,
+              requiredDocs: j.requiredDocTypes,
+              optionalDocs: j.optionalDocTypes,
+              gracePeriodDays: j.gracePeriodDays,
+              isActive: true,
+              updatedAt: new Date().toISOString(),
+            })),
+      kycDecisions: initialState.kycDecisions ?? [],
+      kycReminders: initialState.kycReminders ?? [],
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
   }

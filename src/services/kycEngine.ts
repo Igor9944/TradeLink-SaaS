@@ -1,18 +1,26 @@
 // ============================================================================
-// TRADELINK V6.0 — MOTEUR KYC COMPLET (PROMPT 6 & CHAPITRES 6.3, 10, ANNEXE B)
-// - Liste des documents requis et optionnels selon le profil (CLIENT, FOURNISSEUR, TRANSPORTEUR)
+// TRADELINK V6.0 — MOTEUR KYC COMPLET (PROMPT 02 & CONFORMITÉ RÉGLEMENTAIRE B2B)
+// - 8 États canoniques : NON_COMMENCE, EN_COURS, DOCUMENTS_SOUMIS, EN_VERIFICATION,
+//   COMPLEMENT_DEMANDE, VALIDE, REJETE, SUSPENDU (+ alias historiques)
+// - Référentiel des documents requis selon le profil et la juridiction (MA, FR, DE, ES, AE, INTL)
 // - Upload sécurisé, scan antivirus, condensat SHA-256 et chiffrement par enveloppe AES-256-GCM (KMS)
-// - Prévisualisation sécurisée et journalisée
-// - Gestion des statuts : PENDING_SUBMISSION, SUBMITTED_IN_TIME_PENDING_REVIEW,
-//   COMPLEMENT_REQUESTED, VALIDATED, REJECTED, SUSPENDED_J7_UNSUBMITTED
+// - Génération d'URLs présignées S3/MinIO temporaires (expiration 15 min / 900s) avec signature HMAC-SHA256
+// - Prévisualisation sécurisée et journalisée anti-IDOR
 // - Historique horodaté, Commentaires administratifs & Notifications multicanales
-// - Tâche programmée (Cron J+1, J+3, J+5, J+6 et suspension conditionnelle J+7)
+// - Tâche programmée KYCCronService (Relances J+1, J+3, J+5, J+6 et suspension conditionnelle J+7)
 // - Règle d'or : Un dossier dont les pièces obligatoires ont été soumises à temps
 //   n'est JAMAIS suspendu à J+7 du seul fait qu'il attend une revue administrative.
 // - Seul un Administrateur autorisé peut valider, rejeter, demander un complément ou réactiver.
+// // Vibe — TRADELINK V6.0 : Performance, Security & Reliability First.
 // ============================================================================
 
-import { KYCDossier, KYCDocumentItem, KYCStatus, UserRoleCode } from '../types';
+import {
+  KYCDossier,
+  KYCDocumentItem,
+  KYCStatus,
+  UserRoleCode,
+  KYCPresignedUrlResponse,
+} from '../types';
 
 export type KycActorProfile = 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR';
 
@@ -27,6 +35,16 @@ export interface KycRequiredDocSpec {
   descriptionFr: string;
 }
 
+export interface JurisdictionRequirementSpec {
+  countryCode: string;
+  countryName: string;
+  currency: string;
+  gracePeriodDays: number;
+  requiredDocTypes: string[];
+  optionalDocTypes: string[];
+  docSpecs: KycRequiredDocSpec[];
+}
+
 export interface KycHistoryEvent {
   id: string;
   timestamp: string;
@@ -36,6 +54,8 @@ export interface KycHistoryEvent {
     | 'DOSSIER_INITIALIZED'
     | 'DOCUMENT_UPLOADED_ENCRYPTED'
     | 'DOCUMENT_PREVIEWED'
+    | 'PRESIGNED_URL_GENERATED'
+    | 'PROFILE_INFO_UPDATED'
     | 'ALL_MANDATORY_SUBMITTED_IN_TIME'
     | 'CRON_REMINDER_SENT'
     | 'CRON_J7_PROTECTED_IN_TIME'
@@ -82,6 +102,18 @@ export interface EncryptedKycMetadata {
   fileSizeBytes: number;
   virusScanStatus: 'CLEAN' | 'QUARANTINED';
 }
+
+// 8 États canoniques TRADELINK V6.0
+export const KYC_CANONICAL_STATUSES = [
+  { code: 'NON_COMMENCE', labelFr: 'Non commencé', step: 1 },
+  { code: 'EN_COURS', labelFr: 'En cours', step: 2 },
+  { code: 'DOCUMENTS_SOUMIS', labelFr: 'Documents soumis', step: 3 },
+  { code: 'EN_VERIFICATION', labelFr: 'En vérification', step: 4 },
+  { code: 'COMPLEMENT_DEMANDE', labelFr: 'Complément demandé', step: 5 },
+  { code: 'VALIDE', labelFr: 'Validé', step: 6 },
+  { code: 'REJETE', labelFr: 'Rejeté', step: 7 },
+  { code: 'SUSPENDU', labelFr: 'Suspendu', step: 8 },
+] as const;
 
 // 1. Référentiel des documents requis selon le profil (CLIENT, FOURNISSEUR, TRANSPORTEUR)
 export const KYC_REQUIRED_DOCUMENTS_BY_PROFILE: Record<KycActorProfile, KycRequiredDocSpec[]> = {
@@ -213,6 +245,366 @@ export const KYC_REQUIRED_DOCUMENTS_BY_PROFILE: Record<KycActorProfile, KycRequi
   ],
 };
 
+// 1b. Référentiel des exigences documentaires configurables par juridiction (MA, FR, DE, ES, AE, INTL)
+export const KYC_JURISDICTION_REGISTRY: Record<string, JurisdictionRequirementSpec> = {
+  MA: {
+    countryCode: 'MA',
+    countryName: 'Maroc',
+    currency: 'MAD',
+    gracePeriodDays: 7,
+    requiredDocTypes: ['CIN_DIRIGEANT', 'PATENTE_FISCAL', 'RNE_KBIS'],
+    optionalDocTypes: ['RIB_ATTESTATION', 'DOMICILIATION_BAIL'],
+    docSpecs: [
+      {
+        docType: 'CIN_DIRIGEANT',
+        labelFr: 'Pièce d’identité du dirigeant (CIN / Passeport)',
+        labelEn: 'Legal Representative National ID / Passport',
+        labelAr: 'بطاقة الهوية الوطنية أو جواز سفر المسير القانوني',
+        mandatory: true,
+        acceptedFormats: 'PDF, JPG, PNG',
+        maxSizeMb: 10,
+        descriptionFr: 'CIN marocaine ou passeport en cours de validité du signataire habilité.',
+      },
+      {
+        docType: 'PATENTE_FISCAL',
+        labelFr: 'Attestation de Patente & Identifiant Fiscal (ICE / IF)',
+        labelEn: 'Business Tax Patent & Fiscal Identifier (ICE / IF)',
+        labelAr: 'شهادة الضريبة المهنية والتعريف الموحد للمقاولة (ICE)',
+        mandatory: true,
+        acceptedFormats: 'PDF, JPG, PNG',
+        maxSizeMb: 10,
+        descriptionFr: 'Certificat d’inscription au rôle de la patente et mention de l’ICE officiel.',
+      },
+      {
+        docType: 'RNE_KBIS',
+        labelFr: 'Extrait Registre du Commerce (RC / Modèle 7 < 3 mois)',
+        labelEn: 'Commercial Register Extract (Model 7 < 3 months)',
+        labelAr: 'مستخرج السجل التجاري (النموذج 7 أقل من 3 أشهر)',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Extrait officiel délivré par le Tribunal de Commerce de moins de 90 jours.',
+      },
+      {
+        docType: 'RIB_ATTESTATION',
+        labelFr: 'Relevé d’Identité Bancaire Entreprise (RIB)',
+        labelEn: 'Corporate Bank Account Certificate (RIB)',
+        labelAr: 'شهادة الحساب البنكي للشركة (RIB)',
+        mandatory: false,
+        acceptedFormats: 'PDF, PNG',
+        maxSizeMb: 5,
+        descriptionFr: 'Relevé bancaire professionnel pour règlements et remboursements.',
+      },
+    ],
+  },
+  FR: {
+    countryCode: 'FR',
+    countryName: 'France',
+    currency: 'EUR',
+    gracePeriodDays: 7,
+    requiredDocTypes: ['CIN_DIRIGEANT', 'RNE_KBIS', 'TVA_FISCAL_CERT'],
+    optionalDocTypes: ['RIB_ATTESTATION'],
+    docSpecs: [
+      {
+        docType: 'CIN_DIRIGEANT',
+        labelFr: 'Pièce d’identité du dirigeant (CNI / Passeport)',
+        labelEn: 'Manager ID (National ID Card / Passport)',
+        labelAr: 'بطاقة الهوية أو جواز سفر المسير',
+        mandatory: true,
+        acceptedFormats: 'PDF, JPG, PNG',
+        maxSizeMb: 10,
+        descriptionFr: 'CNI recto-verso couleur ou passeport du dirigeant en cours de validité.',
+      },
+      {
+        docType: 'RNE_KBIS',
+        labelFr: 'Extrait Kbis ou Extrait RNE (< 3 mois)',
+        labelEn: 'Official Kbis or RNE Extract (< 3 months)',
+        labelAr: 'مستخرج السجل التجاري Kbis (أقل من 3 أشهر)',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Extrait Kbis délivré par le greffe du tribunal de commerce (moins de 90 jours).',
+      },
+      {
+        docType: 'TVA_FISCAL_CERT',
+        labelFr: 'Attestation de Régularité Fiscale & N° TVA Intracommunautaire',
+        labelEn: 'Tax Clearance Certificate & Intra-EU VAT Number',
+        labelAr: 'شهادة الوضعية الجبائية ورقم ضريبة القيمة المضافة',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Attestation de vigilance URSSAF ou régularité fiscale DGFIP.',
+      },
+      {
+        docType: 'RIB_ATTESTATION',
+        labelFr: 'RIB / IBAN Entreprise SEPA',
+        labelEn: 'Corporate SEPA IBAN Certificate',
+        labelAr: 'شهادة الحساب البنكي SEPA للشركة',
+        mandatory: false,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 5,
+        descriptionFr: 'RIB bancaire professionnel pour les virements SEPA.',
+      },
+    ],
+  },
+  DE: {
+    countryCode: 'DE',
+    countryName: 'Allemagne',
+    currency: 'EUR',
+    gracePeriodDays: 7,
+    requiredDocTypes: ['CIN_DIRIGEANT', 'RNE_HANDELSREGISTER', 'TVA_FISCAL_CERT'],
+    optionalDocTypes: ['RIB_ATTESTATION'],
+    docSpecs: [
+      {
+        docType: 'CIN_DIRIGEANT',
+        labelFr: 'Personalausweis ou Reisepass du dirigeant',
+        labelEn: 'Managing Director ID / Passport (Personalausweis)',
+        labelAr: 'بطاقة الهوية الألمانية أو جواز السفر للمدير',
+        mandatory: true,
+        acceptedFormats: 'PDF, JPG, PNG',
+        maxSizeMb: 10,
+        descriptionFr: 'Personalausweis ou passeport officiel en cours de validité.',
+      },
+      {
+        docType: 'RNE_HANDELSREGISTER',
+        labelFr: 'Handelsregisterauszug (< 3 mois)',
+        labelEn: 'Commercial Register Extract (Handelsregisterauszug < 3 months)',
+        labelAr: 'مستخرج السجل التجاري الألماني Handelsregister',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Amtlicher Handelsregisterauszug (HRB/HRA) de moins de 90 jours.',
+      },
+      {
+        docType: 'TVA_FISCAL_CERT',
+        labelFr: 'Bescheinigung der USt-IdNr & Gewerbeanmeldung',
+        labelEn: 'VAT ID Certificate (USt-IdNr) & Business Registration',
+        labelAr: 'شهادة التعريف الضريبي USt-IdNr',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Certificat fiscal fédéral et numéro de TVA intracommunautaire.',
+      },
+      {
+        docType: 'RIB_ATTESTATION',
+        labelFr: 'Bankbestätigung / IBAN Geschäftskonto',
+        labelEn: 'Corporate Bank Account Confirmation',
+        labelAr: 'تأكيد الحساب البنكي التجاري',
+        mandatory: false,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 5,
+        descriptionFr: 'Justificatif bancaire professionnel.',
+      },
+    ],
+  },
+  ES: {
+    countryCode: 'ES',
+    countryName: 'Espagne',
+    currency: 'EUR',
+    gracePeriodDays: 7,
+    requiredDocTypes: ['CIN_DIRIGEANT', 'PATENTE_FISCAL', 'RNE_KBIS'],
+    optionalDocTypes: ['RIB_ATTESTATION'],
+    docSpecs: [
+      {
+        docType: 'CIN_DIRIGEANT',
+        labelFr: 'DNI / NIE / Pasaporte del Administrador',
+        labelEn: 'Director National ID / NIE / Passport',
+        labelAr: 'بطاقة الهوية الإسبانية DNI/NIE أو جواز السفر',
+        mandatory: true,
+        acceptedFormats: 'PDF, JPG, PNG',
+        maxSizeMb: 10,
+        descriptionFr: 'DNI ou NIE en vigueur de l’administrateur habilité.',
+      },
+      {
+        docType: 'PATENTE_FISCAL',
+        labelFr: 'Certificado de Identificación Fiscal (CIF / NIF)',
+        labelEn: 'Fiscal Identification Certificate (CIF / NIF)',
+        labelAr: 'شهادة التعريف الضريبي CIF/NIF',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Certificat officiel délivré par la Agencia Tributaria.',
+      },
+      {
+        docType: 'RNE_KBIS',
+        labelFr: 'Nota Simple del Registro Mercantil (< 3 meses)',
+        labelEn: 'Mercantile Registry Certificate (< 3 months)',
+        labelAr: 'مستخرج السجل التجاري الإسباني Registro Mercantil',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Certificat de constitution et pouvoirs de la société.',
+      },
+      {
+        docType: 'RIB_ATTESTATION',
+        labelFr: 'Certificado de Cuenta Bancaria (IBAN)',
+        labelEn: 'Bank Account Certificate (IBAN)',
+        labelAr: 'شهادة الحساب البنكي الرسمي',
+        mandatory: false,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 5,
+        descriptionFr: 'Certificat bancaire professionnel pour transactions.',
+      },
+    ],
+  },
+  AE: {
+    countryCode: 'AE',
+    countryName: 'Émirats Arabes Unis',
+    currency: 'AED',
+    gracePeriodDays: 7,
+    requiredDocTypes: ['CIN_DIRIGEANT', 'PATENTE_FISCAL', 'RNE_KBIS'],
+    optionalDocTypes: ['RIB_ATTESTATION'],
+    docSpecs: [
+      {
+        docType: 'CIN_DIRIGEANT',
+        labelFr: 'Emirates ID & Passport du Manager',
+        labelEn: 'Manager Emirates ID & Passport',
+        labelAr: 'الهوية الإماراتية وجواز السفر للمدير',
+        mandatory: true,
+        acceptedFormats: 'PDF, JPG, PNG',
+        maxSizeMb: 10,
+        descriptionFr: 'Emirates ID recto-verso et visa/passeport en cours de validité.',
+      },
+      {
+        docType: 'PATENTE_FISCAL',
+        labelFr: 'Commercial Trade License (DED / Free Zone)',
+        labelEn: 'Commercial Trade License (DED / Free Zone)',
+        labelAr: 'الرخصة التجارية المعتمدة من دائرة التنمية الاقتصادية أو المنطقة الحرة',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Licence commerciale valide délivrée par le DED ou l’autorité de zone franche.',
+      },
+      {
+        docType: 'RNE_KBIS',
+        labelFr: 'Memorandum of Association (MOA) / Chamber Certificate',
+        labelEn: 'Memorandum of Association (MOA) / Chamber Certificate',
+        labelAr: 'عقد التأسيس الموثق وشهادة غرفة التجارة',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Statuts notariés et certificat de la Chambre de Commerce.',
+      },
+      {
+        docType: 'RIB_ATTESTATION',
+        labelFr: 'Corporate Bank Account Details (IBAN)',
+        labelEn: 'Corporate Bank Account Details (IBAN)',
+        labelAr: 'بيانات الحساب البنكي للشركة (IBAN)',
+        mandatory: false,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 5,
+        descriptionFr: 'Certificat bancaire d’établissement agréé aux EAU.',
+      },
+    ],
+  },
+  INTL: {
+    countryCode: 'INTL',
+    countryName: 'International',
+    currency: 'USD',
+    gracePeriodDays: 7,
+    requiredDocTypes: ['CIN_DIRIGEANT', 'PATENTE_FISCAL', 'RNE_KBIS'],
+    optionalDocTypes: ['RIB_ATTESTATION'],
+    docSpecs: [
+      {
+        docType: 'CIN_DIRIGEANT',
+        labelFr: 'Passeport International du Représentant Légal',
+        labelEn: 'International Passport of Legal Representative',
+        labelAr: 'جواز السفر الدولي للممثل القانوني',
+        mandatory: true,
+        acceptedFormats: 'PDF, JPG, PNG',
+        maxSizeMb: 10,
+        descriptionFr: 'Passeport en cours de validité du représentant habilité.',
+      },
+      {
+        docType: 'PATENTE_FISCAL',
+        labelFr: 'Certificat d’Immatriculation Fiscale Nationale (Tax ID)',
+        labelEn: 'National Tax Identification Certificate',
+        labelAr: 'شهادة التعريف الضريبي الوطني',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Certificat officiel attestant l’assujettissement fiscal.',
+      },
+      {
+        docType: 'RNE_KBIS',
+        labelFr: 'Extrait du Registre Officiel des Sociétés (< 3 mois)',
+        labelEn: 'National Company Registry Certificate (< 3 months)',
+        labelAr: 'مستخرج السجل التجاري الوطني الرسمي',
+        mandatory: true,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 10,
+        descriptionFr: 'Certificate of Good Standing ou extrait officiel du registre du commerce.',
+      },
+      {
+        docType: 'RIB_ATTESTATION',
+        labelFr: 'Attestation Bancaire SWIFT / BIC',
+        labelEn: 'SWIFT / BIC Bank Account Certificate',
+        labelAr: 'شهادة الحساب البنكي الدولي SWIFT',
+        mandatory: false,
+        acceptedFormats: 'PDF',
+        maxSizeMb: 5,
+        descriptionFr: 'Coordonnées bancaires internationales certifiées.',
+      },
+    ],
+  },
+};
+
+// Récupère les exigences documentaires adaptées selon le profil acteur et la juridiction
+export function getRequiredDocsForDossier(
+  actorType: KycActorProfile,
+  jurisdiction?: string
+): KycRequiredDocSpec[] {
+  if (actorType === 'TRANSPORTEUR') {
+    return KYC_REQUIRED_DOCUMENTS_BY_PROFILE.TRANSPORTEUR;
+  }
+  if (actorType === 'FOURNISSEUR') {
+    return KYC_REQUIRED_DOCUMENTS_BY_PROFILE.FOURNISSEUR;
+  }
+  if (jurisdiction && KYC_JURISDICTION_REGISTRY[jurisdiction]) {
+    return KYC_JURISDICTION_REGISTRY[jurisdiction].docSpecs;
+  }
+  return KYC_REQUIRED_DOCUMENTS_BY_PROFILE.CLIENT;
+}
+
+// Génération d'une URL présignée temporaire (expiration 15 min / 900s) pour téléchargement privé
+export function generateKycPresignedDocumentUrl(params: {
+  dossierId: string;
+  docId: string;
+  fileName: string;
+  s3ObjectKey?: string;
+  expiresInSeconds?: number;
+  signingSecret?: string;
+}): KYCPresignedUrlResponse {
+  const expiresInSeconds = params.expiresInSeconds ?? 900; // 15 minutes par défaut
+  const nowMs = Date.now();
+  const expiresAtMs = nowMs + expiresInSeconds * 1000;
+  const issuedAt = new Date(nowMs).toISOString();
+  const expiresAt = new Date(expiresAtMs).toISOString();
+
+  const objectKey =
+    params.s3ObjectKey ??
+    `vault/${params.dossierId}/${params.docId}_${params.fileName.replace(/\s+/g, '_')}`;
+
+  const secret = params.signingSecret ?? 'tradelink-kyc-vault-master-signing-key-v6';
+  const signingPayload = `${objectKey}:${expiresAtMs}:${params.docId}:${secret}`;
+  const signatureSha256 = deterministicHex(`hmac-sha256:${signingPayload}`, 64);
+
+  const url = `https://s3.tradelink-kyc.internal/${objectKey}?X-TL-Algorithm=HMAC-SHA256&X-TL-Credential=tradelink-kyc-vault-agent&X-TL-Date=${encodeURIComponent(
+    issuedAt
+  )}&X-TL-Expires=${expiresInSeconds}&X-TL-Signature=${signatureSha256}`;
+
+  return {
+    url,
+    s3ObjectKey: objectKey,
+    docType: params.docId.split('-')[0] ?? 'DOCUMENT',
+    fileName: params.fileName,
+    expiresInSeconds,
+    expiresAt,
+    issuedAt,
+    signatureSha256,
+  };
+}
+
 // Hachage déterministe SHA-256 simulé et génération de métadonnées d'enveloppe AES-256-GCM
 function deterministicHex(seed: string, length: number): string {
   let h1 = 0x811c9dc5;
@@ -315,7 +707,8 @@ export function encryptAndStoreKycDocument(params: {
 // Vérifie si tous les documents obligatoires du profil ont été déposés
 export function checkMandatoryKycCompletion(
   actorType: KycActorProfile,
-  documents: KYCDocumentItem[]
+  documents: KYCDocumentItem[],
+  jurisdiction?: string
 ): {
   totalMandatory: number;
   uploadedMandatory: number;
@@ -323,24 +716,24 @@ export function checkMandatoryKycCompletion(
   allMandatoryUploaded: boolean;
   progressPercent: number;
 } {
-  const specs = KYC_REQUIRED_DOCUMENTS_BY_PROFILE[actorType] ?? [];
+  const specs = getRequiredDocsForDossier(actorType, jurisdiction);
   const mandatorySpecs = specs.filter((s) => s.mandatory);
   const uploadedTypes = new Set(
     documents.filter((d) => d.status !== 'REJECTED').map((d) => String(d.docType))
   );
 
-  // Compatibilité avec les codes courts existants ('CIN', 'PATENTE', 'RNE')
+  // Compatibilité avec les codes courts existants ('CIN', 'PATENTE', 'RNE', etc.)
   const matchesSpec = (specDocType: string): boolean => {
     if (uploadedTypes.has(specDocType)) return true;
     if (specDocType === 'CIN_DIRIGEANT' && uploadedTypes.has('CIN')) return true;
-    if (specDocType === 'PATENTE_FISCAL' && uploadedTypes.has('PATENTE')) return true;
+    if (specDocType === 'PATENTE_FISCAL' && (uploadedTypes.has('PATENTE') || uploadedTypes.has('TAX_ID'))) return true;
     if (
       (specDocType === 'RNE_KBIS' || specDocType === 'RNE_HANDELSREGISTER') &&
-      uploadedTypes.has('RNE')
+      (uploadedTypes.has('RNE') || uploadedTypes.has('KBIS') || uploadedTypes.has('REGISTRY'))
     ) {
       return true;
     }
-    if (specDocType === 'TVA_FISCAL_CERT' && uploadedTypes.has('TAX_CERT')) return true;
+    if (specDocType === 'TVA_FISCAL_CERT' && (uploadedTypes.has('TAX_CERT') || uploadedTypes.has('PATENTE'))) return true;
     if (specDocType === 'ISO_GDP_CERT' && uploadedTypes.has('ID_CARD')) return true;
     return false;
   };
@@ -428,15 +821,19 @@ export function executeKycCronBatch(
     dos.daysElapsed = daysElapsed;
     dos.daysRemaining = Math.max(0, 7 - daysElapsed);
 
-    const completion = checkMandatoryKycCompletion(dos.actorType, dos.documents);
+    const completion = checkMandatoryKycCompletion(dos.actorType, dos.documents, dos.jurisdiction);
     const hasSubmittedAllInTime =
       Boolean(dos.submittedAt) ||
       dos.status === 'SUBMITTED_IN_TIME_PENDING_REVIEW' ||
+      dos.status === 'DOCUMENTS_SOUMIS' ||
+      dos.status === 'EN_VERIFICATION' ||
+      dos.status === 'UNDER_REVIEW' ||
       dos.status === 'VALIDATED' ||
+      dos.status === 'VALIDE' ||
       completion.allMandatoryUploaded;
 
     // 1. Si déjà validé, rien à suspendre ni relancer
-    if (dos.status === 'VALIDATED') {
+    if (dos.status === 'VALIDATED' || dos.status === 'VALIDE') {
       continue;
     }
 
