@@ -1,0 +1,1074 @@
+// ============================================================================
+// TRADELINK V6.0 — SCHÉMA PRISMA FINALISÉ (56 MODÈLES : 44 INITIAUX + 12 COMPLÉMENTAIRES)
+// Conforme au Chapitre 8 & Section 8.1 du Cahier des Charges (17 novembre 2026)
+// - Précision financière stricte : @db.Decimal(18, 4) (aucun flottant binaire)
+// - Relations explicites (@relation), contraintes uniques (@@unique) et index (@@index)
+// - Suppressions logiques (deletedAt) et traçabilité (createdBy, updatedBy)
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 1. User — Utilisateurs tous rôles
+model User {
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  phone               String?   @unique
+  passwordHash        String    // Argon2id uniquement
+  firstName           String
+  lastName            String
+  companyName         String?
+  locale              String    @default("fr") // fr | en | ar
+  themePreference     String    @default("system") // system | light | dark
+  isActive            Boolean   @default(true)
+  isSuspended         Boolean   @default(false)
+  suspensionReason    String?
+  mfaEnabled          Boolean   @default(false) // Obligatoire pour Admin
+  mfaSecretEncrypted  String?
+  activeSessionId     String?   // Session unique active
+  createdBy           String?
+  updatedBy           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime? // Suppression logique (Soft Delete)
+
+  userRoles           UserRole[]
+  sessions            Session[]
+  devices             Device[]
+  kyc                 KYC?
+  clientProfile       Client?
+  supplierProfile     Supplier?
+  carrierProfile      Carrier?
+  ownedDocuments      Document[]
+  idpDocuments        DocumentIDP[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  aiConversations     AIConversation[]
+  voiceInteractions   VoiceInteraction[]
+  importJobs          ImportJob[]
+  exportJobs          ExportJob[]
+  calculationPeriods  CalculationPeriod[]
+  createdRooms        Room[]             @relation("RoomCreator")
+  roomParticipations  Participant[]
+  requestedTickets    Ticket[]           @relation("TicketRequester")
+  assignedTickets     Ticket[]           @relation("TicketAssignee")
+
+  @@index([email, deletedAt])
+  @@index([isActive, isSuspended])
+}
+
+// 2. Role — Rôles (Admin, Client, Fournisseur, Transporteur, Comptable, Support, Visiteur)
+model Role {
+  id              String           @id @default(uuid())
+  code            String           @unique // ADMIN | CLIENT | FOURNISSEUR | TRANSPORTEUR | COMPTABLE | SUPPORT | VISITEUR
+  nameFr          String
+  nameEn          String
+  nameAr          String
+  description     String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+}
+
+// 3. Permission — Permissions granulaires
+model Permission {
+  id              String           @id @default(uuid())
+  code            String           @unique // ex: orders:read:own, kyc:validate, backup:restore:approve
+  domain          String
+  description     String
+  createdAt       DateTime         @default(now())
+  rolePermissions RolePermission[]
+
+  @@index([domain])
+}
+
+// 4. UserRole — Association utilisateur-rôle
+model UserRole {
+  id         String   @id @default(uuid())
+  userId     String
+  roleId     String
+  assignedBy String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([roleId])
+}
+
+// 5. RolePermission — Association rôle-permission
+model RolePermission {
+  id           String     @id @default(uuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime   @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+// 6. Session — Sessions actives et révocables (Session unique via Redis + PostgreSQL)
+model Session {
+  id               String    @id @default(uuid())
+  userId           String
+  refreshTokenHash String    @unique
+  ipAddress        String
+  userAgent        String
+  deviceId         String?
+  isRevoked        Boolean   @default(false)
+  revokedReason    String?   // ex: NEW_LOGIN_SINGLE_SESSION_POLICY
+  expiresAt        DateTime
+  createdAt        DateTime  @default(now())
+  revokedAt        DateTime?
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device? @relation(fields: [deviceId], references: [id])
+
+  @@index([userId, isRevoked])
+  @@index([expiresAt])
+}
+
+// 7. Device — Appareils connus et signaux de confiance
+model Device {
+  id          String    @id @default(uuid())
+  userId      String
+  fingerprint String
+  deviceName  String
+  os          String
+  browser     String
+  isTrusted   Boolean   @default(false)
+  lastSeenAt  DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@unique([userId, fingerprint])
+}
+
+// 8. KYC — Dossier KYC et statut (Délai 7 jours J+1/J+3/J+5/J+6/J+7)
+model KYC {
+  id              String        @id @default(uuid())
+  userId          String        @unique
+  actorType       String        // CLIENT | FOURNISSEUR | TRANSPORTEUR
+  jurisdiction    String        @default("MA") // MA, FR, TN, AE, etc.
+  status          String        @default("PENDING_SUBMISSION") // PENDING_SUBMISSION | SUBMITTED_IN_TIME_PENDING_REVIEW | VALIDATED | REJECTED | SUSPENDED_J7
+  startedAt       DateTime      @default(now())
+  deadlineAt      DateTime      // J+7 calendaires
+  submittedAt     DateTime?
+  reviewedAt      DateTime?
+  reviewedById    String?
+  rejectionReason String?       // Motif explicite obligatoire en cas de rejet
+  remindersSent   String[]      // ["J+1", "J+3", "J+5", "J+6"]
+  createdBy       String?
+  updatedBy       String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents KYCDocument[]
+
+  @@index([status, deadlineAt])
+  @@index([jurisdiction, actorType])
+}
+
+// 9. KYCDocument — Documents KYC chiffrés (AES-256-GCM) et métadonnées
+model KYCDocument {
+  id               String        @id @default(uuid())
+  kycId            String
+  docType          String        // CIN | PATENTE | RNE | PERMIS | CARTE_GRISE | ASSURANCE
+  fileName         String
+  s3ObjectKey      String        // Stockage S3/MinIO chiffré
+  encryptionKeyId  String        // Référence DEK/KEK KMS
+  sha256Checksum   String
+  mimeType         String
+  fileSizeBytes    Int
+  status           String        @default("UPLOADED") // UPLOADED | VALIDATED | REJECTED
+  rejectionComment String?
+  version          Int           @default(1)
+  createdAt        DateTime      @default(now())
+  deletedAt        DateTime?
+
+  kyc           KYC           @relation(fields: [kycId], references: [id], onDelete: Cascade)
+  encryptionKey EncryptionKey @relation(fields: [encryptionKeyId], references: [id])
+
+  @@index([kycId, docType])
+}
+
+// 10. Client — Profil client
+model Client {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  companyCode     String    @unique
+  taxId           String?
+  billingAddress  String
+  shippingAddress String
+  currency        String    @default("EUR")
+  creditLimit     Decimal   @default(50000.0000) @db.Decimal(18, 4)
+  createdBy       String?
+  updatedBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders   Order[]
+  quotes   Quote[]
+  invoices Invoice[]
+
+  @@index([companyCode, deletedAt])
+}
+
+// 11. Supplier — Profil fournisseur
+model Supplier {
+  id            String      @id @default(uuid())
+  userId        String      @unique
+  supplierCode  String      @unique
+  taxId         String?
+  warehouseAddr String
+  rating        Decimal     @default(5.00) @db.Decimal(4, 2)
+  createdBy     String?
+  updatedBy     String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  deletedAt     DateTime?
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products   Product[]
+  orderLines OrderLine[]
+
+  @@index([supplierCode, deletedAt])
+}
+
+// 12. Carrier — Profil transporteur
+model Carrier {
+  id            String     @id @default(uuid())
+  userId        String     @unique
+  carrierCode   String     @unique
+  licenseNumber String
+  fleetSize     Int        @default(1)
+  vehicleTypes  String[]   // ["SEMI_TRUCK", "DELIVERY_VAN", "AIR_CARGO", "SEA_CONTAINER"]
+  createdBy     String?
+  updatedBy     String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  deletedAt     DateTime?
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shipments Shipment[]
+
+  @@index([carrierCode, deletedAt])
+}
+
+// 13. Product — Produit B2B
+model Product {
+  id             String               @id @default(uuid())
+  supplierId     String
+  sku            String               @unique
+  category       String
+  unitPrice      Decimal              @db.Decimal(18, 4)
+  currency       String               @default("EUR")
+  taxRate        Decimal              @default(20.0000) @db.Decimal(6, 4)
+  unit           String               @default("PALLET")
+  stockAvailable Int                  @default(0)
+  stockReserved  Int                  @default(0)
+  minStockAlert  Int                  @default(10)
+  icon3d         String               @default("pallet-load")
+  isPublished    Boolean              @default(true)
+  createdBy      String?
+  updatedBy      String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  deletedAt      DateTime?
+
+  supplier       Supplier             @relation(fields: [supplierId], references: [id])
+  translations   ProductTranslation[]
+  stockMovements StockMovement[]
+  orderLines     OrderLine[]
+  quoteLines     QuoteLine[]
+
+  @@index([supplierId, isPublished, deletedAt])
+  @@index([category])
+}
+
+// 14. ProductTranslation — Traductions produit (FR/EN/AR)
+model ProductTranslation {
+  id          String @id @default(uuid())
+  productId   String
+  locale      String // fr | en | ar
+  name        String
+  description String
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, locale])
+}
+
+// 15. StockMovement — Mouvements de stock
+model StockMovement {
+  id           String   @id @default(uuid())
+  productId    String
+  movementType String   // IN | OUT | ADJUSTMENT | RESERVATION | RELEASE
+  quantity     Int
+  previousQty  Int
+  newQty       Int
+  reason       String
+  createdById  String
+  createdAt    DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([productId, createdAt])
+}
+
+// 16. Order — Commande B2B
+model Order {
+  id              String      @id @default(uuid())
+  orderNumber     String      @unique
+  clientId        String
+  status          String      @default("PENDING") // DRAFT | PENDING | ACCEPTED | PREPARING | SHIPPED | DELIVERED | REFUSED | CANCELLED
+  subtotalAmount  Decimal     @db.Decimal(18, 4)
+  taxAmount       Decimal     @db.Decimal(18, 4)
+  shippingAmount  Decimal     @db.Decimal(18, 4)
+  totalAmount     Decimal     @db.Decimal(18, 4)
+  currency        String      @default("EUR")
+  shippingAddress String
+  idempotencyKey  String?     @unique
+  createdBy       String?
+  updatedBy       String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  deletedAt       DateTime?
+
+  client    Client      @relation(fields: [clientId], references: [id])
+  lines     OrderLine[]
+  invoices  Invoice[]
+  shipments Shipment[]
+
+  @@index([clientId, status, deletedAt])
+  @@index([createdAt])
+}
+
+// 17. OrderLine — Lignes de commande
+model OrderLine {
+  id         String   @id @default(uuid())
+  orderId    String
+  productId  String
+  supplierId String
+  quantity   Int
+  unitPrice  Decimal  @db.Decimal(18, 4)
+  taxRate    Decimal  @db.Decimal(6, 4)
+  totalLine  Decimal  @db.Decimal(18, 4)
+  lineStatus String   @default("PENDING")
+
+  order    Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id])
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@index([orderId])
+  @@index([supplierId, lineStatus])
+}
+
+// 18. Quote — Devis
+model Quote {
+  id             String      @id @default(uuid())
+  quoteNumber    String      @unique
+  clientId       String
+  status         String      @default("DRAFT") // DRAFT | SENT | RESPONDED | ACCEPTED | CONVERTED | REFUSED
+  subtotalAmount Decimal     @db.Decimal(18, 4)
+  taxAmount      Decimal     @db.Decimal(18, 4)
+  totalAmount    Decimal     @db.Decimal(18, 4)
+  amountInWords  String?
+  validUntil     DateTime
+  createdBy      String?
+  updatedBy      String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  deletedAt      DateTime?
+
+  client Client      @relation(fields: [clientId], references: [id])
+  lines  QuoteLine[]
+
+  @@index([clientId, status, deletedAt])
+}
+
+// 19. QuoteLine — Lignes de devis
+model QuoteLine {
+  id        String  @id @default(uuid())
+  quoteId   String
+  productId String
+  quantity  Int
+  unitPrice Decimal @db.Decimal(18, 4)
+  discount  Decimal @default(0) @db.Decimal(6, 4)
+  totalLine Decimal @db.Decimal(18, 4)
+
+  quote   Quote   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([quoteId])
+}
+
+// 20. Invoice — Facture
+model Invoice {
+  id              String           @id @default(uuid())
+  invoiceNumber   String           @unique
+  orderId         String
+  clientId        String
+  status          String           @default("ISSUED") // DRAFT | ISSUED | PAID | OVERDUE | CANCELLED
+  subtotal        Decimal          @db.Decimal(18, 4)
+  taxAmount       Decimal          @db.Decimal(18, 4)
+  totalAmount     Decimal          @db.Decimal(18, 4)
+  currency        String           @default("EUR")
+  jurisdiction    String           @default("FR")
+  issuedAt        DateTime         @default(now())
+  dueAt           DateTime
+  paidAt          DateTime?
+  pdfObjectKey    String?
+  createdBy       String?
+  updatedBy       String?
+  deletedAt       DateTime?
+
+  order           Order            @relation(fields: [orderId], references: [id])
+  client          Client           @relation(fields: [clientId], references: [id])
+  payments        Payment[]
+  reconciliations Reconciliation[]
+
+  @@index([clientId, status, deletedAt])
+  @@index([orderId])
+}
+
+// 21. Payment — Paiement
+model Payment {
+  id               String           @id @default(uuid())
+  invoiceId        String
+  paymentReference String           @unique
+  provider         String           @default("STRIPE") // STRIPE | WIRE_TRANSFER | LC
+  amount           Decimal          @db.Decimal(18, 4)
+  currency         String           @default("EUR")
+  status           String           @default("SUCCEEDED") // PENDING | SUCCEEDED | FAILED | REFUNDED
+  webhookEventId   String?          @unique // Idempotence webhook
+  reconciled       Boolean          @default(false)
+  createdAt        DateTime         @default(now())
+
+  invoice          Invoice          @relation(fields: [invoiceId], references: [id])
+  reconciliations  Reconciliation[]
+
+  @@index([invoiceId, status])
+}
+
+// 22. Shipment — Expédition & Mission Transport
+model Shipment {
+  id               String              @id @default(uuid())
+  trackingNumber   String              @unique
+  orderId          String
+  carrierId        String?
+  transportMode    String              @default("ROAD") // ROAD | AIR | SEA | RAIL
+  origin           String
+  destination      String
+  status           String              @default("TO_ASSIGN") // TO_ASSIGN | ACCEPTED | COLLECTED | IN_TRANSIT | OUT_FOR_DELIVERY | DELIVERED | FAILED
+  weightKg         Decimal             @db.Decimal(12, 3)
+  volumeM3         Decimal             @db.Decimal(12, 3)
+  podSignatureKey  String?
+  podPhotoKey      String?
+  podTimestamp     DateTime?
+  estimatedArrival DateTime
+  createdBy        String?
+  updatedBy        String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  deletedAt        DateTime?
+
+  order     Order               @relation(fields: [orderId], references: [id])
+  carrier   Carrier?            @relation(fields: [carrierId], references: [id])
+  documents TransportDocument[]
+  incidents Incident[]
+
+  @@index([carrierId, status])
+  @@index([orderId])
+}
+
+// 23. TransportDocument — Documents transport (CMR, LTA, Douane)
+model TransportDocument {
+  id          String   @id @default(uuid())
+  shipmentId  String
+  docType     String   // CMR | WAYBILL | CUSTOMS_DECLARATION | PACKING_LIST
+  reference   String
+  s3ObjectKey String
+  createdAt   DateTime @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId, docType])
+}
+
+// 24. Incident — Incident logistique
+model Incident {
+  id          String    @id @default(uuid())
+  shipmentId  String
+  title       String
+  description String
+  severity    String    @default("MEDIUM") // LOW | MEDIUM | HIGH | CRITICAL
+  status      String    @default("OPEN") // OPEN | IN_PROGRESS | RESOLVED
+  reportedBy  String
+  resolvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId, status])
+}
+
+// 25. Document — Documents génériques GED
+model Document {
+  id            String    @id @default(uuid())
+  ownerId       String
+  title         String
+  category      String
+  mimeType      String
+  fileSizeBytes Int
+  s3ObjectKey   String
+  sharedWithIds String[]
+  avScanStatus  String    @default("CLEAN") // PENDING | CLEAN | QUARANTINED
+  createdAt     DateTime  @default(now())
+  deletedAt     DateTime?
+
+  owner User @relation(fields: [ownerId], references: [id])
+
+  @@index([ownerId, category, deletedAt])
+}
+
+// 26. Notification — Notifications multi-canaux
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  category  String   // ORDER | KYC | SECURITY | LOGISTICS | FINANCE | SUPPORT
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+}
+
+// 27. AuditLog — Journal d'audit append-only immuable
+model AuditLog {
+  id            String   @id @default(uuid())
+  actorId       String?
+  actorRole     String
+  action        String   // ex: KYC_VALIDATE, BACKUP_RESTORE_APPROVE, KMS_KEY_ROTATE
+  targetType    String
+  targetId      String
+  result        String   // SUCCESS | DENIED | FAILURE
+  correlationId String
+  ipAddress     String
+  metadataJson  String   // Aucun secret, mot de passe ou clé brute
+  createdAt     DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([actorId, createdAt])
+  @@index([action, result])
+  @@index([correlationId])
+}
+
+// 28. Setting — Paramètres plateforme par juridiction
+model Setting {
+  id           String   @id @default(uuid())
+  key          String   @unique
+  valueJson    String
+  jurisdiction String   @default("GLOBAL")
+  updatedById  String
+  updatedAt    DateTime @updatedAt
+
+  @@index([jurisdiction])
+}
+
+// 29. DocumentIDP — Documents traités par OCR / IDP
+model DocumentIDP {
+  id               String   @id @default(uuid())
+  uploadedById     String
+  fileName         String
+  s3ObjectKey      String
+  documentType     String   // INVOICE | CMR | CUSTOMS | PURCHASE_ORDER
+  extractedJson    String
+  confidenceScore  Decimal  @db.Decimal(5, 2)
+  validationStatus String   @default("PENDING_HUMAN_REVIEW") // PENDING_HUMAN_REVIEW | VALIDATED | REJECTED
+  validatedById    String?
+  createdAt        DateTime @default(now())
+
+  uploadedBy User @relation(fields: [uploadedById], references: [id])
+
+  @@index([uploadedById, validationStatus])
+}
+
+// 30. DynamicFieldSchema — Schémas de champs dynamiques proposés par IA/IDP et validés par Admin
+model DynamicFieldSchema {
+  id           String    @id @default(uuid())
+  entityTarget String    // INVOICE | ORDER | SHIPMENT
+  fieldKey     String
+  fieldLabelFr String
+  fieldLabelEn String
+  fieldLabelAr String
+  dataType     String    // STRING | DECIMAL | DATE | BOOLEAN
+  confidence   Decimal   @db.Decimal(5, 2)
+  status       String    @default("PROPOSED_BY_IDP") // PROPOSED_BY_IDP | APPROVED_BY_ADMIN | REJECTED
+  approvedById String?
+  approvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@unique([entityTarget, fieldKey])
+  @@index([status])
+}
+
+// 31. VoiceInteraction — Métadonnées d'interactions vocales STT/TTS
+model VoiceInteraction {
+  id              String   @id @default(uuid())
+  userId          String
+  locale          String   // fr-FR | en-US | ar-SA
+  durationSeconds Int
+  intentDetected  String?
+  consentGranted  Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// 32. AIConversation — Conversations Assistant IA (RAG filtré par rôle/ownership)
+model AIConversation {
+  id        String      @id @default(uuid())
+  userId    String
+  userRole  String
+  title     String
+  provider  String      @default("OPENAI") // OPENAI | OLLAMA
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  deletedAt DateTime?
+
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages AIMessage[]
+
+  @@index([userId, deletedAt])
+}
+
+// 33. AIMessage — Messages IA
+model AIMessage {
+  id             String         @id @default(uuid())
+  conversationId String
+  sender         String         // USER | ASSISTANT
+  content        String
+  sourcesRefs    String[]       // Références RAG autorisées uniquement
+  createdAt      DateTime       @default(now())
+
+  conversation AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+// 34. ImportJob — Jobs d'import (SQL, BAK, DBF/CDX, CSV, XLSX, JSON en Sandbox isolée)
+model ImportJob {
+  id                    String    @id @default(uuid())
+  initiatedById         String
+  fileName              String
+  fileFormat            String    // SQL | BAK | DBF | CSV | XLSX | JSON
+  sha256Checksum        String
+  avScanStatus          String    @default("CLEAN")
+  sandboxStatus         String    @default("ISOLATED_ANALYZING") // ISOLATED_ANALYZING | SANDBOX_READY | VALIDATED | FAILED | PROMOTED_DOUBLE_APPROVED
+  compatibilityReport   String
+  rowsDetected          Int       @default(0)
+  firstAdminApproverId  String?
+  secondAdminApproverId String?   // Double validation obligatoire pour migration prod
+  createdAt             DateTime  @default(now())
+  completedAt           DateTime?
+
+  initiatedBy User @relation(fields: [initiatedById], references: [id])
+
+  @@index([initiatedById, sandboxStatus])
+}
+
+// 35. ExportJob — Jobs d'export contrôlés
+model ExportJob {
+  id            String   @id @default(uuid())
+  requestedById String
+  domain        String
+  format        String   // PDF | XLSX | CSV | JSON
+  status        String   @default("COMPLETED")
+  s3ObjectKey   String?
+  createdAt     DateTime @default(now())
+
+  requestedBy User @relation(fields: [requestedById], references: [id])
+
+  @@index([requestedById, createdAt])
+}
+
+// 36. EncryptionKey — Métadonnées de clés KMS (KEK/DEK) ; JAMAIS de secret brut en base
+model EncryptionKey {
+  id             String        @id @default(uuid())
+  keyAlias       String        @unique
+  keyType        String        // KEK_MASTER | DEK_ENVELOPE
+  algorithm      String        @default("AES-256-GCM")
+  kmsProvider    String        @default("HASHICORP_VAULT_KMS")
+  kmsKeyArn      String        // Identifiant externe uniquement, aucun secret
+  version        Int           @default(1)
+  status         String        @default("ACTIVE") // ACTIVE | ROTATING | ARCHIVED
+  lastRotatedAt  DateTime      @default(now())
+  nextRotationAt DateTime
+  rotatedById    String?
+
+  kycDocuments   KYCDocument[]
+  backups        Backup[]
+
+  @@index([status, keyType])
+}
+
+// 37. Backup — Sauvegardes chiffrées et restauration soumise à double validation
+model Backup {
+  id                   String        @id @default(uuid())
+  backupCode           String        @unique
+  type                 String        // FULL_SCHEDULED | MANUAL_SNAPSHOT | PRE_MIGRATION
+  sizeBytes            BigInt
+  s3ObjectKey          String
+  encryptionKeyId      String
+  sha256Checksum       String
+  status               String        @default("VERIFIED")
+  restoreStatus        String        @default("NONE") // NONE | PENDING_SECOND_APPROVAL | APPROVED_READY | RESTORED
+  restoreInitiatedById String?
+  restoreSecondAdminId String?       // Doit être != restoreInitiatedById
+  restorePlanHash      String?       // Immuabilité du plan approuvé
+  createdAt            DateTime      @default(now())
+
+  encryptionKey EncryptionKey @relation(fields: [encryptionKeyId], references: [id])
+
+  @@index([restoreStatus, createdAt])
+}
+
+// 38. CalculationRule — Règles de calcul financier versionnées
+model CalculationRule {
+  id             String              @id @default(uuid())
+  code           String
+  version        Int                 @default(1)
+  name           String
+  dayCountBasis  String              @default("ACT/365") // ACT/365 | ACT/360 | ACT/ACT
+  defaultRatePct Decimal             @db.Decimal(8, 4)
+  roundingMode   String              @default("ROUND_HALF_UP")
+  isActive       Boolean             @default(true)
+  createdAt      DateTime            @default(now())
+
+  periods CalculationPeriod[]
+
+  @@unique([code, version])
+}
+
+// 39. CalculationPeriod — Périodes et historique de calculs déterministes
+model CalculationPeriod {
+  id            String          @id @default(uuid())
+  ruleId        String
+  executedById  String
+  principal     Decimal         @db.Decimal(18, 4)
+  annualRatePct Decimal         @db.Decimal(8, 4)
+  startDate     DateTime
+  endDate       DateTime
+  daysCount     Int
+  annualBasis   Int             // 365, 360 ou 366 (année bissextile ACT/ACT)
+  interestCalc  Decimal         @db.Decimal(18, 4)
+  totalAmount   Decimal         @db.Decimal(18, 4)
+  currency      String          @default("EUR")
+  createdAt     DateTime        @default(now())
+
+  rule       CalculationRule @relation(fields: [ruleId], references: [id])
+  executedBy User            @relation(fields: [executedById], references: [id])
+
+  @@index([executedById, createdAt])
+}
+
+// 40. FloatingButtonConfig — Configuration des boutons flottants
+model FloatingButtonConfig {
+  id              String   @id @default(uuid())
+  code            String   @unique // WHATSAPP | AI_ASSISTANT | VOICE_DICTATION | LIVE_SUPPORT
+  labelFr         String
+  labelEn         String
+  labelAr         String
+  icon3d          String
+  position        String   @default("BOTTOM_RIGHT")
+  displayOrder    Int      @default(1)
+  isEnabled       Boolean  @default(true)
+  requiresConsent Boolean  @default(false)
+  allowedRoles    String[]
+  updatedAt       DateTime @updatedAt
+}
+
+// 41. Room — Salles Room Live (Création interdite aux clients sauf délégation ponctuelle)
+model Room {
+  id               String          @id @default(uuid())
+  roomCode         String          @unique
+  title            String
+  createdById      String
+  creatorRole      String          // ADMIN | FOURNISSEUR | TRANSPORTEUR | COMPTABLE | SUPPORT
+  delegatedHostId  String?         // Délégation ponctuelle sur cette salle uniquement
+  status           String          @default("SCHEDULED") // SCHEDULED | LIVE | ENDED
+  recordingConsent Boolean         @default(false)
+  sfuProvider      String          @default("LIVEKIT_WEBRTC")
+  scheduledAt      DateTime
+  endedAt          DateTime?
+  createdAt        DateTime        @default(now())
+  deletedAt        DateTime?
+
+  createdBy    User            @relation("RoomCreator", fields: [createdById], references: [id])
+  participants Participant[]
+  messages     RoomMessage[]
+  summary      MeetingSummary?
+
+  @@index([status, scheduledAt])
+}
+
+// 42. Participant — Participants et rôles dans une salle Room Live
+model Participant {
+  id           String   @id @default(uuid())
+  roomId       String
+  userId       String
+  roomRole     String   @default("PARTICIPANT") // HOST | CO_HOST_DELEGATED | PARTICIPANT
+  consentGiven Boolean  @default(false)
+  joinedAt     DateTime @default(now())
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+}
+
+// 43. RoomMessage — Messages de chat en salle Room Live
+model RoomMessage {
+  id         String   @id @default(uuid())
+  roomId     String
+  senderId   String
+  senderName String
+  content    String
+  createdAt  DateTime @default(now())
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, createdAt])
+}
+
+// 44. MeetingSummary — Résumés IA post-réunion
+model MeetingSummary {
+  id            String   @id @default(uuid())
+  roomId        String   @unique
+  summaryText   String
+  decisionsJson String
+  actionItems   String[]
+  pdfObjectKey  String?
+  createdAt     DateTime @default(now())
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================================
+// MODÈLES SUPPLÉMENTAIRES REQUIS (SECTION 8.1 & 7.3 : COMPTABILITÉ, SUPPORT,
+// JOURNAL DE TRANSITION WORKFLOW & DOUBLE VALIDATION ADMIN) — MODÈLES 45 À 56
+// ============================================================================
+
+// 45. ChartOfAccount — Plan comptable par juridiction
+model ChartOfAccount {
+  id          String                @id @default(uuid())
+  code        String                @unique // ex: 411100, 401100, 701100, 512100
+  labelFr     String
+  labelEn     String
+  labelAr     String
+  accountType String                // ASSET | LIABILITY | EQUITY | REVENUE | EXPENSE
+  balance     Decimal               @default(0) @db.Decimal(18, 4)
+  entryLines  AccountingEntryLine[]
+}
+
+// 46. FiscalPeriod — Période et exercice comptable
+model FiscalPeriod {
+  id        String            @id @default(uuid())
+  code      String            @unique // ex: FY-2026-Q4
+  startDate DateTime
+  endDate   DateTime
+  isLocked  Boolean           @default(false)
+  entries   AccountingEntry[]
+}
+
+// 47. AccountingJournal — Journaux comptables (ACH, VTE, BNQ, OD)
+model AccountingJournal {
+  id      String            @id @default(uuid())
+  code    String            @unique // ACH | VTE | BNQ | OD
+  nameFr  String
+  nameEn  String
+  nameAr  String
+  entries AccountingEntry[]
+}
+
+// 48. AccountingEntry — Écriture comptable
+model AccountingEntry {
+  id          String                @id @default(uuid())
+  journalId   String
+  periodCode  String
+  entryNumber String                @unique
+  pieceRef    String
+  entryDate   DateTime
+  description String
+  totalDebit  Decimal               @db.Decimal(18, 4)
+  totalCredit Decimal               @db.Decimal(18, 4)
+  status      String                @default("POSTED") // DRAFT | POSTED | LOCKED
+  createdAt   DateTime              @default(now())
+
+  journal AccountingJournal     @relation(fields: [journalId], references: [id])
+  period  FiscalPeriod          @relation(fields: [periodCode], references: [code])
+  lines   AccountingEntryLine[]
+
+  @@index([journalId, periodCode])
+  @@index([pieceRef])
+}
+
+// 49. AccountingEntryLine — Lignes d'écriture comptable
+model AccountingEntryLine {
+  id          String          @id @default(uuid())
+  entryId     String
+  accountCode String
+  label       String
+  debit       Decimal         @default(0) @db.Decimal(18, 4)
+  credit      Decimal         @default(0) @db.Decimal(18, 4)
+
+  entry   AccountingEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  account ChartOfAccount  @relation(fields: [accountCode], references: [code])
+
+  @@index([entryId])
+  @@index([accountCode])
+}
+
+// 50. Reconciliation — Rapprochement bancaire et paiements
+model Reconciliation {
+  id              String   @id @default(uuid())
+  periodCode      String
+  bankReference   String   @unique
+  paymentId       String?
+  invoiceId       String?
+  statementAmount Decimal  @db.Decimal(18, 4)
+  matchedAmount   Decimal  @db.Decimal(18, 4)
+  status          String   @default("MATCHED") // MATCHED | DISCREPANCY | PENDING
+  reconciledById  String
+  reconciledAt    DateTime @default(now())
+
+  payment Payment? @relation(fields: [paymentId], references: [id])
+  invoice Invoice? @relation(fields: [invoiceId], references: [id])
+
+  @@index([periodCode, status])
+}
+
+// 51. Ticket — Ticket d'assistance Support
+model Ticket {
+  id           String             @id @default(uuid())
+  ticketNumber String             @unique
+  requesterId  String
+  assignedToId String?
+  category     String             // LOGISTICS | BILLING | TECHNICAL | ACCOUNT_ACCESS
+  priority     String             @default("HIGH") // LOW | MEDIUM | HIGH | URGENT
+  status       String             @default("OPEN") // OPEN | IN_PROGRESS | WAITING_USER | CLOSED
+  subject      String
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  deletedAt    DateTime?
+
+  requester   User               @relation("TicketRequester", fields: [requesterId], references: [id])
+  assignedTo  User?              @relation("TicketAssignee", fields: [assignedToId], references: [id])
+  messages    TicketMessage[]
+  assignments TicketAssignment[]
+  attachments TicketAttachment[]
+
+  @@index([requesterId, status])
+  @@index([assignedToId, priority])
+}
+
+// 52. TicketMessage — Messages horodatés d'un ticket
+model TicketMessage {
+  id         String   @id @default(uuid())
+  ticketId   String
+  senderId   String
+  senderName String
+  senderRole String
+  content    String
+  isAiDraft  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+}
+
+// 53. TicketAssignment — Historique d'assignation et escalade SLA
+model TicketAssignment {
+  id           String   @id @default(uuid())
+  ticketId     String
+  assignedToId String
+  assignedById String
+  note         String?
+  assignedAt   DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+}
+
+// 54. TicketAttachment — Pièces jointes contrôlées par antivirus
+model TicketAttachment {
+  id            String   @id @default(uuid())
+  ticketId      String
+  fileName      String
+  s3ObjectKey   String
+  mimeType      String
+  fileSizeBytes Int
+  avScanStatus  String   @default("CLEAN")
+  createdAt     DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+}
+
+// 55. WorkflowTransitionLog — Journal immuable de transition d'état (Section 8.1)
+model WorkflowTransitionLog {
+  id            String   @id @default(uuid())
+  entityType    String   // ORDER | SHIPMENT | KYC | QUOTE | INVOICE
+  entityId      String
+  previousState String
+  nextState     String
+  actorId       String
+  actorRole     String
+  reason        String?
+  correlationId String
+  transitionAt  DateTime @default(now())
+
+  @@index([entityType, entityId, transitionAt])
+}
+
+// 56. DualApprovalRequest — Demandes d'opérations critiques à double approbation (Section 7.3)
+model DualApprovalRequest {
+  id              String    @id @default(uuid())
+  operationType   String    // BACKUP_RESTORE | PROD_MIGRATION | KMS_CRITICAL_PARAM
+  targetId        String
+  immutablePlanHash String  // Empreinte SHA-256 du plan et des paramètres
+  initiatorId     String    // Admin #1
+  secondApproverId String?  // Admin #2 (Doit être != initiatorId)
+  status          String    @default("PENDING_SECOND_ADMIN") // PENDING_SECOND_ADMIN | APPROVED | REJECTED | EXPIRED
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  approvedAt      DateTime?
+
+  @@index([operationType, status])
+}

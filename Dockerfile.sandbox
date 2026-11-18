@@ -1,0 +1,33 @@
+# ============================================================================
+# TRADELINK V6.0 — DOCKERFILE SANDBOX ISOLÉE (PROMPT 11 & 12)
+# Conteneur éphémère d'analyse de données legacy sans accès réseau
+# - Isolation réseau stricte (Network: none)
+# - Système de fichiers en lecture seule (read-only rootfs)
+# - Utilisateur sandboxed non privilégié (UID 20001)
+# ============================================================================
+
+FROM alpine:3.20
+
+# Outils minimaux de parsing et de vérification cryptographique (SHA-256)
+RUN apk add --no-cache \
+    coreutils \
+    bash \
+    jq \
+    file \
+    openssl
+
+# Création de l'utilisateur de confinement sandbox
+RUN addgroup -g 20001 sandboxgroup && \
+    adduser -u 20001 -G sandboxgroup -s /bin/bash -D sandboxuser
+
+WORKDIR /sandbox
+
+# Création du point de montage éphémère pour les fichiers temporaires
+RUN mkdir -p /sandbox/input /sandbox/output && \
+    chown -R sandboxuser:sandboxgroup /sandbox
+
+USER sandboxuser
+
+# Point d'entrée de traitement sécurisé
+ENTRYPOINT ["/bin/bash", "-c"]
+CMD ["echo 'TRADELINK Sandbox Environnement Isolé Actif. Réseau : OFF. Prêt pour analyse de dumps.'"]

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="fr" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- MANDATORY: Declare support for both light and dark themes -->
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      try {
+        const savedScheme = localStorage.getItem("color-scheme");
+        const meta = document.querySelector('meta[name="color-scheme"]');
+        if (meta) {
+          meta.content = savedScheme ?? "light dark";
+        }
+        const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        const resolvedDark = savedScheme ? savedScheme === "dark" : prefersDark;
+        document.documentElement.classList.toggle("dark", resolvedDark);
+      } catch (e) {}
+    </script>
+    <title>TRADELINK V6.0 — Plateforme SaaS B2B Commerce, Logistique, Comptabilité & IA</title>
+    <link rel="icon" type="image/png" href="/icons/3d/global-reach.png" />
+  </head>
+  <body class="bg-slate-50 text-slate-900 dark:bg-[#071E21] dark:text-slate-100 antialiased selection:bg-[#E85D22] selection:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,45 @@
+{
+  "name": "tradelink-saas-v6",
+  "private": true,
+  "version": "6.0.0",
+  "description": "TRADELINK V6.0 — Plateforme SaaS B2B de commerce, import-export, gestion, logistique, comptabilité et collaboration",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --port 5173",
+    "typecheck": "tsc --noEmit",
+    "test:backend": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/backend.integration.test.ts'], bundle: true, platform: 'node', outfile: 'dist/backend.integration.test.cjs' });\" && node dist/backend.integration.test.cjs",
+    "test:security": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/security.auth.test.ts'], bundle: true, platform: 'node', outfile: 'dist/security.auth.test.cjs' });\" && node dist/security.auth.test.cjs",
+    "test:kyc": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/kyc.module.test.ts'], bundle: true, platform: 'node', outfile: 'dist/kyc.module.test.cjs' });\" && node dist/kyc.module.test.cjs",
+    "test:commercial": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/commercial.workflow.test.ts'], bundle: true, platform: 'node', outfile: 'dist/commercial.workflow.test.cjs' });\" && node dist/commercial.workflow.test.cjs",
+    "test:logistics": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/logistics.workflow.test.ts'], bundle: true, platform: 'node', outfile: 'dist/logistics.workflow.test.cjs' });\" && node dist/logistics.workflow.test.cjs",
+    "test:accounting": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/accounting.module.test.ts'], bundle: true, platform: 'node', outfile: 'dist/accounting.module.test.cjs' });\" && node dist/accounting.module.test.cjs",
+    "test:ai": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/ai.ocr.room.test.ts'], bundle: true, platform: 'node', outfile: 'dist/ai.ocr.room.test.cjs' });\" && node dist/ai.ocr.room.test.cjs",
+    "test:admin": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/admin.advanced.test.ts'], bundle: true, platform: 'node', outfile: 'dist/admin.advanced.test.cjs' });\" && node dist/admin.advanced.test.cjs",
+    "test:i18n": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/i18n.rtl.test.ts'], bundle: true, platform: 'node', outfile: 'dist/i18n.rtl.test.cjs' });\" && node dist/i18n.rtl.test.cjs",
+    "test:e2e": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/e2e.playwright.test.ts'], bundle: true, platform: 'node', outfile: 'dist/e2e.playwright.test.cjs' });\" && node dist/e2e.playwright.test.cjs",
+    "test:security-audit": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/security.audit.sast.dast.test.ts'], bundle: true, platform: 'node', outfile: 'dist/security.audit.sast.dast.test.cjs' });\" && node dist/security.audit.sast.dast.test.cjs",
+    "test:performance": "node -e \"const esbuild = require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild'); esbuild.buildSync({ entryPoints: ['src/server/tests/performance.bench.test.ts'], bundle: true, platform: 'node', outfile: 'dist/performance.bench.test.cjs' });\" && node dist/performance.bench.test.cjs",
+    "test:all": "npm run test:backend && npm run test:security && npm run test:kyc && npm run test:commercial && npm run test:logistics && npm run test:accounting && npm run test:ai && npm run test:admin && npm run test:i18n && npm run test:e2e && npm run test:security-audit && npm run test:performance"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "decimal.js": "^10.4.3",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

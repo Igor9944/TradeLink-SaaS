@@ -1,0 +1,223 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* MANDATORY: Apply color-scheme to :root or html for viewport-wide theming (dark-mode & dark-mode-toggle guides) */
+:root {
+  --color-brand-light: #0B3438;
+  --color-brand-dark: #E85D22;
+  --color-accent-light: #E85D22;
+  --color-accent-dark: #FB923C;
+  --accent-color: var(--color-accent-light);
+  --color-scrollbar-track: #e2e8f0;
+  --color-scrollbar-thumb: #64748b;
+
+  /* MANDATORY: Fallback for browsers without light-dark support */
+  @media (prefers-color-scheme: dark) {
+    --accent-color: var(--color-accent-dark);
+    --color-scrollbar-track: #0B3438;
+    --color-scrollbar-thumb: #94a3b8;
+  }
+
+  @supports (color: light-dark(white, black)) {
+    --accent-color: light-dark(var(--color-accent-light), var(--color-accent-dark));
+    --color-scrollbar-track: light-dark(#e2e8f0, #0B3438);
+    --color-scrollbar-thumb: light-dark(#64748b, #94a3b8);
+  }
+
+  /* MANDATORY: Automatically adapt native UI to user system preferences */
+  color-scheme: light dark;
+  accent-color: var(--accent-color);
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
+
+  &:has(> head > meta[name="color-scheme"][content="dark"]) {
+    color-scheme: dark;
+    --accent-color: var(--color-accent-dark);
+    --color-scrollbar-track: #0B3438;
+    --color-scrollbar-thumb: #94a3b8;
+  }
+  &:has(> head > meta[name="color-scheme"][content="light"]) {
+    color-scheme: light;
+    --accent-color: var(--color-accent-light);
+    --color-scrollbar-track: #e2e8f0;
+    --color-scrollbar-thumb: #64748b;
+  }
+}
+
+/* Legacy fallback for WebKit/Blink browsers without scrollbar-color */
+@supports not (scrollbar-color: auto) {
+  * {
+    scrollbar-width: auto;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-scrollbar-thumb);
+    border-radius: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-scrollbar-track);
+  }
+}
+
+/* Native <dialog> modal scroll containment (dialog guide) */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background-color: rgb(6 32 35 / 0.65);
+  backdrop-filter: blur(4px);
+}
+
+/* Accessible Tabs styling (tabs guide - WCAG 1.4.1 shape + color) */
+[role="tab"] {
+  position: relative;
+}
+[role="tab"][aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  border-block-end: 3px solid #E85D22;
+}
+
+/* Responsive DataTable container & sticky headers (responsive-table guide) */
+.tradelink-table-wrapper {
+  overflow: auto;
+  max-inline-size: 100%;
+  container-type: inline-size;
+}
+.tradelink-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+}
+.tradelink-table thead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 2;
+}
+.tradelink-table tbody th {
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+}
+
+@container (width < 600px) {
+  .tradelink-table-responsive,
+  .tradelink-table-responsive thead,
+  .tradelink-table-responsive tbody,
+  .tradelink-table-responsive tr,
+  .tradelink-table-responsive th,
+  .tradelink-table-responsive td {
+    display: block;
+  }
+  .tradelink-table-responsive thead {
+    display: none;
+  }
+  .tradelink-table-responsive tr {
+    margin-block-end: 1rem;
+    border-radius: 0.75rem;
+    overflow: hidden;
+  }
+  .tradelink-table-responsive td[data-label]::before {
+    content: attr(data-label) ": ";
+    font-weight: 600;
+    opacity: 0.75;
+  }
+}
+
+/* RTL non-flipping elements (logos, numbers, codes, identifiers) */
+[dir="rtl"] .ltr-preserve {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Native <progress> styling (progress guide — modern-web-guidance) */
+progress.tradelink-progress {
+  appearance: none;
+  border: 0 solid;
+  overflow: clip;
+  container-type: inline-size;
+  --progress-bar-radius: 1e5px;
+  --progress-bar-indeterminate-size: 30%;
+  --progress-bar-indeterminate-animation-duration: 1.5s;
+  border-radius: var(--progress-bar-radius);
+  background: var(--progress-bar-track, var(--color-scrollbar-track));
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  progress.tradelink-progress {
+    --progress-bar-indeterminate-animation-duration: 10s;
+  }
+}
+
+progress.tradelink-progress:dir(rtl) {
+  --progress-bar-indeterminate-animation: progress-bar-indeterminate
+    var(--progress-bar-indeterminate-animation-duration) infinite linear reverse;
+}
+
+progress.tradelink-progress:indeterminate {
+  --progress-bar-animation: var(
+    --progress-bar-indeterminate-animation,
+    progress-bar-indeterminate var(--progress-bar-indeterminate-animation-duration) infinite linear
+  );
+}
+
+progress.tradelink-progress::-webkit-progress-bar {
+  background: transparent;
+}
+
+progress.tradelink-progress::-webkit-progress-value {
+  background: var(--progress-bar-fill, var(--accent-color));
+  border-radius: var(--progress-bar-radius);
+  transition: inline-size 0.3s;
+  animation: var(--progress-bar-animation, revert-rule);
+}
+
+progress.tradelink-progress::-moz-progress-bar {
+  background: var(--progress-bar-fill, var(--accent-color));
+  border-radius: var(--progress-bar-radius);
+  transition: inline-size 0.3s;
+  animation: var(--progress-bar-animation, revert-rule);
+}
+
+@keyframes progress-bar-indeterminate {
+  from,
+  to {
+    inline-size: var(--progress-bar-indeterminate-size);
+    margin-right: auto;
+  }
+  from {
+    translate: -100%;
+  }
+  to {
+    translate: 100cqi;
+  }
+}
+
+/* Deferred form validation after interaction (validate-input-after-interaction guide) */
+.tradelink-validated-input:is(:user-invalid, .user-invalid-fallback) {
+  border-color: #d93025 !important;
+  background-color: rgb(217 48 37 / 0.08);
+}
+
+.tradelink-validated-input:is(:user-valid, .user-valid-fallback) {
+  border-color: #188038;
+}
+
+.visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  clip-path: inset(50%) !important;
+  overflow: hidden !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}

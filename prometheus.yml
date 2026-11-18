@@ -1,0 +1,51 @@
+# ============================================================================
+# TRADELINK V6.0 — CONFIGURATION SCRAPING PROMETHEUS (PROMPT 12)
+# Fréquence de collecte, cibles et surveillance de la disponibilité 99.9%
+# ============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files: []
+
+scrape_configs:
+  # 1. Métriques Applicatives TRADELINK V6.0
+  - job_name: 'tradelink-app'
+    metrics_path: '/api/v1/health'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['app:5173']
+        labels:
+          environment: 'production'
+          service: 'tradelink-core-api'
+
+  # 2. Métriques Base de Données PostgreSQL 16
+  - job_name: 'postgres'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['postgres:5432']
+        labels:
+          role: 'primary-db'
+
+  # 3. Métriques Cache & Sessions Redis 7
+  - job_name: 'redis'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['redis:6379']
+        labels:
+          role: 'session-store'
+
+  # 4. Métriques Gestionnaire KMS Vault
+  - job_name: 'vault-kms'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['vault:8200']
+        labels:
+          role: 'sovereign-kms'
