@@ -27,7 +27,7 @@ const AdminWorkspacePage = lazy(() =>
   import('./pages/AdminWorkspacePages').then((m) => ({ default: m.AdminWorkspacePage }))
 );
 const ClientWorkspacePage = lazy(() =>
-  import('./pages/ClientAndSupplierPages').then((m) => ({ default: m.ClientWorkspacePage }))
+  import('./pages/ClientWorkspacePages').then((m) => ({ default: m.ClientWorkspacePage }))
 );
 const SupplierWorkspacePage = lazy(() =>
   import('./pages/ClientAndSupplierPages').then((m) => ({ default: m.SupplierWorkspacePage }))
