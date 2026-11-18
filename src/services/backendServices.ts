@@ -202,3 +202,99 @@ export function validateDualAdminApproval(initiatorId: string, approverId: strin
     reason: 'Double validation conforme : second administrateur distinct vérifié.',
   };
 }
+
+// ============================================================================
+// SERVICE 23 & 24 : RÉSILIENCE APIS EXTERNES, TIMEOUTS & RETRIES AVEC EXPONENTIAL BACKOFF
+// Protège Stripe, OpenAI, Ollama et SMTP contre les ralentissements réseau
+// ============================================================================
+
+export interface RetryOptions {
+  timeoutMs?: number;
+  maxRetries?: number;
+  backoffMs?: number;
+}
+
+export async function executeWithTimeoutAndRetry<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  options: RetryOptions = {}
+): Promise<T> {
+  const { timeoutMs = 5000, maxRetries = 3, backoffMs = 200 } = options;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const result = await operation(controller.signal);
+      clearTimeout(timer);
+      return result;
+    } catch (err: any) {
+      clearTimeout(timer);
+      lastError = err;
+      if (attempt < maxRetries) {
+        // Exponentielle avec jitter
+        const delay = backoffMs * Math.pow(2, attempt - 1) + Math.random() * 50;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw new Error(
+    `Échec opération externe après ${maxRetries} tentatives. Dernier message : ${
+      (lastError as Error)?.message || 'Timeout'
+    }`
+  );
+}
+
+// ============================================================================
+// MESURE DES PERFORMANCES APM / RUM & OPENTELEMETRY
+// Cible : Latence < 200 ms, traçabilité des opérations
+// ============================================================================
+
+export interface PerformanceMetricPoint {
+  operation: string;
+  durationMs: number;
+  success: boolean;
+  timestamp: number;
+}
+
+class TelemetryCollector {
+  private metrics: PerformanceMetricPoint[] = [];
+
+  public record(operation: string, durationMs: number, success = true) {
+    this.metrics.push({ operation, durationMs, success, timestamp: Date.now() });
+    if (this.metrics.length > 5000) {
+      this.metrics.splice(0, 1000); // Nettoyage de mémoire circulaire
+    }
+  }
+
+  public getSummary(operation?: string): {
+    count: number;
+    avgMs: number;
+    p95Ms: number;
+    maxMs: number;
+    successRatePct: number;
+  } {
+    const subset = operation
+      ? this.metrics.filter((m) => m.operation === operation)
+      : this.metrics;
+    if (subset.length === 0) {
+      return { count: 0, avgMs: 0, p95Ms: 0, maxMs: 0, successRatePct: 100 };
+    }
+    const durations = subset.map((s) => s.durationMs).sort((a, b) => a - b);
+    const sum = durations.reduce((acc, d) => acc + d, 0);
+    const p95Index = Math.min(durations.length - 1, Math.floor(durations.length * 0.95));
+    const successCount = subset.filter((s) => s.success).length;
+
+    return {
+      count: subset.length,
+      avgMs: Number((sum / durations.length).toFixed(2)),
+      p95Ms: Number(durations[p95Index].toFixed(2)),
+      maxMs: Number(durations[durations.length - 1].toFixed(2)),
+      successRatePct: Number(((successCount / subset.length) * 100).toFixed(1)),
+    };
+  }
+}
+
+export const APM_TELEMETRY = new TelemetryCollector();

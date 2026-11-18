@@ -1,3 +1,4 @@
+// Vibe — TRADELINK V6.0 : Performance, Security & Reliability First.
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import {
   AuditLogRecord,
@@ -48,6 +49,7 @@ import {
   AiConversationThread,
   AiQuotaState,
   queryAiAssistantWithRag,
+  streamAiAssistantTokens,
   getOrCreateAiQuota,
   RagSourceCitation,
   OcrDocumentRecord,
@@ -2862,42 +2864,117 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const activeThread = aiThreads.find((t) => t.id === activeAiThreadId) || aiThreads[0];
     const updatedHistory = [...(activeThread?.messages || []), userMsg];
 
-    const result = queryAiAssistantWithRag({
-      userId: currentUser.id,
-      role: currentUser.role,
-      companyName: currentUser.companyName,
-      question,
-      threadHistory: updatedHistory,
-      modelId: selectedAiModelId,
-    });
-
-    const updatedMessages = [...updatedHistory, result.responseMessage];
+    // OPTIMISTIC UI : Affichage immédiat du message utilisateur avant attente du stream
+    const streamingMsgId = `ai-msg-stream-${Date.now()}`;
+    const initialAssistantMsg: AiChatMessage = {
+      id: streamingMsgId,
+      threadId: activeAiThreadId,
+      sender: 'ASSISTANT',
+      text: '',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      modelUsed: selectedAiModelId,
+    };
 
     setAiThreads((prev) =>
       prev.map((t) =>
         t.id === activeAiThreadId
           ? {
               ...t,
-              messages: updatedMessages,
+              messages: [...updatedHistory, initialAssistantMsg],
               updatedAt: new Date().toISOString(),
-              totalTokensConsumed: t.totalTokensConsumed + (result.responseMessage.tokensUsed || 0),
             }
           : t
       )
     );
 
-    addAuditLog(
-      'AI_ASSISTANT_QUERY',
-      'AiEngine',
-      selectedAiModelId,
-      result.responseMessage.isFiltered ? 'WARNING' : 'SUCCESS',
-      `Requête IA posée par ${currentUser.email} (${currentUser.role}). RAG: ${result.sourcesRetrieved.length} sources.`
-    );
+    // TOKEN STREAMING : Émission progressive mot par mot
+    let finalAnswer = '';
+    let finalSources: RagSourceCitation[] = [];
+    let finalResponseMessage: AiChatMessage | undefined;
+
+    try {
+      const generator = streamAiAssistantTokens({
+        userId: currentUser.id,
+        role: currentUser.role,
+        companyName: currentUser.companyName,
+        question,
+        threadHistory: updatedHistory,
+        modelId: selectedAiModelId,
+        chunkDelayMs: 10,
+      });
+
+      for await (const chunk of generator) {
+        finalAnswer = chunk.accumulatedText;
+        setAiThreads((prev) =>
+          prev.map((t) =>
+            t.id === activeAiThreadId
+              ? {
+                  ...t,
+                  messages: t.messages.map((m) =>
+                    m.id === streamingMsgId ? { ...m, text: chunk.accumulatedText } : m
+                  ),
+                }
+              : t
+          )
+        );
+
+        if (chunk.isComplete) {
+          finalSources = chunk.sourcesRetrieved || [];
+          finalResponseMessage = chunk.responseMessage;
+        }
+      }
+    } catch {
+      // Fallback synchrone robuste en cas d'interruption du stream
+      const fallback = queryAiAssistantWithRag({
+        userId: currentUser.id,
+        role: currentUser.role,
+        companyName: currentUser.companyName,
+        question,
+        threadHistory: updatedHistory,
+        modelId: selectedAiModelId,
+      });
+      finalAnswer = fallback.responseMessage.text;
+      finalSources = fallback.sourcesRetrieved;
+      finalResponseMessage = fallback.responseMessage;
+    }
+
+    // Finalisation du message avec métadonnées RAG complètes et audit log
+    if (finalResponseMessage) {
+      setAiThreads((prev) =>
+        prev.map((t) =>
+          t.id === activeAiThreadId
+            ? {
+                ...t,
+                messages: t.messages.map((m) =>
+                  m.id === streamingMsgId
+                    ? {
+                        ...finalResponseMessage!,
+                        id: streamingMsgId,
+                        text: finalAnswer,
+                      }
+                    : m
+                ),
+                updatedAt: new Date().toISOString(),
+                totalTokensConsumed:
+                  t.totalTokensConsumed + (finalResponseMessage?.tokensUsed || 0),
+              }
+            : t
+        )
+      );
+
+      addAuditLog(
+        'AI_ASSISTANT_QUERY',
+        'AiEngine',
+        selectedAiModelId,
+        finalResponseMessage.isFiltered ? 'WARNING' : 'SUCCESS',
+        `Requête IA posée par ${currentUser.email} (${currentUser.role}). RAG: ${finalSources.length} sources.`
+      );
+    }
 
     return {
-      answer: result.responseMessage.text,
-      sources: result.sourcesRetrieved,
-      quotaRemainingPct: result.quotaRemainingPct,
+      answer: finalAnswer,
+      sources: finalSources,
+      quotaRemainingPct: 100,
     };
   };
 

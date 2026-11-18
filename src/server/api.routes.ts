@@ -1,3 +1,4 @@
+// Vibe — TRADELINK V6.0 : Performance, Security & Reliability First.
 // ============================================================================
 // TRADELINK V6.0 — CONTRATS API BACKEND EXPRESS / TYPESCRIPT (19 GROUPES D'API)
 // Chapitre 9 du Cahier des Charges : RBAC, Ownership, Idempotency-Key, Audit

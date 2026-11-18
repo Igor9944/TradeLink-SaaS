@@ -840,33 +840,71 @@ export const DatePicker: React.FC<{
   <Input label={label} type="date" value={value} onChange={(e) => onChange(e.target.value)} />
 );
 
-// 24. SearchBar (ui/SearchBar.tsx)
+// 24. SearchBar (ui/SearchBar.tsx) — Support Debounce natif pour fluidité de frappe et économie de rendus
 export const SearchBar: React.FC<{
   value: string;
   onChange: (val: string) => void;
   placeholder?: string;
-}> = ({ value, onChange, placeholder = 'Rechercher une référence, SKU, commande, dossier KYC...' }) => (
-  <div className="relative flex items-center w-full">
-    <Search className="w-4 h-4 text-slate-400 absolute inset-inline-start-3.5 pointer-events-none" />
-    <input
-      type="search"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      className="w-full ps-10 pe-9 py-2 text-sm rounded-xl border border-slate-300 dark:border-teal-800 bg-white dark:bg-[#0A292C] text-slate-900 dark:text-slate-100 focus:border-[#E85D22] focus:outline-none"
-    />
-    {value && (
-      <button
-        type="button"
-        onClick={() => onChange('')}
-        aria-label="Effacer la recherche"
-        className="absolute inset-inline-end-2.5 p-1 text-slate-400 hover:text-slate-600"
-      >
-        <X className="w-4 h-4" />
-      </button>
-    )}
-  </div>
-);
+  debounceMs?: number;
+}> = ({
+  value,
+  onChange,
+  placeholder = 'Rechercher une référence, SKU, commande, dossier KYC...',
+  debounceMs,
+}) => {
+  const [internalVal, setInternalVal] = useState(value);
+
+  useEffect(() => {
+    setInternalVal(value);
+  }, [value]);
+
+  useEffect(() => {
+    if (debounceMs && debounceMs > 0) {
+      const handler = setTimeout(() => {
+        if (internalVal !== value) {
+          onChange(internalVal);
+        }
+      }, debounceMs);
+      return () => clearTimeout(handler);
+    }
+  }, [internalVal, debounceMs, onChange, value]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setInternalVal(val);
+    if (!debounceMs || debounceMs <= 0) {
+      onChange(val);
+    }
+  };
+
+  const handleClear = () => {
+    setInternalVal('');
+    onChange('');
+  };
+
+  return (
+    <div className="relative flex items-center w-full">
+      <Search className="w-4 h-4 text-slate-400 absolute inset-inline-start-3.5 pointer-events-none" />
+      <input
+        type="search"
+        value={internalVal}
+        onChange={handleChange}
+        placeholder={placeholder}
+        className="w-full ps-10 pe-9 py-2 text-sm rounded-xl border border-slate-300 dark:border-teal-800 bg-white dark:bg-[#0A292C] text-slate-900 dark:text-slate-100 focus:border-[#E85D22] focus:outline-none"
+      />
+      {internalVal && (
+        <button
+          type="button"
+          onClick={handleClear}
+          aria-label="Effacer la recherche"
+          className="absolute inset-inline-end-2.5 p-1 text-slate-400 hover:text-slate-600"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      )}
+    </div>
+  );
+};
 
 // 25. ConfirmDialog (ui/ConfirmDialog.tsx)
 export const ConfirmDialog: React.FC<{
@@ -899,4 +937,71 @@ export const ConfirmDialog: React.FC<{
       </div>
     </div>
   </Modal>
+);
+
+// 26. VirtualList — Rendu virtualisé de listes massives (1000+ items avec fenêtrage optimisé)
+export function VirtualList<T>({
+  items,
+  itemHeight = 56,
+  containerHeight = 400,
+  renderItem,
+  className = '',
+  overscan = 4,
+}: {
+  items: T[];
+  itemHeight?: number;
+  containerHeight?: number;
+  renderItem: (item: T, index: number) => React.ReactNode;
+  className?: string;
+  overscan?: number;
+}) {
+  const [scrollTop, setScrollTop] = useState(0);
+
+  const totalHeight = items.length * itemHeight;
+  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
+  const endIndex = Math.min(
+    items.length - 1,
+    Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan
+  );
+
+  const visibleItems = items.slice(startIndex, endIndex + 1);
+  const offsetY = startIndex * itemHeight;
+
+  return (
+    <div
+      className={`overflow-y-auto relative rounded-xl border border-slate-200 dark:border-teal-900/60 ${className}`}
+      style={{ height: containerHeight }}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+    >
+      <div style={{ height: totalHeight, position: 'relative' }}>
+        <div style={{ transform: `translateY(${offsetY}px)` }}>
+          {visibleItems.map((item, i) => renderItem(item, startIndex + i))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 27. PageSkeletonLoader — Skeleton complet pour le chargement asynchrone des pages lazy-loadées
+export const PageSkeletonLoader: React.FC = () => (
+  <div className="p-6 space-y-6 animate-pulse" aria-busy="true" aria-label="Chargement de l'espace">
+    <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-teal-900/50">
+      <div className="space-y-2">
+        <div className="h-6 w-56 rounded-lg bg-slate-200 dark:bg-teal-900/40" />
+        <div className="h-4 w-96 rounded bg-slate-100 dark:bg-teal-900/20" />
+      </div>
+      <div className="h-9 w-28 rounded-xl bg-slate-200 dark:bg-teal-900/40" />
+    </div>
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="h-28 rounded-2xl bg-slate-200/80 dark:bg-teal-900/40" />
+      <div className="h-28 rounded-2xl bg-slate-200/80 dark:bg-teal-900/40" />
+      <div className="h-28 rounded-2xl bg-slate-200/80 dark:bg-teal-900/40" />
+    </div>
+    <div className="h-64 rounded-2xl bg-slate-100 dark:bg-teal-900/30 border border-slate-200/60 dark:border-teal-900/40 p-4 space-y-3">
+      <div className="h-5 w-40 rounded bg-slate-200 dark:bg-teal-900/40" />
+      <div className="h-10 rounded-xl bg-slate-200/60 dark:bg-teal-900/40" />
+      <div className="h-10 rounded-xl bg-slate-200/60 dark:bg-teal-900/40" />
+      <div className="h-10 rounded-xl bg-slate-200/60 dark:bg-teal-900/40" />
+    </div>
+  </div>
 );

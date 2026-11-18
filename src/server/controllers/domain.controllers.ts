@@ -24,7 +24,7 @@ import {
 import { TradeLinkRepositoryStore } from '../repositories/domain.repositories';
 import { TradeLinkDomainServices } from '../services/domain.services';
 import { buildOpenApiSpecification } from '../openapi/openapi.spec';
-import { evaluateKYCDossierRule } from '../../services/backendServices';
+import { evaluateKYCDossierRule, APM_TELEMETRY } from '../../services/backendServices';
 
 export class TradeLinkApiApplication {
   private readonly services: TradeLinkDomainServices;
@@ -39,11 +39,18 @@ export class TradeLinkApiApplication {
     statusCode = 200,
     pagination?: ServerResponsePayload['body']['pagination']
   ): ServerResponsePayload<T> {
+    const isGet = ctx.method === 'GET';
     return {
       statusCode,
       headers: {
         'Content-Type': 'application/json',
         'X-Correlation-Id': ctx.correlationId,
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+        'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload',
+        'Cache-Control': isGet
+          ? 'public, max-age=60, stale-while-revalidate=120'
+          : 'no-store, no-cache, must-revalidate',
         'X-Data-Source': this.repo.isProductionDatabaseConnected
           ? 'POSTGRESQL_PRISMA'
           : 'ISOLATED_SANDBOX_STORE',
@@ -62,6 +69,7 @@ export class TradeLinkApiApplication {
   }
 
   public handleRequest(ctx: ServerRequestContext): ServerResponsePayload {
+    const start = performance.now();
     try {
       // Assainissement XSS préventif de l'intégralité du payload entrant
       if (ctx.body && typeof ctx.body === 'object') {
@@ -86,8 +94,10 @@ export class TradeLinkApiApplication {
         storeIdempotencyResult(idempotencyKey, response);
       }
 
+      APM_TELEMETRY.record(`${ctx.method} ${ctx.path}`, performance.now() - start, true);
       return response;
     } catch (err) {
+      APM_TELEMETRY.record(`${ctx.method} ${ctx.path}`, performance.now() - start, false);
       return handleCentralizedServerError(
         err,
         ctx.correlationId,

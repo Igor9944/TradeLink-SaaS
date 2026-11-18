@@ -370,6 +370,46 @@ Toutes les règles opérationnelles sont conformes. Pour effectuer une action pr
   };
 }
 
+// Token Streaming de réponse IA mot par mot (PROMPT PRIORITAIRE : Vitesse & Réactivité)
+export async function* streamAiAssistantTokens(params: {
+  userId: string;
+  role: UserRoleCode;
+  companyName: string;
+  question: string;
+  threadHistory: AiChatMessage[];
+  modelId?: string;
+  chunkDelayMs?: number;
+}): AsyncGenerator<{
+  token: string;
+  accumulatedText: string;
+  isComplete: boolean;
+  responseMessage?: AiChatMessage;
+  sourcesRetrieved?: RagSourceCitation[];
+}> {
+  const result = queryAiAssistantWithRag(params);
+  const fullText = result.responseMessage.text;
+  // Découpage en mots avec espaces préservés pour rendu fluide
+  const chunks = fullText.split(/(\s+)/);
+  let accumulated = '';
+  const delay = params.chunkDelayMs ?? 12;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    accumulated += chunk;
+    const isLast = i === chunks.length - 1;
+    if (delay > 0 && chunk.trim().length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    yield {
+      token: chunk,
+      accumulatedText: accumulated,
+      isComplete: isLast,
+      responseMessage: isLast ? result.responseMessage : undefined,
+      sourcesRetrieved: isLast ? result.sourcesRetrieved : undefined,
+    };
+  }
+}
+
 // ============================================================================
 // 2. OCR / IDP : EXTRACTION MULTIMODALE & VALIDATION HUMAINE
 // ============================================================================

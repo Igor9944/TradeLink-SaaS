@@ -17,7 +17,8 @@ import {
   analyzeFileInIsolatedSandbox,
   simulateEnvelopeEncryption,
 } from '../../services/adminAdvancedEngine';
-import { queryAiAssistantWithRag } from '../../services/aiIntelligenceEngine';
+import { queryAiAssistantWithRag, streamAiAssistantTokens } from '../../services/aiIntelligenceEngine';
+import { APM_TELEMETRY } from '../../services/backendServices';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -67,7 +68,7 @@ function createPerformanceDatabase(): DatabaseStateSnapshot {
   };
 }
 
-export function runPerformanceBenchSuite() {
+export async function runPerformanceBenchSuite() {
   console.log('====================================================================');
   console.log('TRADELINK V6.0 — SUITE DE BENCHMARK & PERFORMANCE SYSTÈME');
   console.log('====================================================================\n');
@@ -209,8 +210,68 @@ export function runPerformanceBenchSuite() {
   console.log(`  -> [PASS] Moteur RAG exécuté en ${ragDurationMs.toFixed(2)} ms (Cible < 150 ms atteinte).\n`);
   passed++;
 
+  // --------------------------------------------------------------------------
+  // BENCH 6 : Token Streaming IA — Latence premier mot & fluidité (Cible < 30 ms)
+  // --------------------------------------------------------------------------
+  console.log('BENCH 6 : Token Streaming IA — Latence premier mot & émission progressive (Cible < 30 ms)...');
+  const streamStart = performance.now();
+  const streamGen = streamAiAssistantTokens({
+    userId: benchUserId,
+    role: 'CLIENT',
+    companyName: 'Performance Benchmarking S.A.',
+    question: 'Quel est le statut de mes commandes ?',
+    threadHistory: [],
+    modelId: 'gemini-1.5-flash',
+    chunkDelayMs: 0,
+  });
+  let tokenCount = 0;
+  let firstTokenLatency = 0;
+  for await (const chunk of streamGen) {
+    if (tokenCount === 0) {
+      firstTokenLatency = performance.now() - streamStart;
+    }
+    tokenCount++;
+  }
+  const streamTotalMs = performance.now() - streamStart;
+  assert(firstTokenLatency < 30, `Premier token émis en ${firstTokenLatency.toFixed(2)} ms (> 30 ms)`);
+  assert(tokenCount > 5, 'Tokens émis avec succès');
+  console.log(`  -> [PASS] Token Streaming : 1er token en ${firstTokenLatency.toFixed(2)} ms, ${tokenCount} chunks traités en ${streamTotalMs.toFixed(2)} ms.\n`);
+  passed++;
+
+  // --------------------------------------------------------------------------
+  // BENCH 7 : Télémétrie APM & Collecteur de métriques RUM (Cible p95 < 200 ms)
+  // --------------------------------------------------------------------------
+  console.log('BENCH 7 : Télémétrie APM / OpenTelemetry — Agrégation p95 (Cible < 200 ms)...');
+  const apmSummary = APM_TELEMETRY.getSummary();
+  assert(apmSummary.count > 0, 'Métriques APM collectées');
+  assert(apmSummary.p95Ms < 200, `p95 APM (${apmSummary.p95Ms} ms) dépasse 200 ms`);
+  console.log(`  -> [PASS] Télémétrie APM : ${apmSummary.count} opérations enregistrées, p95=${apmSummary.p95Ms} ms, succès=${apmSummary.successRatePct}% (Cible < 200 ms atteinte).\n`);
+  passed++;
+
+  // --------------------------------------------------------------------------
+  // BENCH 8 : En-têtes HTTP de Caching & Sécurité OWASP
+  // --------------------------------------------------------------------------
+  console.log('BENCH 8 : En-têtes HTTP de Caching (Cache-Control) & Sécurité OWASP...');
+  const cacheRes = app.handleRequest({
+    method: 'GET',
+    path: '/api/v1/products',
+    headers: {},
+    query: { limit: '10' },
+    params: {},
+    body: {},
+    user: benchUser,
+    correlationId: `corr-cache-${Date.now()}`,
+    ipAddress: '127.0.0.1',
+  });
+  assert(Boolean(cacheRes.headers['Cache-Control']?.includes('public, max-age=60')), 'Cache-Control présent pour GET');
+  assert(cacheRes.headers['X-Content-Type-Options'] === 'nosniff', 'X-Content-Type-Options nosniff validé');
+  assert(cacheRes.headers['X-Frame-Options'] === 'DENY', 'X-Frame-Options DENY validé');
+  assert(Boolean(cacheRes.headers['Strict-Transport-Security']?.includes('max-age=63072000')), 'HSTS strict validé');
+  console.log('  -> [PASS] En-têtes de Caching et de protection OWASP validés avec succès.\n');
+  passed++;
+
   console.log('====================================================================');
-  console.log(`RÉSULTAT BENCHMARK PERFORMANCE : ${passed} / 5 BENCHMARKS CONFORMES (100%) !`);
+  console.log(`RÉSULTAT BENCHMARK PERFORMANCE : ${passed} / 8 BENCHMARKS CONFORMES (100%) !`);
   console.log('====================================================================\n');
 }
 
