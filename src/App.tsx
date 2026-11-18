@@ -36,7 +36,7 @@ const CarrierWorkspacePage = lazy(() =>
   import('./pages/CarrierWorkspacePages').then((m) => ({ default: m.CarrierWorkspacePage }))
 );
 const AccountingWorkspacePage = lazy(() =>
-  import('./pages/CarrierAccountingSupportAndTransversalPages').then((m) => ({
+  import('./pages/AccountingWorkspacePages').then((m) => ({
     default: m.AccountingWorkspacePage,
   }))
 );
@@ -165,10 +165,12 @@ export const App: React.FC = () => {
                       {/* COMPTABLE (Pages 62 à 68 — Réservé COMPTABLE & ADMIN) */}
                       <Route path="/comptable/dashboard" element={<RoleGuard allowedRoles={['COMPTABLE', 'ADMIN']} workspaceLabel="Espace Comptable"><AccountingWorkspacePage section="dashboard" /></RoleGuard>} />
                       <Route path="/comptable/factures" element={<RoleGuard allowedRoles={['COMPTABLE', 'ADMIN']} workspaceLabel="Espace Comptable"><AccountingWorkspacePage section="factures" /></RoleGuard>} />
+                      <Route path="/comptable/documents" element={<RoleGuard allowedRoles={['COMPTABLE', 'ADMIN']} workspaceLabel="Espace Comptable"><AccountingWorkspacePage section="documents" /></RoleGuard>} />
                       <Route path="/comptable/journaux" element={<RoleGuard allowedRoles={['COMPTABLE', 'ADMIN']} workspaceLabel="Espace Comptable"><AccountingWorkspacePage section="journaux" /></RoleGuard>} />
                       <Route path="/comptable/grand-livre" element={<RoleGuard allowedRoles={['COMPTABLE', 'ADMIN']} workspaceLabel="Espace Comptable"><AccountingWorkspacePage section="grand-livre" /></RoleGuard>} />
                       <Route path="/comptable/etats-financiers" element={<RoleGuard allowedRoles={['COMPTABLE', 'ADMIN']} workspaceLabel="Espace Comptable"><AccountingWorkspacePage section="etats-financiers" /></RoleGuard>} />
                       <Route path="/comptable/calcul" element={<RoleGuard allowedRoles={['COMPTABLE', 'ADMIN']} workspaceLabel="Espace Comptable"><AccountingWorkspacePage section="calcul" /></RoleGuard>} />
+                      <Route path="/comptable/ia" element={<RoleGuard allowedRoles={['COMPTABLE', 'ADMIN']} workspaceLabel="Espace Comptable"><AccountingWorkspacePage section="assistant-ia" /></RoleGuard>} />
                       <Route path="/comptable/parametres" element={<RoleGuard allowedRoles={['COMPTABLE', 'ADMIN']} workspaceLabel="Espace Comptable"><AccountingWorkspacePage section="parametres" /></RoleGuard>} />
 
                       {/* SUPPORT (Pages 69 à 73 — Réservé SUPPORT & ADMIN) */}
