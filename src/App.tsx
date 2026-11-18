@@ -23,6 +23,9 @@ const EditorialPublicPage = lazy(() =>
 const AuthPortalPage = lazy(() =>
   import('./pages/PublicAndAuthPages').then((m) => ({ default: m.AuthPortalPage }))
 );
+const PublicCataloguePage = lazy(() =>
+  import('./pages/PublicAndAuthPages').then((m) => ({ default: m.PublicCataloguePage }))
+);
 const AdminWorkspacePage = lazy(() =>
   import('./pages/AdminWorkspacePages').then((m) => ({ default: m.AdminWorkspacePage }))
 );
@@ -72,12 +75,19 @@ export const App: React.FC = () => {
       <BrowserRouter>
         <Suspense fallback={<PageSkeletonLoader />}>
           <Routes>
-            {/* ZONE PUBLIQUE (Pages 1 à 5) */}
+            {/* ZONE PUBLIQUE (Pages 1 à 5 & Institutionnelles) */}
             <Route path="/" element={<LandingPage />} />
+            <Route path="/catalogue" element={<PublicCataloguePage />} />
+            <Route path="/catalogue/:id" element={<PublicCataloguePage />} />
             <Route path="/about" element={<EditorialPublicPage pageType="about" />} />
+            <Route path="/services" element={<EditorialPublicPage pageType="services" />} />
+            <Route path="/how-it-works" element={<EditorialPublicPage pageType="how-it-works" />} />
             <Route path="/contact" element={<EditorialPublicPage pageType="contact" />} />
+            <Route path="/faq" element={<EditorialPublicPage pageType="faq" />} />
             <Route path="/blog" element={<EditorialPublicPage pageType="blog" />} />
             <Route path="/legal" element={<EditorialPublicPage pageType="legal" />} />
+            <Route path="/privacy" element={<EditorialPublicPage pageType="privacy" />} />
+            <Route path="/cookies" element={<EditorialPublicPage pageType="cookies" />} />
 
             {/* ZONE AUTHENTIFICATION (Pages 6 à 10) */}
             <Route path="/register" element={<AuthPortalPage mode="register" />} />
