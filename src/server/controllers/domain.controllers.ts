@@ -291,10 +291,11 @@ export class TradeLinkApiApplication {
     if (method === 'GET' && path === '/api/v1/products') {
       const pagination = validatePaginationAndFilters(ctx.query);
       const res = this.repo.getActiveProducts(pagination);
-      return this.ok(ctx, res.items, 200, {
+      const items = !ctx.user ? res.items.filter((p) => p.isPublished !== false) : res.items;
+      return this.ok(ctx, items, 200, {
         page: res.page,
         limit: res.limit,
-        totalItems: res.totalItems,
+        totalItems: items.length,
         totalPages: res.totalPages,
       });
     }
