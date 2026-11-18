@@ -25,6 +25,8 @@ import { TradeLinkRepositoryStore } from '../repositories/domain.repositories';
 import { TradeLinkDomainServices } from '../services/domain.services';
 import { buildOpenApiSpecification } from '../openapi/openapi.spec';
 import { evaluateKYCDossierRule, APM_TELEMETRY } from '../../services/backendServices';
+import { CentralTranslationService } from '../../services/translationEngine';
+import { TradeGlossaryManager } from '../../services/tradeGlossary';
 
 export class TradeLinkApiApplication {
   private readonly services: TradeLinkDomainServices;
@@ -1046,6 +1048,104 @@ export class TradeLinkApiApplication {
         ipAddress: ctx.ipAddress,
       });
       return this.ok(ctx, res, 200);
+    }
+
+    // ============================================================================
+    // 21. TRADUCTION AUTOMATIQUE IA & PRÉFÉRENCES LINGUISTIQUES (FR / EN / AR)
+    // ============================================================================
+
+    // 21A. Détection de langue
+    if (method === 'POST' && path === '/api/v1/translation/detect') {
+      const text = ctx.body?.text || '';
+      const result = CentralTranslationService.detectLanguage(text);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 21B. Traduction de texte générique / B2B
+    if (method === 'POST' && path === '/api/v1/translation/text') {
+      const { text, sourceLang, targetLang, domain, preserveTerms, bypassCache } = ctx.body || {};
+      if (!text || !targetLang) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'Paramètres requis : text et targetLang.');
+      }
+      const result = CentralTranslationService.translateTextSync({
+        text,
+        sourceLang,
+        targetLang,
+        domain,
+        preserveTerms,
+        bypassCache,
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 21C. Traduction de message chat avec conservation de l'original
+    if (method === 'POST' && path === '/api/v1/translation/message') {
+      requireAuthenticatedSession(ctx);
+      const { messageId, text, targetLang } = ctx.body || {};
+      if (!messageId || !text || !targetLang) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'Paramètres requis : messageId, text, targetLang.');
+      }
+      const result = this.services.translateMessage({
+        messageId,
+        text,
+        senderId: ctx.user!.id,
+        senderRole: ctx.user!.role,
+        targetLang,
+      });
+      return this.ok(ctx, result, 200);
+    }
+
+    // 21D. Traduction de produit de catalogue
+    if (method === 'POST' && path.startsWith('/api/v1/translation/product/')) {
+      const productId = path.replace('/api/v1/translation/product/', '');
+      const targetLang = ctx.body?.targetLang;
+      if (!targetLang) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'targetLang requis.');
+      }
+      const result = this.services.translateCatalogProduct(productId, targetLang);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 21E. Consultation du glossaire officiel TradeLink
+    if (method === 'GET' && path === '/api/v1/translation/glossary') {
+      const terms = TradeGlossaryManager.getAllTerms();
+      return this.ok(ctx, { terms, count: terms.length }, 200);
+    }
+
+    // 21F. Ajout d'un terme au glossaire (Admin uniquement)
+    if (method === 'POST' && path === '/api/v1/translation/glossary') {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
+      const { category, termFr, termEn, termAr, context } = ctx.body || {};
+      if (!category || !termFr || !termEn || !termAr) {
+        throw new AppError(400, 'INVALID_PAYLOAD', 'Tous les termes (FR, EN, AR) et la catégorie sont requis.');
+      }
+      const newTerm = TradeGlossaryManager.addDynamicTerm({
+        category,
+        termFr,
+        termEn,
+        termAr,
+        context,
+      });
+      return this.ok(ctx, newTerm, 201);
+    }
+
+    // 21G. Métriques et quotas du moteur de traduction
+    if (method === 'GET' && path === '/api/v1/translation/metrics') {
+      const metrics = CentralTranslationService.getEngineMetrics();
+      return this.ok(ctx, metrics, 200);
+    }
+
+    // 21H. Préférences linguistiques de l'utilisateur
+    if (method === 'GET' && path === '/api/v1/user/preferences/language') {
+      requireAuthenticatedSession(ctx);
+      const pref = this.services.getUserLanguagePreference(ctx.user!.id);
+      return this.ok(ctx, pref, 200);
+    }
+
+    if (method === 'PUT' && path === '/api/v1/user/preferences/language') {
+      requireAuthenticatedSession(ctx);
+      const pref = this.services.updateUserLanguagePreference(ctx.user!.id, ctx.body || {});
+      return this.ok(ctx, pref, 200);
     }
 
     throw new AppError(404, 'ENDPOINT_NOT_FOUND', `Route API introuvable : ${method} ${path}`);

@@ -20,6 +20,9 @@ import {
   QuoteRecord,
   RoomLiveRecord,
   ShipmentRecord,
+  SupportedLocale,
+  TranslationRecord,
+  UserLanguagePreferenceRecord,
 } from '../../types';
 import { PaginationAndFilterParams } from '../validators/schema.validator';
 import { StockMovementRecord } from '../../services/commercialEngine';
@@ -59,6 +62,8 @@ export interface DatabaseStateSnapshot {
 export class TradeLinkRepositoryStore {
   private state: Required<DatabaseStateSnapshot>;
   public readonly isProductionDatabaseConnected: boolean;
+  private userPreferences: Map<string, UserLanguagePreferenceRecord> = new Map();
+  private translationsMap: Map<string, TranslationRecord> = new Map();
 
   constructor(initialState: DatabaseStateSnapshot, isProdDbConnected = false) {
     this.state = structuredClone({
@@ -141,6 +146,73 @@ export class TradeLinkRepositoryStore {
 
   public findActiveOrderById(id: string) {
     return this.state.orders.find((o) => o.id === id && !o.deletedAt) ?? null;
+  }
+
+  public getUserLanguagePreference(userId: string): UserLanguagePreferenceRecord {
+    if (this.userPreferences.has(userId)) {
+      return structuredClone(this.userPreferences.get(userId)!);
+    }
+    const defaultPref: UserLanguagePreferenceRecord = {
+      id: `pref-${userId}`,
+      userId,
+      preferredLocale: 'fr',
+      notificationLocale: 'fr',
+      communicationLocale: 'fr',
+      autoTranslateMessages: true,
+      displayOriginalByDefault: false,
+      rtlEnabled: false,
+      updatedAt: new Date().toISOString(),
+    };
+    this.userPreferences.set(userId, defaultPref);
+    return structuredClone(defaultPref);
+  }
+
+  public setUserLanguagePreference(
+    userId: string,
+    partial: Partial<UserLanguagePreferenceRecord>
+  ): UserLanguagePreferenceRecord {
+    const existing = this.getUserLanguagePreference(userId);
+    const updatedLocale = partial.preferredLocale || existing.preferredLocale;
+    const updated: UserLanguagePreferenceRecord = {
+      ...existing,
+      ...partial,
+      userId,
+      preferredLocale: updatedLocale,
+      rtlEnabled: updatedLocale === 'ar',
+      updatedAt: new Date().toISOString(),
+    };
+    this.userPreferences.set(userId, updated);
+    return structuredClone(updated);
+  }
+
+  public saveTranslation(record: TranslationRecord): TranslationRecord {
+    this.translationsMap.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  public getTranslationsForEntity(entityType: string, entityId: string): TranslationRecord[] {
+    return Array.from(this.translationsMap.values()).filter(
+      (t) => t.entityType === entityType && t.entityId === entityId
+    );
+  }
+
+  public updateProductTranslations(
+    productId: string,
+    targetLang: SupportedLocale,
+    name: string,
+    desc: string
+  ): ProductItem | null {
+    const prod = this.state.products.find((p) => p.id === productId && !p.deletedAt);
+    if (!prod) return null;
+    prod.name = {
+      ...prod.name,
+      [targetLang]: name,
+    };
+    prod.description = {
+      ...prod.description,
+      [targetLang]: desc,
+    };
+    return structuredClone(prod);
   }
 
   public getSnapshot(): Readonly<Required<DatabaseStateSnapshot>> {

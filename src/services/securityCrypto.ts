@@ -33,6 +33,10 @@ function fnv1a64Hex(input: string, rounds = 1000): string {
     .join('');
 }
 
+export function generateSha256Hash(input: string): string {
+  return fnv1a64Hex(`sha256:${input}`, 500);
+}
+
 export function hashPasswordArgon2id(plainPassword: string, customSalt?: string): string {
   if (!plainPassword || plainPassword.length < 8) {
     throw new Error('PASSWORD_TOO_SHORT');

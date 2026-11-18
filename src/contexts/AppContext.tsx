@@ -24,6 +24,7 @@ import {
   ThemeMode,
   UserProfile,
 } from '../types';
+import i18n from '../i18n/config';
 import { translations } from '../i18n/translations';
 import {
   calculateFinancialInterest,
@@ -1403,7 +1404,15 @@ interface AppContextValue {
 const AppContext = createContext<AppContextValue | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [locale, setLocaleState] = useState<Locale>('fr');
+  const [locale, setLocaleState] = useState<Locale>(() => {
+    try {
+      const saved = localStorage.getItem('tradelink_preferred_locale');
+      if (saved === 'fr' || saved === 'en' || saved === 'ar') {
+        return saved as Locale;
+      }
+    } catch {}
+    return 'fr';
+  });
   const [uxPreviewState, setUxPreviewState] = useState<UXPreviewState>('normal');
   const [theme, setThemeState] = useState<ThemeMode>(() => {
     try {
@@ -1607,10 +1616,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     document.documentElement.lang = locale;
     document.documentElement.dir = isRtl ? 'rtl' : 'ltr';
+    try {
+      i18n.changeLanguage(locale);
+    } catch {}
   }, [locale, isRtl]);
 
   const setLocale = (loc: Locale) => {
     setLocaleState(loc);
+    try {
+      localStorage.setItem('tradelink_preferred_locale', loc);
+      i18n.changeLanguage(loc);
+    } catch {}
     notifyToast(
       loc === 'ar'
         ? 'تم تفعيل اللغة العربية واتجاه RTL بالكامل'
@@ -1643,6 +1659,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const t = (key: string): string => {
+    try {
+      const i18nVal = i18n.t(key);
+      if (i18nVal && i18nVal !== key) {
+        return i18nVal;
+      }
+    } catch {}
     return translations[locale]?.[key] ?? translations.fr[key] ?? key;
   };
 

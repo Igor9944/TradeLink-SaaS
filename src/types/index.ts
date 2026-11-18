@@ -504,4 +504,84 @@ export type {
   EnvelopeCipherResult,
 } from '../services/adminAdvancedEngine';
 
+// ============================================================================
+// TYPES MOTEUR CENTRAL DE TRADUCTION AUTOMATIQUE IA (FR / EN / AR)
+// ============================================================================
+
+export type SupportedLocale = 'fr' | 'en' | 'ar';
+
+export type TranslationEntityType =
+  | 'PRODUCT'
+  | 'MESSAGE'
+  | 'DOCUMENT'
+  | 'TICKET'
+  | 'ROOM_SPEECH'
+  | 'SYSTEM';
+
+export type TranslationStatus =
+  | 'PENDING'
+  | 'TRANSLATED'
+  | 'VERIFIED_BY_USER'
+  | 'ERROR';
+
+export interface UserLanguagePreferenceRecord {
+  id: string;
+  userId: string;
+  preferredLocale: SupportedLocale;
+  notificationLocale: SupportedLocale;
+  communicationLocale: SupportedLocale;
+  autoTranslateMessages: boolean;
+  displayOriginalByDefault: boolean;
+  rtlEnabled: boolean;
+  updatedAt: string;
+}
+
+export interface TranslationRecord {
+  id: string;
+  entityType: TranslationEntityType;
+  entityId: string;
+  field: string;
+  sourceLang: SupportedLocale;
+  targetLang: SupportedLocale;
+  originalText: string;
+  translatedText: string;
+  status: TranslationStatus;
+  engineVersion: string;
+  confidenceScore: number;
+  isInformativeOnly: boolean;
+  glossaryApplied: boolean;
+  contentHashSha256: string;
+  createdAt: string;
+  verifiedAt?: string;
+  verifiedBy?: string;
+}
+
+export interface TranslationGlossaryTerm {
+  id: string;
+  termKey: string;
+  category: 'COMMERCIAL' | 'LOGISTIQUE' | 'FINANCE' | 'DOUANE' | 'INCOTERMS' | 'JURIDIQUE';
+  sourceTextFr: string;
+  targetTextEn: string;
+  targetTextAr: string;
+  isStrict: boolean;
+  contextNotes?: string;
+}
+
+export interface LanguageDetectionResult {
+  detectedLang: SupportedLocale | 'unknown';
+  confidence: number;
+  isRtl: boolean;
+  sampleSnippets?: string[];
+}
+
+export interface TranslatedMessageBubbleState {
+  originalText: string;
+  sourceLang: SupportedLocale;
+  translatedText: string;
+  targetLang: SupportedLocale;
+  isShowingOriginal: boolean;
+  translatedAt: string;
+  engineVersion: string;
+}
+
 

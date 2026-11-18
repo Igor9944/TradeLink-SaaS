@@ -56,8 +56,12 @@ import {
   RoomLiveRecord,
   ShipmentRecord,
   ShipmentStatus,
+  SupportedLocale,
+  TranslationRecord,
+  UserLanguagePreferenceRecord,
   UserRoleCode,
 } from '../../types';
+import { CentralTranslationService } from '../../services/translationEngine';
 import {
   CommercialEngine,
   INITIAL_PRODUCT_CATEGORIES,
@@ -2731,6 +2735,90 @@ export class TradeLinkDomainServices {
   public exportTrialBalanceCsv(framework: AccountingFramework = 'PCG'): string {
     const trial = this.getTrialBalance(framework);
     return AccountingEngine.exportTrialBalanceToCsv(trial.items);
+  }
+
+  // ============================================================================
+  // SERVICES DE TRADUCTION IA CENTRALE & PRÉFÉRENCES LINGUISTIQUES
+  // ============================================================================
+
+  public getUserLanguagePreference(userId: string): UserLanguagePreferenceRecord {
+    return this.repo.getUserLanguagePreference(userId);
+  }
+
+  public updateUserLanguagePreference(
+    userId: string,
+    partial: Partial<UserLanguagePreferenceRecord>
+  ): UserLanguagePreferenceRecord {
+    return this.repo.setUserLanguagePreference(userId, partial);
+  }
+
+  public translateCatalogProduct(productId: string, targetLang: SupportedLocale) {
+    const product = this.repo.findActiveProductById(productId);
+    if (!product) {
+      throw new AppError(404, 'PRODUCT_NOT_FOUND', `Produit introuvable : ${productId}`);
+    }
+
+    const { translatedProduct, translationRecord } = CentralTranslationService.translateProductSync(
+      product,
+      targetLang
+    );
+
+    // Mise à jour des traductions persistées dans le catalogue produit
+    this.repo.updateProductTranslations(
+      productId,
+      targetLang,
+      translatedProduct.name[targetLang] || product.name.fr,
+      translatedProduct.description[targetLang] || product.description.fr
+    );
+
+    this.repo.saveTranslation(translationRecord);
+
+    return { translatedProduct, translationRecord };
+  }
+
+  public translateMessage(params: {
+    messageId: string;
+    text: string;
+    senderId: string;
+    senderRole: string;
+    targetLang: SupportedLocale;
+  }) {
+    const translated = CentralTranslationService.translateChatMessageSync(params);
+
+    const record: TranslationRecord = {
+      id: `tr-msg-${params.messageId}-${params.targetLang}`,
+      entityType: 'MESSAGE',
+      entityId: params.messageId,
+      field: 'body',
+      sourceLang: translated.sourceLang,
+      targetLang: translated.targetLang,
+      originalText: translated.originalText,
+      translatedText: translated.translatedText,
+      status: 'TRANSLATED',
+      engineVersion: translated.engineVersion,
+      confidenceScore: 0.99,
+      isInformativeOnly: false,
+      glossaryApplied: translated.glossaryApplied,
+      contentHashSha256: params.messageId,
+      createdAt: translated.translatedAt,
+    };
+
+    this.repo.saveTranslation(record);
+
+    return translated;
+  }
+
+  public translateDocument(
+    doc: {
+      type: 'INVOICE' | 'QUOTE' | 'CMR' | 'SHIPMENT' | 'ORDER';
+      id: string;
+      title: string;
+      notes?: string;
+      specialConditions?: string;
+    },
+    targetLang: SupportedLocale
+  ) {
+    return CentralTranslationService.translateCommercialDocumentSync(doc, targetLang);
   }
 }
 

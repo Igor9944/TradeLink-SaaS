@@ -8,6 +8,7 @@
 
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import './i18n/config';
 import { AppProvider } from './contexts/AppContext';
 import { AppLayout } from './components/layout/AppLayout';
 import { RoleGuard } from './components/security/RouteGuards';

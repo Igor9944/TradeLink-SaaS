@@ -58,6 +58,7 @@ model User {
   roomParticipations  Participant[]
   requestedTickets    Ticket[]           @relation("TicketRequester")
   assignedTickets     Ticket[]           @relation("TicketAssignee")
+  languagePreference  UserLanguagePreference?
 
   @@index([email, deletedAt])
   @@index([isActive, isSuspended])
@@ -1071,4 +1072,125 @@ model DualApprovalRequest {
   approvedAt      DateTime?
 
   @@index([operationType, status])
+}
+
+// ============================================================================
+// MODÈLES DU MOTEUR CENTRAL DE TRADUCTION AUTOMATIQUE IA (FR / EN / AR)
+// ============================================================================
+
+// 57. UserLanguagePreference — Préférences de langue et d'affichage par utilisateur
+model UserLanguagePreference {
+  id                      String   @id @default(uuid())
+  userId                  String   @unique
+  preferredLocale         String   @default("fr") // fr | en | ar
+  notificationLocale      String   @default("fr")
+  communicationLocale     String   @default("fr")
+  autoTranslateMessages   Boolean  @default(true)
+  displayOriginalByDefault Boolean @default(false)
+  rtlEnabled              Boolean  @default(false) // Actif si ar
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// 58. Translation — Enregistrement des traductions persistées avec conservation de l'original
+model Translation {
+  id                String   @id @default(uuid())
+  entityType        String   // PRODUCT | MESSAGE | DOCUMENT | TICKET | ROOM_SPEECH | SYSTEM
+  entityId          String
+  field             String   // name | description | body | transcript | notes
+  sourceLang        String   // fr | en | ar
+  targetLang        String   // fr | en | ar
+  originalText      String   @db.Text
+  translatedText    String   @db.Text
+  status            String   @default("TRANSLATED") // PENDING | TRANSLATED | VERIFIED_BY_USER | ERROR
+  engineVersion     String   @default("tradelink-ai-v6")
+  confidenceScore   Decimal  @default(0.9800) @db.Decimal(5, 4)
+  isInformativeOnly Boolean  @default(true) // Mention légale traduction informative
+  glossaryApplied   Boolean  @default(false)
+  contentHashSha256 String   // Hachage SHA-256 source+target pour déduplication
+  createdById       String?
+  verifiedById      String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([entityType, entityId, field, targetLang])
+  @@index([entityType, entityId])
+  @@index([contentHashSha256])
+}
+
+// 59. TranslationCache — Cache central haute performance (Redis + persistance DB)
+model TranslationCache {
+  id                String    @id @default(uuid())
+  cacheKey          String    @unique // SHA-256(sourceLang + ":" + targetLang + ":" + originalText)
+  sourceLang        String
+  targetLang        String
+  originalText      String    @db.Text
+  translatedText    String    @db.Text
+  engineVersion     String    @default("tradelink-ai-v6")
+  hitCount          Int       @default(0)
+  expiresAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([cacheKey])
+  @@index([sourceLang, targetLang])
+}
+
+// 60. TranslationJob — File de traitement asynchrone des gros catalogues et documents
+model TranslationJob {
+  id              String    @id @default(uuid())
+  batchId         String?
+  documentType    String    // INVOICE | CMR | EUR1 | CATALOG_BULK | MEETING_MINUTES
+  documentId      String
+  sourceLang      String
+  targetLang      String
+  status          String    @default("QUEUED") // QUEUED | PROCESSING | COMPLETED | FAILED
+  totalItems      Int       @default(1)
+  processedItems  Int       @default(0)
+  errorMessage    String?
+  durationMs      Int?
+  requestedById   String
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  @@index([status, createdAt])
+  @@index([documentType, documentId])
+}
+
+// 61. TranslationGlossary — Glossaire terminologique centralisé du commerce international
+model TranslationGlossary {
+  id              String   @id @default(uuid())
+  termKey         String   @unique
+  category        String   // COMMERCIAL | LOGISTIQUE | FINANCE | DOUANE | INCOTERMS | JURIDIQUE
+  sourceTextFr    String
+  targetTextEn    String
+  targetTextAr    String
+  isStrict        Boolean  @default(true) // Remplacement impératif dans les traductions IA
+  contextNotes    String?
+  createdBy       String   @default("SYSTEM")
+  updatedBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([category])
+  @@index([termKey])
+}
+
+// 62. TranslationProviderConfig — Configuration dynamique des moteurs IA et quotas
+model TranslationProviderConfig {
+  id                String   @id @default(uuid())
+  providerName      String   @unique // INTERNAL_NEURAL | GEMINI_PRO | CLAUDE_SONNET | OLLAMA_LOCAL
+  isActive          Boolean  @default(true)
+  priorityOrder     Int      @default(1)
+  quotaLimitPerDay  Int      @default(500000) // Caractères par jour
+  quotaUsedToday    Int      @default(0)
+  costPer1kTokens   Decimal  @default(0.000000) @db.Decimal(10, 6)
+  timeoutMs         Int      @default(4000)
+  fallbackProvider  String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([isActive, priorityOrder])
 }
