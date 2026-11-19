@@ -1133,6 +1133,144 @@ export interface OcrValidationPayload {
   notes?: string;
 }
 
+// ============================================================================
+// TYPES SYSTÈME CENTRAL DE NOTIFICATIONS & MESSAGERIE (PROMPT 08)
+// ============================================================================
+
+export type NotificationCategory =
+  | 'COMMERCIAL'
+  | 'KYC'
+  | 'LOGISTIQUE'
+  | 'FINANCE'
+  | 'SÉCURITÉ'
+  | 'SUPPORT'
+  | 'ROOM_LIVE'
+  | 'MESSAGE';
+
+export type NotificationPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export type NotificationChannel = 'IN_APP' | 'EMAIL' | 'WEB_PUSH' | 'SMS';
+
+export type NotificationDigestFrequency = 'INSTANT' | 'DAILY_DIGEST' | 'WEEKLY_DIGEST';
+
+export interface NotificationRecord {
+  id: string;
+  userId: string;
+  category: NotificationCategory;
+  priority: NotificationPriority;
+  title: string;
+  body: string;
+  channels: NotificationChannel[];
+  actionUrl?: string;
+  isRead: boolean;
+  readAt?: string;
+  deduplicationKey?: string;
+  metadata?: Record<string, any>;
+  icon?: Icon3DName | string;
+  createdAt: string;
+}
+
+export interface NotificationPreferencesRecord {
+  id: string;
+  userId: string;
+  enabledChannels: Record<NotificationChannel, boolean>;
+  enabledCategories: Record<NotificationCategory, boolean>;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string; // e.g. "22:00"
+  quietHoursEnd: string;   // e.g. "08:00"
+  digestFrequency: NotificationDigestFrequency;
+  smsPhoneNumber?: string;
+  updatedAt: string;
+}
+
+export interface NotificationDispatchChannelResult {
+  channel: NotificationChannel;
+  status: 'DELIVERED' | 'QUEUED' | 'SUPPRESSED_QUIET_HOURS' | 'DISABLED' | 'FAILED';
+  deliveredAt?: string;
+  error?: string;
+  gatewayPayload?: any;
+}
+
+export interface NotificationDispatchResult {
+  notification: NotificationRecord;
+  dispatchedChannels: NotificationDispatchChannelResult[];
+  isDeduplicated: boolean;
+}
+
+// ----------------------------------------------------------------------------
+// Types Messagerie B2B Centralisée & Sécurisée
+// ----------------------------------------------------------------------------
+
+export type ConversationType =
+  | 'DIRECT'
+  | 'ORDER_THREAD'
+  | 'SHIPMENT_THREAD'
+  | 'SUPPORT_THREAD'
+  | 'QUOTE_THREAD';
+
+export type MessageStatus = 'SENT' | 'DELIVERED' | 'READ';
+
+export interface MessageAttachment {
+  id: string;
+  fileName: string;
+  fileSizeBytes: number;
+  mimeType: string;
+  storageKey: string;
+  presignedDownloadUrl: string;
+  expiresAt: string;
+  sha256: string;
+  virusScanStatus: 'CLEAN' | 'QUARANTINED';
+}
+
+export interface ConversationParticipantDetail {
+  id: string;
+  name: string;
+  role: UserRoleCode;
+  email: string;
+  avatarInitials?: string;
+}
+
+export interface ConversationMessageRecord {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  senderRole: UserRoleCode;
+  originalText: string;
+  sourceLang: SupportedLocale;
+  translatedText?: string;
+  targetLang?: SupportedLocale;
+  isTranslated: boolean;
+  attachments: MessageAttachment[];
+  status: MessageStatus;
+  readBy: { userId: string; readAt: string }[];
+  createdAt: string;
+}
+
+export interface ConversationRecord {
+  id: string;
+  type: ConversationType;
+  title: string;
+  participantIds: string[];
+  participantDetails: ConversationParticipantDetail[];
+  relatedEntityId?: string; // e.g. orderId, shipmentId, ticketId
+  relatedEntityType?: 'ORDER' | 'SHIPMENT' | 'QUOTE' | 'TICKET' | 'OTHER';
+  lastMessageSnippet?: string;
+  lastMessageAt: string;
+  unreadCountByUser: Record<string, number>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TypingIndicatorEvent {
+  conversationId: string;
+  userId: string;
+  userName: string;
+  isTyping: boolean;
+  timestamp: string;
+}
+
+
 
 
 

@@ -76,7 +76,10 @@ import {
   IncidentRecord,
   InvoiceRecord,
   OcrDocumentDetail,
+  NotificationPriority,
 } from '../types';
+import { NotificationPreferencesModal } from '../components/notifications/NotificationPreferencesModal';
+import { B2BMessagingCenterView } from '../components/messaging/B2BMessagingCenterView';
 import { OcrSecureUploader } from '../components/ocr/OcrSecureUploader';
 import { OcrDocumentStudioView } from '../components/ocr/OcrDocumentStudioView';
 import {
@@ -5254,81 +5257,233 @@ Mode de règlement : Virement bancaire 30 jours`,
 
 export const NotificationsCenterPage: React.FC = () => {
   const {
+    currentUser,
     notificationsList,
     toggleNotificationRead,
     markAllNotificationsRead,
+    notificationPreferences,
+    updateNotificationPreferences,
+    conversationsList,
+    activeConversationId,
+    setActiveConversationId,
+    activeConversationMessages,
+    sendB2BMessage,
+    uploadB2BAttachment,
+    startVoiceDictation,
+    voiceTranscript,
   } = useApp();
+
+  const [mainView, setMainView] = useState<'NOTIFICATIONS' | 'MESSAGING'>('NOTIFICATIONS');
   const [activeTab, setActiveTab] = useState('ALL');
+  const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
+  const [isPrefsOpen, setIsPrefsOpen] = useState(false);
+
+  const activeConv = conversationsList.find((c) => c.id === activeConversationId);
 
   const filtered = notificationsList.filter((n) => {
-    if (activeTab === 'UNREAD') return !n.isRead;
-    if (activeTab === 'READ') return n.isRead;
+    if (activeTab === 'UNREAD' && n.isRead) return false;
+    if (activeTab === 'READ' && !n.isRead) return false;
+    if (activeTab === 'CRITICAL' && n.priority !== 'CRITICAL') return false;
+    if (categoryFilter !== 'ALL' && n.cat !== categoryFilter) return false;
     return true;
   });
 
-  return (
-    <Card
-      title="Centre de Notifications Multi-Canaux (Page 76 — Composant 58)"
-      subtitle="Alertes KYC J+1/J+3/J+5/J+6, transitions de commandes, incidents logistiques et sécurité"
-      action={
-        <Button size="sm" variant="secondary" onClick={markAllNotificationsRead}>
-          Tout marquer comme lu
-        </Button>
-      }
-    >
-      <div className="space-y-4">
-        <Tabs
-          ariaLabel="Filtre des notifications"
-          activeTab={activeTab}
-          onChange={setActiveTab}
-          tabs={[
-            { id: 'ALL', label: 'Toutes', badge: notificationsList.length },
-            {
-              id: 'UNREAD',
-              label: 'Non lues',
-              badge: notificationsList.filter((n) => !n.isRead).length,
-            },
-            {
-              id: 'READ',
-              label: 'Lues',
-              badge: notificationsList.filter((n) => n.isRead).length,
-            },
-          ]}
-        />
+  const getPriorityBadgeVariant = (priority?: NotificationPriority) => {
+    switch (priority) {
+      case 'CRITICAL':
+        return 'danger';
+      case 'HIGH':
+        return 'orange';
+      case 'MEDIUM':
+        return 'info';
+      default:
+        return 'neutral';
+    }
+  };
 
-        <div className="space-y-3 text-xs">
-          {filtered.map((n) => (
-            <div
-              key={n.id}
-              className={`p-4 rounded-2xl border flex flex-wrap items-center justify-between gap-3.5 transition-all ${
-                n.isRead
-                  ? 'bg-slate-50/60 dark:bg-[#082225]/50 border-slate-200/70 dark:border-teal-800/50 opacity-75'
-                  : 'bg-white dark:bg-[#0D353A] border-[#E85D22]/50 shadow-xs'
+  return (
+    <div className="space-y-6">
+      {/* Sélecteur de vue principal */}
+      <div className="flex items-center justify-between flex-wrap gap-4 bg-white dark:bg-[#0A2540] p-4 rounded-2xl border border-slate-200 dark:border-teal-800 shadow-xs">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMainView('NOTIFICATIONS')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              mainView === 'NOTIFICATIONS'
+                ? 'bg-[#E85D22] text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            <span>🔔 Centre de Notifications</span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] ${
+                mainView === 'NOTIFICATIONS' ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-700'
               }`}
             >
-              <div className="flex items-center gap-3.5">
-                <Icon3D name={n.icon} size="md" withGlow />
-                <div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={n.isRead ? 'neutral' : 'orange'}>{n.cat}</Badge>
-                    <span className="font-bold text-sm">{n.title}</span>
-                    <span className="text-[11px] text-slate-400">• {n.timestamp}</span>
-                  </div>
-                  <p className="text-slate-600 dark:text-slate-300 mt-1">{n.msg}</p>
-                </div>
-              </div>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => toggleNotificationRead(n.id)}
-              >
-                {n.isRead ? 'Marquer non lu' : 'Marquer lu'}
-              </Button>
-            </div>
-          ))}
+              {notificationsList.filter((n) => !n.isRead).length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMainView('MESSAGING')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              mainView === 'MESSAGING'
+                ? 'bg-[#E85D22] text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            <span>💬 Messagerie B2B Sécurisée</span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] ${
+                mainView === 'MESSAGING' ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-700'
+              }`}
+            >
+              {conversationsList.length}
+            </span>
+          </button>
         </div>
+
+        {mainView === 'NOTIFICATIONS' && (
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="secondary" onClick={() => setIsPrefsOpen(true)}>
+              ⚙️ Préférences Multi-Canaux
+            </Button>
+            <Button size="sm" variant="secondary" onClick={markAllNotificationsRead}>
+              Tout marquer comme lu
+            </Button>
+          </div>
+        )}
       </div>
-    </Card>
+
+      {mainView === 'NOTIFICATIONS' ? (
+        <Card
+          title="Centre de Notifications Multi-Canaux (Page 76 — Composant 58)"
+          subtitle="Alertes KYC J+1/J+3/J+5/J+6, transitions de commandes, incidents logistiques et sécurité"
+        >
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Tabs
+                ariaLabel="Filtre des notifications"
+                activeTab={activeTab}
+                onChange={setActiveTab}
+                tabs={[
+                  { id: 'ALL', label: 'Toutes', badge: notificationsList.length },
+                  {
+                    id: 'UNREAD',
+                    label: 'Non lues',
+                    badge: notificationsList.filter((n) => !n.isRead).length,
+                  },
+                  {
+                    id: 'CRITICAL',
+                    label: 'Critiques',
+                    badge: notificationsList.filter((n) => n.priority === 'CRITICAL').length,
+                  },
+                  {
+                    id: 'READ',
+                    label: 'Lues',
+                    badge: notificationsList.filter((n) => n.isRead).length,
+                  },
+                ]}
+              />
+
+              {/* Filtre par catégorie */}
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-slate-500">Catégorie :</span>
+                <select
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  className="px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs focus:outline-none"
+                >
+                  <option value="ALL">Toutes les catégories</option>
+                  <option value="COMMERCIAL">Commercial & Commandes</option>
+                  <option value="KYC">Conformité KYC</option>
+                  <option value="LOGISTIQUE">Logistique & Expéditions</option>
+                  <option value="FINANCE">Finance & Paiements</option>
+                  <option value="SÉCURITÉ">Sécurité & Sessions</option>
+                  <option value="SUPPORT">Support Client</option>
+                  <option value="ROOM_LIVE">Room Live</option>
+                  <option value="MESSAGE">Messagerie</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              {filtered.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 text-xs">
+                  Aucune notification ne correspond à vos filtres.
+                </div>
+              ) : (
+                filtered.map((n) => (
+                  <div
+                    key={n.id}
+                    className={`p-4 rounded-2xl border flex flex-wrap items-center justify-between gap-3.5 transition-all ${
+                      n.isRead
+                        ? 'bg-slate-50/60 dark:bg-[#082225]/50 border-slate-200/70 dark:border-teal-800/50 opacity-75'
+                        : 'bg-white dark:bg-[#0D353A] border-[#E85D22]/50 shadow-xs'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3.5 flex-1 min-w-[280px]">
+                      <Icon3D name={n.icon as any} size="md" withGlow />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge variant={n.isRead ? 'neutral' : 'orange'}>{n.cat}</Badge>
+                          {n.priority && (
+                            <Badge variant={getPriorityBadgeVariant(n.priority)}>
+                              {n.priority}
+                            </Badge>
+                          )}
+                          <span className="font-bold text-sm text-slate-900 dark:text-white">
+                            {n.title}
+                          </span>
+                          <span className="text-[11px] text-slate-400">• {n.timestamp}</span>
+                        </div>
+                        <p className="text-slate-600 dark:text-slate-300 mt-1">{n.msg}</p>
+                        {n.actionUrl && (
+                          <div className="mt-2">
+                            <span className="text-[11px] text-[#E85D22] font-semibold hover:underline cursor-pointer">
+                              Accéder au dossier &rarr; {n.actionUrl}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => toggleNotificationRead(n.id)}
+                    >
+                      {n.isRead ? 'Marquer non lu' : 'Marquer lu'}
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </Card>
+      ) : (
+        <B2BMessagingCenterView
+          currentUser={currentUser}
+          conversations={conversationsList}
+          activeConversation={activeConv}
+          messages={activeConversationMessages}
+          onSelectConversation={(id) => setActiveConversationId(id)}
+          onSendMessage={sendB2BMessage}
+          onUploadAttachment={uploadB2BAttachment}
+          onTriggerVoiceDictation={() => startVoiceDictation('fr-FR')}
+          dictatedText={voiceTranscript}
+        />
+      )}
+
+      {/* Modal Préférences */}
+      <NotificationPreferencesModal
+        isOpen={isPrefsOpen}
+        onClose={() => setIsPrefsOpen(false)}
+        preferences={notificationPreferences}
+        onSave={updateNotificationPreferences}
+      />
+    </div>
   );
 };
 

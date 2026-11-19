@@ -34,6 +34,10 @@ import {
   VoiceInteractionRecord,
   OcrDocumentDetail,
   OcrQueueJob,
+  NotificationRecord,
+  NotificationPreferencesRecord,
+  ConversationRecord,
+  ConversationMessageRecord,
 } from '../../types';
 import { PaginationAndFilterParams } from '../validators/schema.validator';
 import { StockMovementRecord } from '../../services/commercialEngine';
@@ -88,6 +92,10 @@ export class TradeLinkRepositoryStore {
   private mfaConfigurationsStore: Map<string, MFAConfigurationRecord> = new Map();
   private authSessionsStore: Map<string, AuthSessionDetail> = new Map();
   private voiceConsentsStore: Map<string, { userId: string; granted: boolean; timestamp: string }> = new Map();
+  private notificationsStore: Map<string, NotificationRecord> = new Map();
+  private notificationPreferencesStore: Map<string, NotificationPreferencesRecord> = new Map();
+  private conversationsStore: Map<string, ConversationRecord> = new Map();
+  private messagesStore: Map<string, ConversationMessageRecord[]> = new Map();
 
   constructor(initialState: DatabaseStateSnapshot, isProdDbConnected = false) {
     this.state = structuredClone({
@@ -127,6 +135,71 @@ export class TradeLinkRepositoryStore {
       ocrQueueJobs: initialState.ocrQueueJobs ?? [],
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
+
+    // Initialisation des notifications par défaut
+    this.initDefaultNotifications();
+  }
+
+  private initDefaultNotifications(): void {
+    const defaultNotifs: NotificationRecord[] = [
+      {
+        id: 'notif-init-01',
+        userId: 'usr-client-01',
+        category: 'COMMERCIAL',
+        priority: 'MEDIUM',
+        title: 'Commande #CMD-2026-001 validée',
+        body: 'Votre commande de 500 unités a été validée par Atlas Trading et transmise à la préparation.',
+        channels: ['IN_APP', 'EMAIL'],
+        actionUrl: '/orders/CMD-2026-001',
+        isRead: false,
+        icon: 'parcel-stack',
+        createdAt: new Date(Date.now() - 3600000).toISOString(),
+      },
+      {
+        id: 'notif-init-02',
+        userId: 'usr-client-01',
+        category: 'KYC',
+        priority: 'HIGH',
+        title: 'Rappel KYC J+3 : 4 jours restants',
+        body: 'Pensez à déposer votre KBIS et votre justificatif de domicile pour certifier votre compte.',
+        channels: ['IN_APP', 'EMAIL', 'SMS'],
+        actionUrl: '/kyc',
+        isRead: false,
+        icon: 'customs-stamp',
+        createdAt: new Date(Date.now() - 7200000).toISOString(),
+      },
+      {
+        id: 'notif-init-03',
+        userId: 'usr-client-01',
+        category: 'LOGISTIQUE',
+        priority: 'LOW',
+        title: 'Expédition #TRK-2026-901 prise en charge',
+        body: 'Le transporteur Maghreb Express a pris en charge le fret au port de Tanger Med.',
+        channels: ['IN_APP', 'WEB_PUSH'],
+        actionUrl: '/shipments/TRK-2026-901',
+        isRead: true,
+        readAt: new Date(Date.now() - 10800000).toISOString(),
+        icon: 'delivery-van',
+        createdAt: new Date(Date.now() - 14400000).toISOString(),
+      },
+      {
+        id: 'notif-init-04',
+        userId: 'usr-admin-01',
+        category: 'SÉCURITÉ',
+        priority: 'CRITICAL',
+        title: 'Tentative brute-force bloquée',
+        body: '5 échecs consécutifs détectés depuis IP 198.51.100.44. Compte verrouillé 15 minutes.',
+        channels: ['IN_APP', 'EMAIL', 'SMS', 'WEB_PUSH'],
+        actionUrl: '/security/audit',
+        isRead: false,
+        icon: 'secure-parcel',
+        createdAt: new Date(Date.now() - 1800000).toISOString(),
+      },
+    ];
+
+    for (const n of defaultNotifs) {
+      this.notificationsStore.set(n.id, n);
+    }
   }
 
   // Exécute une transaction atomique avec rollback intégral en cas d'exception
@@ -564,5 +637,171 @@ export class TradeLinkRepositoryStore {
 
   public getSnapshot(): Readonly<Required<DatabaseStateSnapshot>> {
     return this.state;
+  }
+
+  // ============================================================================
+  // MÉTHODES DE GESTION DES NOTIFICATIONS & PRÉFÉRENCES (PROMPT 08)
+  // ============================================================================
+
+  public saveNotification(record: NotificationRecord): NotificationRecord {
+    this.notificationsStore.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  public getNotification(id: string): NotificationRecord | null {
+    const notif = this.notificationsStore.get(id);
+    return notif ? structuredClone(notif) : null;
+  }
+
+  public listNotifications(params?: {
+    userId?: string;
+    category?: string;
+    priority?: string;
+    isRead?: boolean;
+  }): NotificationRecord[] {
+    let list = Array.from(this.notificationsStore.values());
+
+    if (params?.userId) {
+      list = list.filter((n) => n.userId === params.userId);
+    }
+    if (params?.category) {
+      list = list.filter((n) => n.category === params.category);
+    }
+    if (params?.priority) {
+      list = list.filter((n) => n.priority === params.priority);
+    }
+    if (params?.isRead !== undefined) {
+      list = list.filter((n) => n.isRead === params.isRead);
+    }
+
+    // Tri antéchronologique par défaut
+    return list
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .map((n) => structuredClone(n));
+  }
+
+  public markNotificationRead(id: string, userId: string): NotificationRecord | null {
+    const notif = this.notificationsStore.get(id);
+    if (!notif) return null;
+
+    // Anti-IDOR : seul le destinataire (ou admin) peut marquer comme lu
+    if (notif.userId !== userId) {
+      const err = new Error('FORBIDDEN_IDOR_NOTIFICATION');
+      (err as any).statusCode = 403;
+      throw err;
+    }
+
+    notif.isRead = true;
+    notif.readAt = new Date().toISOString();
+    this.notificationsStore.set(id, notif);
+    return structuredClone(notif);
+  }
+
+  public markAllNotificationsRead(userId: string): number {
+    let updatedCount = 0;
+    const now = new Date().toISOString();
+    for (const [id, notif] of this.notificationsStore.entries()) {
+      if (notif.userId === userId && !notif.isRead) {
+        notif.isRead = true;
+        notif.readAt = now;
+        this.notificationsStore.set(id, notif);
+        updatedCount++;
+      }
+    }
+    return updatedCount;
+  }
+
+  public getNotificationPreferences(userId: string): NotificationPreferencesRecord {
+    let prefs = this.notificationPreferencesStore.get(userId);
+    if (!prefs) {
+      prefs = {
+        id: `pref-${userId}`,
+        userId,
+        enabledChannels: {
+          IN_APP: true,
+          EMAIL: true,
+          WEB_PUSH: true,
+          SMS: true,
+        },
+        enabledCategories: {
+          COMMERCIAL: true,
+          KYC: true,
+          LOGISTIQUE: true,
+          FINANCE: true,
+          SÉCURITÉ: true,
+          SUPPORT: true,
+          ROOM_LIVE: true,
+          MESSAGE: true,
+        },
+        quietHoursEnabled: true,
+        quietHoursStart: '22:00',
+        quietHoursEnd: '08:00',
+        digestFrequency: 'INSTANT',
+        updatedAt: new Date().toISOString(),
+      };
+      this.notificationPreferencesStore.set(userId, prefs);
+    }
+    return structuredClone(prefs);
+  }
+
+  public saveNotificationPreferences(
+    record: NotificationPreferencesRecord
+  ): NotificationPreferencesRecord {
+    this.notificationPreferencesStore.set(record.userId, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  // ============================================================================
+  // MÉTHODES DE GESTION DE LA MESSAGERIE B2B (PROMPT 08)
+  // ============================================================================
+
+  public createConversation(record: ConversationRecord): ConversationRecord {
+    this.conversationsStore.set(record.id, structuredClone(record));
+    if (!this.messagesStore.has(record.id)) {
+      this.messagesStore.set(record.id, []);
+    }
+    return structuredClone(record);
+  }
+
+  public getConversation(id: string): ConversationRecord | null {
+    const conv = this.conversationsStore.get(id);
+    return conv ? structuredClone(conv) : null;
+  }
+
+  public listConversationsForUser(userId: string, userRole?: string): ConversationRecord[] {
+    let list = Array.from(this.conversationsStore.values());
+    if (userRole !== 'ADMIN' && userRole !== 'SUPPORT') {
+      list = list.filter((c) => c.participantIds.includes(userId));
+    }
+    return list
+      .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime())
+      .map((c) => structuredClone(c));
+  }
+
+  public updateConversation(record: ConversationRecord): ConversationRecord {
+    this.conversationsStore.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  public saveMessage(message: ConversationMessageRecord): ConversationMessageRecord {
+    const list = this.messagesStore.get(message.conversationId) || [];
+    list.push(structuredClone(message));
+    this.messagesStore.set(message.conversationId, list);
+    return structuredClone(message);
+  }
+
+  public listMessages(conversationId: string): ConversationMessageRecord[] {
+    const list = this.messagesStore.get(conversationId) || [];
+    return list.map((m) => structuredClone(m));
+  }
+
+  public updateMessages(
+    conversationId: string,
+    messages: ConversationMessageRecord[]
+  ): void {
+    this.messagesStore.set(
+      conversationId,
+      messages.map((m) => structuredClone(m))
+    );
   }
 }

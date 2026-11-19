@@ -86,6 +86,13 @@ import {
   OcrProcessingStatus,
   OcrQueueJob,
   OcrCorrectionLog,
+  NotificationRecord,
+  NotificationPreferencesRecord,
+  ConversationRecord,
+  ConversationMessageRecord,
+  ConversationType,
+  ConversationParticipantDetail,
+  MessageAttachment,
 } from '../../types';
 import {
   validateFileMagicBytes,
@@ -157,6 +164,13 @@ import {
   RoomParticipantModerationAction,
   RoomLiveAiSummary,
 } from '../../types';
+import {
+  defaultNotificationDispatcher,
+} from '../../services/notificationEngine';
+import {
+  defaultB2BMessagingEngine,
+  SecureAttachmentManager,
+} from '../../services/messagingEngine';
 
 export interface RegisteredAccountRecord {
   userId: string;
@@ -5072,6 +5086,263 @@ export class TradeLinkDomainServices {
       totalPending,
       totalCompleted,
     };
+  }
+
+  // ============================================================================
+  // SERVICES DE NOTIFICATIONS MULTI-CANAUX (PROMPT 08)
+  // ============================================================================
+
+  public listNotificationsService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    params?: { category?: string; priority?: string; isRead?: boolean }
+  ): NotificationRecord[] {
+    const isAdmin = actor.role === 'ADMIN';
+    // L'Admin peut voir les notifications globales ou filtrer par utilisateur, les autres uniquement les leurs
+    return this.repo.listNotifications({
+      userId: isAdmin ? undefined : actor.id,
+      category: params?.category,
+      priority: params?.priority,
+      isRead: params?.isRead,
+    });
+  }
+
+  public markNotificationReadService(
+    notificationId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): NotificationRecord {
+    const notif = this.repo.markNotificationRead(notificationId, actor.id);
+    if (!notif) {
+      throw new AppError(404, 'NOTIFICATION_NOT_FOUND', `Notification "${notificationId}" introuvable.`);
+    }
+    return notif;
+  }
+
+  public markAllNotificationsReadService(
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { updatedCount: number } {
+    const count = this.repo.markAllNotificationsRead(actor.id);
+    return { updatedCount: count };
+  }
+
+  public getNotificationPreferencesService(
+    actor: NonNullable<ServerRequestContext['user']>
+  ): NotificationPreferencesRecord {
+    return this.repo.getNotificationPreferences(actor.id);
+  }
+
+  public updateNotificationPreferencesService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: Partial<NotificationPreferencesRecord>
+  ): NotificationPreferencesRecord {
+    const existing = this.repo.getNotificationPreferences(actor.id);
+    const updated: NotificationPreferencesRecord = {
+      ...existing,
+      ...payload,
+      id: existing.id,
+      userId: actor.id,
+      updatedAt: new Date().toISOString(),
+    };
+    return this.repo.saveNotificationPreferences(updated);
+  }
+
+  public dispatchNotificationService(
+    params: {
+      notification: NotificationRecord;
+      recipientEmail?: string;
+      recipientPhone?: string;
+      recipientName?: string;
+    },
+    _actor: NonNullable<ServerRequestContext['user']>
+  ) {
+    const prefs = this.repo.getNotificationPreferences(params.notification.userId);
+    const result = defaultNotificationDispatcher.dispatch({
+      notification: params.notification,
+      preferences: prefs,
+      recipientEmail: params.recipientEmail,
+      recipientPhone: params.recipientPhone,
+      recipientName: params.recipientName,
+    });
+
+    // Si le canal IN_APP a été délivré (et non dédupliqué), persister la notification
+    const inAppDelivered = result.dispatchedChannels.some(
+      (c) => c.channel === 'IN_APP' && c.status === 'DELIVERED'
+    );
+    if (inAppDelivered && !result.isDeduplicated) {
+      this.repo.saveNotification(result.notification);
+    }
+
+    return result;
+  }
+
+  // ============================================================================
+  // SERVICES DE MESSAGERIE B2B CENTRALISÉE & SÉCURISÉE (PROMPT 08)
+  // ============================================================================
+
+  public createConversationService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      type: ConversationType;
+      title: string;
+      participants: ConversationParticipantDetail[];
+      relatedEntityId?: string;
+      relatedEntityType?: 'ORDER' | 'SHIPMENT' | 'QUOTE' | 'TICKET' | 'OTHER';
+    }
+  ): ConversationRecord {
+    const conv = defaultB2BMessagingEngine.createConversation({
+      type: payload.type,
+      title: payload.title,
+      participants: payload.participants,
+      initiatorId: actor.id,
+      initiatorRole: actor.role,
+      relatedEntityId: payload.relatedEntityId,
+      relatedEntityType: payload.relatedEntityType,
+    });
+
+    return this.repo.createConversation(conv);
+  }
+
+  public listConversationsService(
+    actor: NonNullable<ServerRequestContext['user']>
+  ): ConversationRecord[] {
+    return this.repo.listConversationsForUser(actor.id, actor.role);
+  }
+
+  private checkConversationAccess(
+    conv: ConversationRecord,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): void {
+    try {
+      defaultB2BMessagingEngine.verifyAccess(conv, actor.id, actor.role);
+    } catch (err: any) {
+      throw new AppError(
+        err.statusCode || 403,
+        err.message || 'FORBIDDEN_CONVERSATION_ACCESS_IDOR',
+        'Accès non autorisé à cette conversation.'
+      );
+    }
+  }
+
+  public getConversationService(
+    conversationId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { conversation: ConversationRecord; messages: ConversationMessageRecord[] } {
+    const conv = this.repo.getConversation(conversationId);
+    if (!conv) {
+      throw new AppError(404, 'CONVERSATION_NOT_FOUND', `Conversation "${conversationId}" introuvable.`);
+    }
+
+    // Vérification stricte anti-IDOR
+    this.checkConversationAccess(conv, actor);
+
+    const messages = this.repo.listMessages(conversationId);
+    return {
+      conversation: conv,
+      messages,
+    };
+  }
+
+  public sendMessageService(
+    conversationId: string,
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      text: string;
+      attachments?: MessageAttachment[];
+      targetRecipientLocale?: SupportedLocale;
+    }
+  ): { message: ConversationMessageRecord; conversation: ConversationRecord } {
+    const conv = this.repo.getConversation(conversationId);
+    if (!conv) {
+      throw new AppError(404, 'CONVERSATION_NOT_FOUND', `Conversation "${conversationId}" introuvable.`);
+    }
+
+    this.checkConversationAccess(conv, actor);
+
+    const senderDetail: ConversationParticipantDetail = conv.participantDetails.find(
+      (p) => p.id === actor.id
+    ) || {
+      id: actor.id,
+      name: actor.email.split('@')[0],
+      role: actor.role,
+      email: actor.email,
+    };
+
+    const sendResult = defaultB2BMessagingEngine.sendMessage({
+      conversation: conv,
+      sender: senderDetail,
+      text: payload.text,
+      attachments: payload.attachments,
+      recipientLocalePreference: payload.targetRecipientLocale,
+    });
+
+    this.repo.saveMessage(sendResult.message);
+    this.repo.updateConversation(sendResult.conversation);
+
+    return sendResult;
+  }
+
+  public markMessagesAsReadService(
+    conversationId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { unreadClearedCount: number } {
+    const conv = this.repo.getConversation(conversationId);
+    if (!conv) {
+      throw new AppError(404, 'CONVERSATION_NOT_FOUND', `Conversation "${conversationId}" introuvable.`);
+    }
+
+    this.checkConversationAccess(conv, actor);
+
+    const messages = this.repo.listMessages(conversationId);
+    const result = defaultB2BMessagingEngine.markAsRead(conv, messages, actor.id);
+
+    this.repo.updateMessages(conversationId, result.updatedMessages);
+    this.repo.updateConversation(conv);
+
+    return { unreadClearedCount: result.unreadClearedCount };
+  }
+
+  public searchMessagesService(
+    conversationId: string,
+    query: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): ConversationMessageRecord[] {
+    const conv = this.repo.getConversation(conversationId);
+    if (!conv) {
+      throw new AppError(404, 'CONVERSATION_NOT_FOUND', `Conversation "${conversationId}" introuvable.`);
+    }
+
+    this.checkConversationAccess(conv, actor);
+
+    const messages = this.repo.listMessages(conversationId);
+    return defaultB2BMessagingEngine.searchMessages(messages, query);
+  }
+
+  public uploadMessageAttachmentService(
+    conversationId: string,
+    actor: NonNullable<ServerRequestContext['user']>,
+    fileData: {
+      fileName: string;
+      fileSizeBytes: number;
+      mimeType: string;
+      base64Data?: string;
+      magicBytesHeaderHex?: string;
+    }
+  ): MessageAttachment {
+    const conv = this.repo.getConversation(conversationId);
+    if (!conv) {
+      throw new AppError(404, 'CONVERSATION_NOT_FOUND', `Conversation "${conversationId}" introuvable.`);
+    }
+
+    this.checkConversationAccess(conv, actor);
+
+    try {
+      return SecureAttachmentManager.validateAndProcess(fileData);
+    } catch (err: any) {
+      throw new AppError(
+        err.statusCode || 400,
+        err.message || 'INVALID_ATTACHMENT',
+        'Pièce jointe rejetée par le contrôle de sécurité.'
+      );
+    }
   }
 }
 

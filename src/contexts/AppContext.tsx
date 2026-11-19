@@ -23,6 +23,15 @@ import {
   ShipmentStatus,
   ThemeMode,
   UserProfile,
+  NotificationCategory,
+  NotificationPriority,
+  NotificationChannel,
+  NotificationPreferencesRecord,
+  ConversationRecord,
+  ConversationMessageRecord,
+  ConversationParticipantDetail,
+  MessageAttachment,
+  Icon3DName,
 } from '../types';
 import i18n from '../i18n/config';
 import { translations } from '../i18n/translations';
@@ -76,6 +85,10 @@ import {
   RoomLiveAiSummary,
 } from '../types';
 import {
+  defaultB2BMessagingEngine,
+  SecureAttachmentManager,
+} from '../services/messagingEngine';
+import {
   analyzeFileInIsolatedSandbox,
   buildAuditChainFromLogs,
   EnvelopeCipherResult,
@@ -94,12 +107,16 @@ export type UXPreviewState = 'normal' | 'loading' | 'empty' | 'error';
 
 export interface NotificationItem {
   id: string;
-  cat: 'KYC' | 'LOGISTIQUE' | 'SÉCURITÉ' | 'FINANCE';
+  cat: NotificationCategory;
   title: string;
   msg: string;
-  icon: 'customs-stamp' | 'air-freight' | 'secure-parcel' | 'payment';
+  icon: Icon3DName;
   isRead: boolean;
   timestamp: string;
+  priority?: NotificationPriority;
+  actionUrl?: string;
+  channels?: NotificationChannel[];
+  createdAt?: string;
 }
 
 export const DEMO_USERS: Record<string, UserProfile> = {
@@ -1450,6 +1467,22 @@ interface AppContextValue {
   generateRoomAiSummary: (targetLocale?: 'fr' | 'en' | 'ar') => RoomLiveAiSummary;
   shareRoomDocument: (document: { id: string; title: string; type: string; url?: string; previewUrl?: string }) => void;
   stopSharingRoomDocument: () => void;
+
+  // Messagerie B2B Centralisée & Préférences de Notifications (PROMPT 08)
+  notificationPreferences: NotificationPreferencesRecord;
+  updateNotificationPreferences: (updated: Partial<NotificationPreferencesRecord>) => void;
+  conversationsList: ConversationRecord[];
+  activeConversationId: string;
+  setActiveConversationId: (id: string) => void;
+  activeConversationMessages: ConversationMessageRecord[];
+  sendB2BMessage: (text: string, attachments?: MessageAttachment[]) => Promise<void>;
+  uploadB2BAttachment: (file: File) => Promise<MessageAttachment | null>;
+  createB2BConversation: (
+    title: string,
+    participants: ConversationParticipantDetail[],
+    relatedId?: string,
+    relatedType?: 'ORDER' | 'SHIPMENT' | 'QUOTE' | 'TICKET' | 'OTHER'
+  ) => Promise<ConversationRecord>;
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -1567,6 +1600,166 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ]);
   const [floatingButtons, setFloatingButtons] = useState<FloatingButtonItem[]>(INITIAL_FLOATING_BUTTONS);
   const [notificationsList, setNotificationsList] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
+  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferencesRecord>({
+    id: 'pref-default',
+    userId: DEMO_USERS.ADMIN_1.id,
+    enabledChannels: {
+      IN_APP: true,
+      EMAIL: true,
+      WEB_PUSH: true,
+      SMS: true,
+    },
+    enabledCategories: {
+      COMMERCIAL: true,
+      KYC: true,
+      LOGISTIQUE: true,
+      FINANCE: true,
+      SÉCURITÉ: true,
+      SUPPORT: true,
+      ROOM_LIVE: true,
+      MESSAGE: true,
+    },
+    quietHoursEnabled: true,
+    quietHoursStart: '22:00',
+    quietHoursEnd: '08:00',
+    digestFrequency: 'INSTANT',
+    smsPhoneNumber: '+33 6 12 34 56 78',
+    updatedAt: new Date().toISOString(),
+  });
+
+  const [conversationsList, setConversationsList] = useState<ConversationRecord[]>([
+    {
+      id: 'conv-b2b-01',
+      type: 'ORDER_THREAD',
+      title: 'Commande #CMD-2026-001 — Coordination Expédition',
+      participantIds: ['usr-client-01', 'usr-admin-01'],
+      participantDetails: [
+        {
+          id: 'usr-client-01',
+          name: 'Atlas Trading & Imports',
+          role: 'CLIENT',
+          email: 'youssef.berrada@atlastrading.ma',
+        },
+        {
+          id: 'usr-admin-01',
+          name: 'Karim Mansouri (Admin TradeLink)',
+          role: 'ADMIN',
+          email: 'direction.sec@tradelink-saas.com',
+        },
+      ],
+      relatedEntityId: 'CMD-2026-001',
+      relatedEntityType: 'ORDER',
+      lastMessageSnippet: 'Bonjour, les conteneurs sont scellés et prêts pour enlèvement au quai A3.',
+      lastMessageAt: new Date(Date.now() - 1800000).toISOString(),
+      unreadCountByUser: {
+        'usr-client-01': 0,
+        'usr-admin-01': 1,
+      },
+      createdAt: new Date(Date.now() - 86400000).toISOString(),
+      updatedAt: new Date(Date.now() - 1800000).toISOString(),
+    },
+    {
+      id: 'conv-b2b-02',
+      type: 'SHIPMENT_THREAD',
+      title: 'Expédition #TRK-2026-901 — Télémétrie & CMR',
+      participantIds: ['usr-client-01', 'usr-admin-01'],
+      participantDetails: [
+        {
+          id: 'usr-client-01',
+          name: 'Atlas Trading & Imports',
+          role: 'CLIENT',
+          email: 'youssef.berrada@atlastrading.ma',
+        },
+        {
+          id: 'usr-admin-01',
+          name: 'Karim Mansouri',
+          role: 'ADMIN',
+          email: 'direction.sec@tradelink-saas.com',
+        },
+      ],
+      relatedEntityId: 'TRK-2026-901',
+      relatedEntityType: 'SHIPMENT',
+      lastMessageSnippet: 'La lettre de voiture électronique (e-CMR) a été contresignée avec succès.',
+      lastMessageAt: new Date(Date.now() - 7200000).toISOString(),
+      unreadCountByUser: {
+        'usr-client-01': 0,
+        'usr-admin-01': 0,
+      },
+      createdAt: new Date(Date.now() - 172800000).toISOString(),
+      updatedAt: new Date(Date.now() - 7200000).toISOString(),
+    },
+  ]);
+
+  const [activeConversationId, setActiveConversationId] = useState<string>('conv-b2b-01');
+
+  const [messagesByConversation, setMessagesByConversation] = useState<Record<string, ConversationMessageRecord[]>>({
+    'conv-b2b-01': [
+      {
+        id: 'msg-01',
+        conversationId: 'conv-b2b-01',
+        senderId: 'usr-client-01',
+        senderName: 'Atlas Trading & Imports',
+        senderRole: 'CLIENT',
+        originalText: 'Bonjour Karim, nous confirmons la finalisation de la commande #CMD-2026-001.',
+        sourceLang: 'fr',
+        isTranslated: false,
+        attachments: [],
+        status: 'READ',
+        readBy: [
+          { userId: 'usr-client-01', readAt: new Date(Date.now() - 3600000).toISOString() },
+          { userId: 'usr-admin-01', readAt: new Date(Date.now() - 3500000).toISOString() },
+        ],
+        createdAt: new Date(Date.now() - 3600000).toISOString(),
+      },
+      {
+        id: 'msg-02',
+        conversationId: 'conv-b2b-01',
+        senderId: 'usr-client-01',
+        senderName: 'Atlas Trading & Imports',
+        senderRole: 'CLIENT',
+        originalText: 'يرجى تأكيد موعد وصول الشاحنة إلى رصيف الميناء.',
+        sourceLang: 'ar',
+        translatedText: 'Veuillez confirmer l’heure d’arrivée du camion au quai du port.',
+        targetLang: 'fr',
+        isTranslated: true,
+        attachments: [],
+        status: 'SENT',
+        readBy: [{ userId: 'usr-client-01', readAt: new Date(Date.now() - 1800000).toISOString() }],
+        createdAt: new Date(Date.now() - 1800000).toISOString(),
+      },
+    ],
+    'conv-b2b-02': [
+      {
+        id: 'msg-03',
+        conversationId: 'conv-b2b-02',
+        senderId: 'usr-admin-01',
+        senderName: 'Karim Mansouri',
+        senderRole: 'ADMIN',
+        originalText: 'La lettre de voiture électronique (e-CMR) a été contresignée avec succès.',
+        sourceLang: 'fr',
+        isTranslated: false,
+        attachments: [
+          {
+            id: 'att-mock-cmr-01',
+            fileName: 'eCMR_TRK-2026-901_Certifiee.pdf',
+            fileSizeBytes: 420000,
+            mimeType: 'application/pdf',
+            storageKey: 'attachments/b2b/2026/eCMR_TRK-2026-901_Certifiee.pdf',
+            presignedDownloadUrl: '#download-mock-cmr',
+            expiresAt: new Date(Date.now() + 86400000).toISOString(),
+            sha256: 'a1b2c3d4e5f678901234567890abcdef1234567890abcdef1234567890abcdef',
+            virusScanStatus: 'CLEAN',
+          },
+        ],
+        status: 'READ',
+        readBy: [
+          { userId: 'usr-admin-01', readAt: new Date(Date.now() - 7200000).toISOString() },
+          { userId: 'usr-client-01', readAt: new Date(Date.now() - 7000000).toISOString() },
+        ],
+        createdAt: new Date(Date.now() - 7200000).toISOString(),
+      },
+    ],
+  });
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{
@@ -3100,6 +3293,103 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notifyToast('Toutes les notifications ont été marquées comme lues.', 'success');
   };
 
+  const updateNotificationPreferences = (updated: Partial<NotificationPreferencesRecord>) => {
+    setNotificationPreferences((prev) => ({
+      ...prev,
+      ...updated,
+      updatedAt: new Date().toISOString(),
+    }));
+    notifyToast('Préférences de notifications multi-canaux mises à jour.', 'success');
+  };
+
+  // ============================================================================
+  // MÉTHODES DE MESSAGERIE B2B CENTRALISÉE (PROMPT 08)
+  // ============================================================================
+
+  const activeConversationMessages = messagesByConversation[activeConversationId] || [];
+
+  const sendB2BMessage = async (text: string, attachments: MessageAttachment[] = []) => {
+    const activeConv = conversationsList.find((c) => c.id === activeConversationId);
+    if (!activeConv) return;
+
+    const senderDetail: ConversationParticipantDetail = {
+      id: currentUser.id,
+      name: `${currentUser.firstName} ${currentUser.lastName}`.trim() || currentUser.email.split('@')[0],
+      role: currentUser.role,
+      email: currentUser.email,
+    };
+
+    const sendRes = await defaultB2BMessagingEngine.sendMessage({
+      conversation: activeConv,
+      sender: senderDetail,
+      text,
+      attachments,
+      recipientLocalePreference: 'fr',
+    });
+
+    setMessagesByConversation((prev) => ({
+      ...prev,
+      [activeConversationId]: [...(prev[activeConversationId] || []), sendRes.message],
+    }));
+
+    setConversationsList((prev) =>
+      prev.map((c) => (c.id === activeConversationId ? sendRes.conversation : c))
+    );
+
+    // Ajoute une notification dans la liste pour les autres participants
+    setNotificationsList((prev) => [
+      {
+        id: `notif-msg-${Date.now()}`,
+        cat: 'MESSAGE',
+        priority: 'MEDIUM',
+        title: `Message de ${senderDetail.name}`,
+        msg: text.slice(0, 70) || 'Pièce jointe envoyée',
+        icon: 'mailbox',
+        isRead: false,
+        timestamp: 'À l’instant',
+      },
+      ...prev,
+    ]);
+  };
+
+  const uploadB2BAttachment = async (file: File): Promise<MessageAttachment | null> => {
+    try {
+      const att = SecureAttachmentManager.validateAndProcess({
+        fileName: file.name,
+        fileSizeBytes: file.size,
+        mimeType: file.type || 'application/pdf',
+      });
+      notifyToast(`Fichier "${file.name}" analysé et sécurisé.`, 'success');
+      return att;
+    } catch (err: any) {
+      notifyToast(`Erreur téléversement : ${err?.message || 'Fichier non conforme'}`, 'error');
+      return null;
+    }
+  };
+
+  const createB2BConversation = async (
+    title: string,
+    participants: ConversationParticipantDetail[],
+    relatedId?: string,
+    relatedType?: 'ORDER' | 'SHIPMENT' | 'QUOTE' | 'TICKET' | 'OTHER'
+  ): Promise<ConversationRecord> => {
+    const conv = defaultB2BMessagingEngine.createConversation({
+      type: relatedType ? (`${relatedType}_THREAD` as any) : 'DIRECT',
+      title,
+      participants,
+      initiatorId: currentUser.id,
+      initiatorRole: currentUser.role,
+      relatedEntityId: relatedId,
+      relatedEntityType: relatedType,
+    });
+
+    setConversationsList((prev) => [conv, ...prev]);
+    setMessagesByConversation((prev) => ({ ...prev, [conv.id]: [] }));
+    setActiveConversationId(conv.id);
+    notifyToast(`Conversation "${title}" créée.`, 'success');
+    return conv;
+  };
+
   // ============================================================================
   // MÉTHODES INTELLIGENCE ARTIFICIELLE, RAG, OCR/IDP, DICTÉE & ROOM LIVE
   // ============================================================================
@@ -3628,6 +3918,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         generateRoomAiSummary,
         shareRoomDocument,
         stopSharingRoomDocument,
+        notificationPreferences,
+        updateNotificationPreferences,
+        conversationsList,
+        activeConversationId,
+        setActiveConversationId,
+        activeConversationMessages,
+        sendB2BMessage,
+        uploadB2BAttachment,
+        createB2BConversation,
       }}
     >
       {children}

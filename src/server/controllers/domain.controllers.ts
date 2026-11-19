@@ -1894,6 +1894,155 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, result, 200);
     }
 
+    // ============================================================================
+    // 25. NOTIFICATIONS ET MESSAGERIE CENTRALISÉES (PROMPT 08)
+    // ============================================================================
+
+    // 25A. Liste des notifications filtrées
+    if (method === 'GET' && path === '/api/v1/notifications') {
+      const user = requireAuthenticatedSession(ctx);
+      const category = ctx.query?.category;
+      const priority = ctx.query?.priority;
+      const isReadParam = ctx.query?.isRead;
+      const isRead =
+        isReadParam === 'true' ? true : isReadParam === 'false' ? false : undefined;
+
+      const notifs = this.services.listNotificationsService(user, {
+        category,
+        priority,
+        isRead,
+      });
+      return this.ok(ctx, { notifications: notifs, total: notifs.length }, 200);
+    }
+
+    // 25B. Marquer une notification comme lue
+    if (method === 'PUT' && path.startsWith('/api/v1/notifications/') && path.endsWith('/read')) {
+      const user = requireAuthenticatedSession(ctx);
+      const notifId = path.replace('/api/v1/notifications/', '').replace('/read', '');
+      const updated = this.services.markNotificationReadService(notifId, user);
+      return this.ok(ctx, { notification: updated }, 200);
+    }
+
+    // 25C. Marquer toutes les notifications comme lues
+    if (method === 'PUT' && path === '/api/v1/notifications/read-all') {
+      const user = requireAuthenticatedSession(ctx);
+      const result = this.services.markAllNotificationsReadService(user);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 25D. Obtenir les préférences de notification
+    if (method === 'GET' && path === '/api/v1/notifications/preferences') {
+      const user = requireAuthenticatedSession(ctx);
+      const prefs = this.services.getNotificationPreferencesService(user);
+      return this.ok(ctx, { preferences: prefs }, 200);
+    }
+
+    // 25E. Mettre à jour les préférences de notification
+    if (method === 'PUT' && path === '/api/v1/notifications/preferences') {
+      const user = requireAuthenticatedSession(ctx);
+      const updated = this.services.updateNotificationPreferencesService(user, ctx.body || {});
+      return this.ok(ctx, { preferences: updated }, 200);
+    }
+
+    // 25F. Dispatcher une notification (Événement métier)
+    if (method === 'POST' && path === '/api/v1/notifications/dispatch') {
+      const user = requireAuthenticatedSession(ctx);
+      const { notification, recipientEmail, recipientPhone, recipientName } = ctx.body || {};
+      if (!notification) {
+        throw new AppError(400, 'NOTIFICATION_PAYLOAD_MISSING', 'Payload de notification requis.');
+      }
+      const result = this.services.dispatchNotificationService(
+        {
+          notification,
+          recipientEmail,
+          recipientPhone,
+          recipientName,
+        },
+        user
+      );
+      return this.ok(ctx, result, 201);
+    }
+
+    // 25G. Lister les conversations de l'acteur
+    if (method === 'GET' && path === '/api/v1/messaging/conversations') {
+      const user = requireAuthenticatedSession(ctx);
+      const conversations = this.services.listConversationsService(user);
+      return this.ok(ctx, { conversations, total: conversations.length }, 200);
+    }
+
+    // 25H. Créer une nouvelle conversation
+    if (method === 'POST' && path === '/api/v1/messaging/conversations') {
+      const user = requireAuthenticatedSession(ctx);
+      const { type, title, participants, relatedEntityId, relatedEntityType } = ctx.body || {};
+      if (!title || !participants || !Array.isArray(participants)) {
+        throw new AppError(400, 'INVALID_CONVERSATION_PAYLOAD', 'Titre et participants obligatoires.');
+      }
+      const conv = this.services.createConversationService(user, {
+        type: type || 'DIRECT',
+        title,
+        participants,
+        relatedEntityId,
+        relatedEntityType,
+      });
+      return this.ok(ctx, { conversation: conv }, 201);
+    }
+
+    // 25I. Obtenir une conversation et ses messages
+    if (method === 'GET' && path.startsWith('/api/v1/messaging/conversations/') && !path.includes('/messages') && !path.includes('/read') && !path.includes('/search') && !path.includes('/attachments')) {
+      const user = requireAuthenticatedSession(ctx);
+      const convId = path.replace('/api/v1/messaging/conversations/', '');
+      const result = this.services.getConversationService(convId, user);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 25J. Envoyer un message dans une conversation
+    if (method === 'POST' && path.includes('/api/v1/messaging/conversations/') && path.endsWith('/messages')) {
+      const user = requireAuthenticatedSession(ctx);
+      const convId = path.replace('/api/v1/messaging/conversations/', '').replace('/messages', '');
+      const { text, attachments, targetRecipientLocale } = ctx.body || {};
+      const result = this.services.sendMessageService(convId, user, {
+        text: text || '',
+        attachments: attachments || [],
+        targetRecipientLocale,
+      });
+      return this.ok(ctx, result, 201);
+    }
+
+    // 25K. Marquer les messages d'une conversation comme lus
+    if (method === 'PUT' && path.includes('/api/v1/messaging/conversations/') && path.endsWith('/read')) {
+      const user = requireAuthenticatedSession(ctx);
+      const convId = path.replace('/api/v1/messaging/conversations/', '').replace('/read', '');
+      const result = this.services.markMessagesAsReadService(convId, user);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 25L. Recherche de messages dans une conversation
+    if (method === 'GET' && path.includes('/api/v1/messaging/conversations/') && path.endsWith('/search')) {
+      const user = requireAuthenticatedSession(ctx);
+      const convId = path.replace('/api/v1/messaging/conversations/', '').replace('/search', '');
+      const q = ctx.query?.q || '';
+      const messages = this.services.searchMessagesService(convId, q, user);
+      return this.ok(ctx, { messages, total: messages.length }, 200);
+    }
+
+    // 25M. Téléverser une pièce jointe sécurisée pour la messagerie
+    if (method === 'POST' && path.includes('/api/v1/messaging/conversations/') && path.endsWith('/attachments')) {
+      const user = requireAuthenticatedSession(ctx);
+      const convId = path.replace('/api/v1/messaging/conversations/', '').replace('/attachments', '');
+      const { fileName, fileSizeBytes, mimeType, base64Data, magicBytesHeaderHex } = ctx.body || {};
+      if (!fileName || !fileSizeBytes || !mimeType) {
+        throw new AppError(400, 'INVALID_ATTACHMENT_METADATA', 'Nom de fichier, taille et type MIME requis.');
+      }
+      const attachment = this.services.uploadMessageAttachmentService(convId, user, {
+        fileName,
+        fileSizeBytes,
+        mimeType,
+        base64Data,
+        magicBytesHeaderHex,
+      });
+      return this.ok(ctx, { attachment }, 201);
+    }
+
     throw new AppError(404, 'ENDPOINT_NOT_FOUND', `Route API introuvable : ${method} ${path}`);
   }
 }
