@@ -740,13 +740,130 @@ export interface FinancialAnomalyRecord {
 }
 
 export type ShipmentStatus =
+  // 10 Statuts officiels du cycle logistique complet (Prompt 13)
+  | 'PENDING'                 // En attente d'affectation ou prise en charge
+  | 'CONFIRMED'               // Confirmée / Acceptée par le transporteur
+  | 'PICKUP_SCHEDULED'        // Collecte programmée avec créneau fixé
+  | 'PICKED_UP'               // Collectée / Enlevée chez l'expéditeur
+  | 'IN_TRANSIT'              // En transit multimodal
+  | 'ARRIVED_AT_DESTINATION'  // Arrivée à destination / Hub logistique
+  | 'OUT_FOR_DELIVERY'        // En cours de livraison finale (dernier kilomètre)
+  | 'DELIVERED'               // Livrée avec preuve de livraison (POD)
+  | 'FAILED'                  // Échec de livraison (avec motif)
+  | 'INCIDENT'                // Incident en cours de traitement
+  // Alias de rétrocompatibilité :
   | 'TO_ASSIGN'
   | 'ACCEPTED'
-  | 'COLLECTED'
-  | 'IN_TRANSIT'
-  | 'OUT_FOR_DELIVERY'
-  | 'DELIVERED'
-  | 'FAILED';
+  | 'COLLECTED';
+
+export type PackageHandlingType =
+  | 'PALLET_EURO'
+  | 'PALLET_ISO'
+  | 'BOX_CARTON'
+  | 'CONTAINER_20'
+  | 'CONTAINER_40'
+  | 'BARREL_DRUM'
+  | 'BULK_CARGO'
+  | 'CUSTOM';
+
+export interface ShipmentPackageDetail {
+  id: string;
+  packageType: PackageHandlingType;
+  quantity: number;
+  description: string;
+  grossWeightKg: number;
+  netWeightKg: number;
+  dimensionsCm: {
+    length: number;
+    width: number;
+    height: number;
+  };
+  volumeM3: number;
+  isDangerousGoodsAdr?: boolean;
+  adrClass?: string;
+  isColdChainAtp?: boolean;
+  requiredTemperatureRange?: string; // ex: "-20°C à -18°C" ou "+2°C à +6°C"
+}
+
+export interface ShipmentAddressDetail {
+  street: string;
+  postalCode: string;
+  city: string;
+  country: string;
+  latitude?: number;
+  longitude?: number;
+  contactName?: string;
+  contactPhone?: string;
+  contactEmail?: string;
+  dockAccessCode?: string;
+  requiresTailLift?: boolean;
+  maxClearanceHeightMeters?: number;
+  operatingHours?: string;
+  specialInstructions?: string;
+}
+
+export interface ShipmentGpsLocationRecord {
+  id: string;
+  shipmentId: string;
+  latitude: number;
+  longitude: number;
+  altitudeMeters?: number;
+  speedKmh?: number;
+  headingDeg?: number;
+  ambientTempCelsius?: number;
+  batteryLevelPct?: number;
+  addressDescription?: string;
+  recordedAt: string;
+}
+
+export type IncidentCategory =
+  | 'COLD_CHAIN_BREACH'
+  | 'VEHICLE_BREAKDOWN'
+  | 'ACCIDENT'
+  | 'CUSTOMS_DELAY'
+  | 'DAMAGED_CARGO'
+  | 'CLIENT_ABSENT'
+  | 'ACCESS_RESTRICTED'
+  | 'WEATHER_HAZARD'
+  | 'OTHER';
+
+export interface IncidentRecord {
+  id: string;
+  shipmentId: string;
+  trackingNumber: string;
+  carrierId: string;
+  title: string;
+  description: string;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  status: 'OPEN' | 'IN_PROGRESS' | 'INVESTIGATING' | 'RESOLVED' | 'CLOSED';
+  reportedAt: string;
+  reporterId?: string;
+  reporterRole?: UserRoleCode;
+  reporterName?: string;
+  category?: IncidentCategory;
+  evidencePhotos?: string[];
+  gpsLocation?: {
+    latitude: number;
+    longitude: number;
+    address?: string;
+  };
+  notificationsSent?: Array<{
+    recipientId: string;
+    recipientRole: UserRoleCode;
+    sentAt: string;
+    channel: 'IN_APP' | 'EMAIL' | 'SMS';
+  }>;
+  resolutionNotes?: string;
+  resolvedBy?: string;
+  resolvedAt?: string;
+  actionTaken?:
+    | 'CARGO_REPLACED'
+    | 'REROUTED'
+    | 'DELAY_ACCEPTED'
+    | 'INSURANCE_CLAIM_OPENED'
+    | 'DELIVERY_RESCHEDULED'
+    | 'NO_ACTION_REQUIRED';
+}
 
 export interface ShipmentRecord {
   id: string;
@@ -754,6 +871,9 @@ export interface ShipmentRecord {
   orderId: string;
   orderNumber: string;
   clientId: string;
+  clientName?: string;
+  supplierId?: string;
+  supplierName?: string;
   carrierId: string;
   carrierName: string;
   transportMode: 'ROAD' | 'AIR' | 'SEA' | 'RAIL';
@@ -768,18 +888,50 @@ export interface ShipmentRecord {
   podSigned: boolean;
   podTimestamp?: string;
   customsCleared: boolean;
-}
-
-export interface IncidentRecord {
-  id: string;
-  shipmentId: string;
-  trackingNumber: string;
-  carrierId: string;
-  title: string;
-  description: string;
-  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-  status: 'OPEN' | 'IN_PROGRESS' | 'RESOLVED';
-  reportedAt: string;
+  // Enrichissements Colisage & Logistique V6.0 (Prompt 13)
+  packages?: ShipmentPackageDetail[];
+  totalPackagesCount?: number;
+  totalGrossWeightKg?: string;
+  totalNetWeightKg?: string;
+  pickupAddressDetails?: ShipmentAddressDetail;
+  deliveryAddressDetails?: ShipmentAddressDetail;
+  scheduledPickupDate?: string;
+  scheduledPickupTimeWindow?: string;
+  actualPickupDate?: string;
+  scheduledDeliveryDate?: string;
+  actualDeliveryDate?: string;
+  handlingInstructions?: string;
+  customsNotes?: string;
+  specialHandlingTags?: string[];
+  assignedVehicleId?: string;
+  assignedDriverName?: string;
+  rejectionReason?: string;
+  reassignmentHistory?: Array<{
+    previousCarrierId: string;
+    previousCarrierName: string;
+    newCarrierId: string;
+    newCarrierName: string;
+    reassignedAt: string;
+    reassignedBy: string;
+    reason: string;
+  }>;
+  currentGpsLocation?: ShipmentGpsLocationRecord;
+  gpsHistory?: ShipmentGpsLocationRecord[];
+  podData?: {
+    recipientFullName: string;
+    recipientIdNumber?: string;
+    recipientRoleOrTitle?: string;
+    signedAt: string;
+    digitalSignatureSvg: string;
+    proofPhotoUri?: string;
+    deliveryLatitude?: number;
+    deliveryLongitude?: number;
+    deliveryNotes?: string;
+    certificationSha256?: string;
+  };
+  associatedDocumentIds?: string[];
+  incidentCount?: number;
+  lastIncidentId?: string;
 }
 
 export type DayCountBasis = 'ACT/365' | 'ACT/360' | 'ACT/ACT';

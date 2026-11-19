@@ -69,6 +69,10 @@ import {
   RoomLiveReaction,
   ShipmentRecord,
   ShipmentStatus,
+  ShipmentPackageDetail,
+  ShipmentAddressDetail,
+  ShipmentGpsLocationRecord,
+  IncidentCategory,
   SmartRedirectInfo,
   SupportedLocale,
   TranslationRecord,
@@ -170,6 +174,7 @@ import {
   ProofOfDeliveryData,
   RouteWaypoint,
   TransportDocumentRecord,
+  TransportMode,
   VehicleRecord,
 } from '../../services/logisticsEngine';
 import {
@@ -4580,15 +4585,171 @@ export class TradeLinkDomainServices {
     });
   }
 
-  public updateShipmentStatusTransactional(params: {
+  public createShipmentTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    orderId: string;
+    packages: ShipmentPackageDetail[];
+    pickupAddress: ShipmentAddressDetail;
+    deliveryAddress: ShipmentAddressDetail;
+    carrierId?: string;
+    carrierName?: string;
+    scheduledPickupDate?: string;
+    scheduledPickupTimeWindow?: string;
+    handlingInstructions?: string;
+    customsNotes?: string;
+    transportMode?: TransportMode;
+    correlationId: string;
+    ipAddress: string;
+  }): { shipment: ShipmentRecord; documents: TransportDocumentRecord[] } {
+    return this.repo.executeTransaction((tx) => {
+      const order = tx.orders.find((o) => o.id === params.orderId && !o.deletedAt);
+      if (!order) {
+        throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande introuvable pour l’expédition.');
+      }
+
+      if (params.actor.role === 'FOURNISSEUR' && order.supplierId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez expédier que vos propres commandes.');
+      }
+
+      const shipment = LogisticsEngine.createShipment({
+        order,
+        carrierId: params.carrierId,
+        carrierName: params.carrierName,
+        packages: params.packages,
+        pickupAddress: params.pickupAddress,
+        deliveryAddress: params.deliveryAddress,
+        scheduledPickupDate: params.scheduledPickupDate,
+        scheduledPickupTimeWindow: params.scheduledPickupTimeWindow,
+        handlingInstructions: params.handlingInstructions,
+        customsNotes: params.customsNotes,
+        transportMode: params.transportMode,
+      });
+
+      tx.shipments.unshift(shipment);
+
+      // Générer automatiquement la liasse documentaire associée
+      const docs = LogisticsEngine.generateTransportDocuments(shipment, order, undefined, { fullBundle: true });
+      for (const d of docs) {
+        tx.transportDocuments.unshift(d);
+      }
+      shipment.associatedDocumentIds = docs.map((d) => d.id);
+
+      // Notifier le client
+      defaultNotificationDispatcher.dispatch({
+        notification: {
+          id: `notif-shp-${Date.now()}`,
+          userId: shipment.clientId,
+          category: 'LOGISTIQUE',
+          priority: 'MEDIUM',
+          title: `Nouvelle Expédition Préparée — ${shipment.trackingNumber}`,
+          body: `Votre commande ${order.orderNumber} est en cours de préparation logistique. Suivi en direct disponible.`,
+          channels: ['IN_APP', 'EMAIL'],
+          actionUrl: `/client/logistique`,
+          isRead: false,
+          icon: 'delivery-van',
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'LOGISTICS_SHIPMENT_CREATED',
+        targetType: 'Shipment',
+        targetId: shipment.trackingNumber,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Expédition ${shipment.trackingNumber} créée pour la commande ${order.orderNumber} (${shipment.totalPackagesCount} colis, ${shipment.weightKg} kg).`,
+      });
+
+      return { shipment, documents: docs };
+    });
+  }
+
+  public assignCarrierTransactional(params: {
     actor: NonNullable<ServerRequestContext['user']>;
     shipmentId: string;
-    nextStatus: ShipmentStatus;
+    carrierId: string;
+    carrierName: string;
+    vehicleId?: string;
+    driverName?: string;
+    reason?: string;
     correlationId: string;
     ipAddress: string;
   }): ShipmentRecord {
     return this.repo.executeTransaction((tx) => {
-      const shipment = tx.shipments.find((s) => s.id === params.shipmentId);
+      const shipment = tx.shipments.find((s) => s.id === params.shipmentId || s.trackingNumber === params.shipmentId);
+      if (!shipment) {
+        throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Expédition introuvable.');
+      }
+
+      if (params.actor.role === 'FOURNISSEUR' && shipment.supplierId && shipment.supplierId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez affecter que vos propres expéditions.');
+      }
+
+      const updated = LogisticsEngine.assignCarrier(shipment, {
+        carrierId: params.carrierId,
+        carrierName: params.carrierName,
+        vehicleId: params.vehicleId,
+        driverName: params.driverName,
+        reassignedBy: params.actor.email,
+        reason: params.reason,
+      });
+
+      const sIdx = tx.shipments.findIndex((s) => s.id === updated.id);
+      if (sIdx !== -1) {
+        tx.shipments[sIdx] = updated;
+      }
+
+      // Notifier le transporteur affecté
+      defaultNotificationDispatcher.dispatch({
+        notification: {
+          id: `notif-assign-${Date.now()}`,
+          userId: params.carrierId,
+          category: 'LOGISTIQUE',
+          priority: 'HIGH',
+          title: `Nouvelle Expédition Assignée — ${updated.trackingNumber}`,
+          body: `Une mission d’acheminement pour la commande ${updated.orderNumber} vous a été affectée.`,
+          channels: ['IN_APP', 'EMAIL'],
+          actionUrl: `/transporteur/missions`,
+          isRead: false,
+          icon: 'delivery-van',
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'LOGISTICS_CARRIER_ASSIGNED',
+        targetType: 'Shipment',
+        targetId: updated.trackingNumber,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Expédition ${updated.trackingNumber} affectée au transporteur ${params.carrierName}.`,
+      });
+
+      return updated;
+    });
+  }
+
+  public updateShipmentStatusTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    shipmentId: string;
+    nextStatus: ShipmentStatus;
+    reason?: string;
+    actualDate?: string;
+    correlationId: string;
+    ipAddress: string;
+  }): ShipmentRecord {
+    return this.repo.executeTransaction((tx) => {
+      const shipment = tx.shipments.find((s) => s.id === params.shipmentId || s.trackingNumber === params.shipmentId);
       if (!shipment) {
         throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Expédition introuvable.');
       }
@@ -4597,17 +4758,44 @@ export class TradeLinkDomainServices {
         throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez modifier le statut que de vos propres expéditions.');
       }
 
-      const updated = LogisticsEngine.transitionShipmentStatus(shipment, params.nextStatus);
+      const updated = LogisticsEngine.transitionShipmentStatus(shipment, params.nextStatus, {
+        reason: params.reason,
+        actualDate: params.actualDate,
+      });
+
       const sIdx = tx.shipments.findIndex((s) => s.id === updated.id);
       if (sIdx !== -1) {
         tx.shipments[sIdx] = updated;
       }
 
-      if (params.nextStatus === 'COLLECTED' || params.nextStatus === 'IN_TRANSIT') {
+      if (
+        params.nextStatus === 'COLLECTED' ||
+        params.nextStatus === 'PICKED_UP' ||
+        params.nextStatus === 'IN_TRANSIT'
+      ) {
         const order = tx.orders.find((o) => o.id === shipment.orderId && !o.deletedAt);
         if (order) {
           order.status = 'SHIPPED';
         }
+      }
+
+      // Notifier le client lors des étapes clés
+      if (['PICKED_UP', 'COLLECTED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'INCIDENT', 'FAILED'].includes(params.nextStatus)) {
+        defaultNotificationDispatcher.dispatch({
+          notification: {
+            id: `notif-stat-${Date.now()}`,
+            userId: shipment.clientId,
+            category: 'LOGISTIQUE',
+            priority: params.nextStatus === 'INCIDENT' || params.nextStatus === 'FAILED' ? 'HIGH' : 'MEDIUM',
+            title: `Suivi Expédition ${updated.trackingNumber} — ${updated.status}`,
+            body: `Votre expédition est passée au statut : ${updated.status}.`,
+            channels: ['IN_APP', 'EMAIL'],
+            actionUrl: `/client/logistique`,
+            isRead: false,
+            icon: 'delivery-van',
+            createdAt: new Date().toISOString(),
+          },
+        });
       }
 
       tx.auditLogs.unshift({
@@ -4628,6 +4816,89 @@ export class TradeLinkDomainServices {
     });
   }
 
+  public recordShipmentGpsLocationTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    shipmentId: string;
+    latitude: number;
+    longitude: number;
+    altitudeMeters?: number;
+    speedKmh?: number;
+    headingDeg?: number;
+    ambientTempCelsius?: number;
+    batteryLevelPct?: number;
+    addressDescription?: string;
+    correlationId: string;
+    ipAddress: string;
+  }): {
+    shipment: ShipmentRecord;
+    gpsRecord: ShipmentGpsLocationRecord;
+    temperatureAnomalyDetected: boolean;
+  } {
+    return this.repo.executeTransaction((tx) => {
+      const shipment = tx.shipments.find((s) => s.id === params.shipmentId || s.trackingNumber === params.shipmentId);
+      if (!shipment) {
+        throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Expédition introuvable.');
+      }
+
+      if (params.actor.role === 'TRANSPORTEUR' && shipment.carrierId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez émettre des positions que pour vos propres expéditions.');
+      }
+
+      const { updatedShipment, gpsRecord, temperatureAnomalyDetected } = LogisticsEngine.recordGpsPosition(
+        shipment,
+        {
+          latitude: params.latitude,
+          longitude: params.longitude,
+          altitudeMeters: params.altitudeMeters,
+          speedKmh: params.speedKmh,
+          headingDeg: params.headingDeg,
+          ambientTempCelsius: params.ambientTempCelsius,
+          batteryLevelPct: params.batteryLevelPct,
+          addressDescription: params.addressDescription,
+        }
+      );
+
+      const sIdx = tx.shipments.findIndex((s) => s.id === updatedShipment.id);
+      if (sIdx !== -1) {
+        tx.shipments[sIdx] = updatedShipment;
+      }
+
+      if (temperatureAnomalyDetected) {
+        defaultNotificationDispatcher.dispatch({
+          notification: {
+            id: `notif-cold-${Date.now()}`,
+            userId: shipment.carrierId,
+            category: 'LOGISTIQUE',
+            priority: 'CRITICAL',
+            title: `ALERTE CHAÎNE DU FROID — ${shipment.trackingNumber}`,
+            body: `Température anormale détectée (${params.ambientTempCelsius}°C). Seuil de rupture sous température dirigée dépassé.`,
+            channels: ['IN_APP', 'EMAIL', 'SMS'],
+            actionUrl: `/transporteur/expeditions`,
+            isRead: false,
+            icon: 'hazardous-goods',
+            createdAt: new Date().toISOString(),
+          },
+        });
+
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'COLD_CHAIN_TEMPERATURE_BREACH',
+          targetType: 'Shipment',
+          targetId: shipment.trackingNumber,
+          result: 'WARNING',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `Alerte température critique : ${params.ambientTempCelsius}°C relevé en télémétrie sur ${shipment.trackingNumber}.`,
+        });
+      }
+
+      return { shipment: updatedShipment, gpsRecord, temperatureAnomalyDetected };
+    });
+  }
+
   public getShipmentTrackingWithWaypoints(shipmentId: string) {
     const shipment = this.repo.getSnapshot().shipments.find((s) => s.id === shipmentId || s.trackingNumber === shipmentId);
     if (!shipment) {
@@ -4638,18 +4909,19 @@ export class TradeLinkDomainServices {
       {
         name: shipment.origin,
         country: 'Origine',
-        latitude: 33.5731,
-        longitude: -7.5898,
+        latitude: shipment.pickupAddressDetails?.latitude ?? 33.5731,
+        longitude: shipment.pickupAddressDetails?.longitude ?? -7.5898,
         estimatedPassedAt: '2026-11-18 08:00',
-        actualPassedAt: '2026-11-18 08:15',
+        actualPassedAt: shipment.actualPickupDate || '2026-11-18 08:15',
         isCheckpoint: true,
       },
       {
         name: shipment.destination,
         country: 'Destination',
-        latitude: 48.8566,
-        longitude: 2.3522,
-        estimatedPassedAt: '2026-11-20 18:00',
+        latitude: shipment.deliveryAddressDetails?.latitude ?? 48.8566,
+        longitude: shipment.deliveryAddressDetails?.longitude ?? 2.3522,
+        estimatedPassedAt: shipment.estimatedArrival || '2026-11-20 18:00',
+        actualPassedAt: shipment.actualDeliveryDate,
         isCheckpoint: true,
       },
     ];
@@ -4661,17 +4933,20 @@ export class TradeLinkDomainServices {
       waypoints,
       documents: docs,
       hasGeoCoordinates: waypoints.some((w) => w.latitude !== undefined && w.longitude !== undefined),
+      currentLocation: shipment.currentGpsLocation,
+      gpsHistory: shipment.gpsHistory || [],
     };
   }
 
   public generateTransportDocumentsTransactional(params: {
     actor: NonNullable<ServerRequestContext['user']>;
     shipmentId: string;
+    fullBundle?: boolean;
     correlationId: string;
     ipAddress: string;
   }): TransportDocumentRecord[] {
     return this.repo.executeTransaction((tx) => {
-      const shipment = tx.shipments.find((s) => s.id === params.shipmentId);
+      const shipment = tx.shipments.find((s) => s.id === params.shipmentId || s.trackingNumber === params.shipmentId);
       if (!shipment) {
         throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Expédition introuvable.');
       }
@@ -4681,7 +4956,9 @@ export class TradeLinkDomainServices {
         throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande introuvable.');
       }
 
-      const docs = LogisticsEngine.generateTransportDocuments(shipment, order);
+      const docs = LogisticsEngine.generateTransportDocuments(shipment, order, undefined, {
+        fullBundle: params.fullBundle,
+      });
       for (const d of docs) {
         tx.transportDocuments.unshift(d);
       }
@@ -4697,7 +4974,7 @@ export class TradeLinkDomainServices {
         result: 'SUCCESS',
         correlationId: params.correlationId,
         ipAddress: params.ipAddress,
-        details: `Documents CMR et EUR.1 certifiés générés pour ${shipment.trackingNumber}.`,
+        details: `Documents de transport officiels (${docs.map((d) => d.docType).join(', ')}) générés pour ${shipment.trackingNumber}.`,
       });
 
       return docs;
@@ -4711,9 +4988,13 @@ export class TradeLinkDomainServices {
     ipAddress: string;
   }) {
     return this.repo.executeTransaction((tx) => {
-      const shipment = tx.shipments.find((s) => s.id === params.podData.shipmentId);
+      const shipment = tx.shipments.find((s) => s.id === params.podData.shipmentId || s.trackingNumber === params.podData.shipmentId);
       if (!shipment) {
         throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Expédition introuvable.');
+      }
+
+      if (params.actor.role === 'TRANSPORTEUR' && shipment.carrierId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez soumettre la POD que pour vos propres expéditions.');
       }
 
       const order = tx.orders.find((o) => o.id === shipment.orderId && !o.deletedAt);
@@ -4737,6 +5018,23 @@ export class TradeLinkDomainServices {
         tx.orders[oIdx] = updatedOrder;
       }
 
+      // Notifier le client et le fournisseur de la livraison effective
+      defaultNotificationDispatcher.dispatch({
+        notification: {
+          id: `notif-pod-cli-${Date.now()}`,
+          userId: shipment.clientId,
+          category: 'LOGISTIQUE',
+          priority: 'HIGH',
+          title: `Marchandises Livrées — Preuve de Livraison Scellée (${updatedShipment.trackingNumber})`,
+          body: `Livraison effectuée avec succès et signée par ${podCertifiedRecord.recipientFullName}. Sceau SHA-256 : ${podCertifiedRecord.certificationSha256}`,
+          channels: ['IN_APP', 'EMAIL'],
+          actionUrl: `/client/commandes`,
+          isRead: false,
+          icon: 'parcel-stack',
+          createdAt: new Date().toISOString(),
+        },
+      });
+
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
         timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
@@ -4748,7 +5046,7 @@ export class TradeLinkDomainServices {
         result: 'SUCCESS',
         correlationId: params.correlationId,
         ipAddress: params.ipAddress,
-        details: `Preuve de livraison (POD) certifiée avec signature par ${podCertifiedRecord.recipientFullName} (SHA-256: ${podCertifiedRecord.certificationSha256}). Commande et expédition livrées.`,
+        details: `Preuve de livraison (POD) certifiée avec signature par ${podCertifiedRecord.recipientFullName} (${podCertifiedRecord.certificationSha256}). Commande et expédition livrées.`,
       });
 
       return { updatedShipment, updatedOrder, podCertifiedRecord };
@@ -4761,11 +5059,18 @@ export class TradeLinkDomainServices {
     title: string;
     description: string;
     severity: IncidentRecord['severity'];
+    category?: IncidentCategory;
+    evidencePhotos?: string[];
+    gpsLocation?: {
+      latitude: number;
+      longitude: number;
+      address?: string;
+    };
     correlationId: string;
     ipAddress: string;
   }): IncidentRecord {
     return this.repo.executeTransaction((tx) => {
-      const shipment = tx.shipments.find((s) => s.id === params.shipmentId);
+      const shipment = tx.shipments.find((s) => s.id === params.shipmentId || s.trackingNumber === params.shipmentId);
       if (!shipment) {
         throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Expédition introuvable.');
       }
@@ -4775,9 +5080,42 @@ export class TradeLinkDomainServices {
         title: params.title,
         description: params.description,
         severity: params.severity,
+        category: params.category,
+        reporterId: params.actor.id,
+        reporterRole: params.actor.role,
+        reporterName: params.actor.email,
+        evidencePhotos: params.evidencePhotos,
+        gpsLocation: params.gpsLocation,
       });
 
       tx.incidents.unshift(inc);
+
+      // Si incident grave ou critique, passer le statut de l'expédition en INCIDENT
+      if (params.severity === 'HIGH' || params.severity === 'CRITICAL') {
+        const sIdx = tx.shipments.findIndex((s) => s.id === shipment.id);
+        if (sIdx !== -1) {
+          tx.shipments[sIdx].status = 'INCIDENT';
+          tx.shipments[sIdx].lastIncidentId = inc.id;
+          tx.shipments[sIdx].incidentCount = (tx.shipments[sIdx].incidentCount || 0) + 1;
+        }
+      }
+
+      // Notifications in-app pour tous les acteurs
+      defaultNotificationDispatcher.dispatch({
+        notification: {
+          id: `notif-inc-${Date.now()}`,
+          userId: shipment.clientId,
+          category: 'LOGISTIQUE',
+          priority: inc.severity === 'CRITICAL' ? 'CRITICAL' : 'HIGH',
+          title: `Incident Logistique Signalé [${inc.severity}] — ${shipment.trackingNumber}`,
+          body: `${inc.title} : ${inc.description}`,
+          channels: ['IN_APP', 'EMAIL', 'SMS'],
+          actionUrl: `/client/logistique`,
+          isRead: false,
+          icon: 'hazardous-goods',
+          createdAt: new Date().toISOString(),
+        },
+      });
 
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
@@ -4794,6 +5132,60 @@ export class TradeLinkDomainServices {
       });
 
       return inc;
+    });
+  }
+
+  public resolveLogisticsIncidentTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    incidentId: string;
+    resolutionNotes: string;
+    actionTaken?: IncidentRecord['actionTaken'];
+    resumeShipmentStatus?: ShipmentStatus;
+    correlationId: string;
+    ipAddress: string;
+  }): IncidentRecord {
+    return this.repo.executeTransaction((tx) => {
+      const incident = tx.incidents.find((i) => i.id === params.incidentId);
+      if (!incident) {
+        throw new AppError(404, 'INCIDENT_NOT_FOUND', 'Incident logistique introuvable.');
+      }
+
+      const resolved = LogisticsEngine.resolveLogisticsIncident(incident, {
+        resolutionNotes: params.resolutionNotes,
+        resolvedBy: params.actor.email,
+        actionTaken: params.actionTaken,
+      });
+
+      const iIdx = tx.incidents.findIndex((i) => i.id === incident.id);
+      if (iIdx !== -1) {
+        tx.incidents[iIdx] = resolved;
+      }
+
+      // Si l'expédition était bloquée en statut INCIDENT, reprise vers le transit
+      const shipment = tx.shipments.find((s) => s.id === incident.shipmentId || s.trackingNumber === incident.trackingNumber);
+      if (shipment && shipment.status === 'INCIDENT') {
+        const nextStatus = params.resumeShipmentStatus || 'IN_TRANSIT';
+        const sIdx = tx.shipments.findIndex((s) => s.id === shipment.id);
+        if (sIdx !== -1) {
+          tx.shipments[sIdx].status = nextStatus;
+        }
+      }
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'LOGISTICS_INCIDENT_RESOLVED',
+        targetType: 'Incident',
+        targetId: resolved.id,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Incident ${resolved.id} résolu par ${params.actor.email} (Mesure : ${resolved.actionTaken}).`,
+      });
+
+      return resolved;
     });
   }
 

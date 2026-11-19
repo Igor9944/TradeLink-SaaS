@@ -28,6 +28,7 @@ import {
   RefreshTokenRecord,
   RoomLiveRecord,
   ShipmentRecord,
+  ShipmentStatus,
   SupportedLocale,
   TranslationRecord,
   UserLanguagePreferenceRecord,
@@ -1154,5 +1155,87 @@ export class TradeLinkRepositoryStore {
   public queryCommercialDocuments(filters: DocumentSearchFilters = {}): CommercialDocumentRecord[] {
     const list = this.state.commercialDocuments || [];
     return BillingDocumentEngine.filterDocuments(list, filters).map((d) => structuredClone(d));
+  }
+
+  // ============================================================================
+  // REPOSITORIES GESTION LOGISTIQUE ET EXPÉDITIONS (PROMPT 13)
+  // ============================================================================
+
+  public saveShipment(shipment: ShipmentRecord): ShipmentRecord {
+    if (!this.state.shipments) this.state.shipments = [];
+    const idx = this.state.shipments.findIndex(
+      (s) => s.id === shipment.id || s.trackingNumber === shipment.trackingNumber
+    );
+    if (idx !== -1) {
+      this.state.shipments[idx] = structuredClone(shipment);
+    } else {
+      this.state.shipments.unshift(structuredClone(shipment));
+    }
+    return structuredClone(shipment);
+  }
+
+  public findShipmentById(idOrTracking: string): ShipmentRecord | null {
+    if (!this.state.shipments) return null;
+    const found = this.state.shipments.find(
+      (s) => s.id === idOrTracking || s.trackingNumber === idOrTracking
+    );
+    return found ? structuredClone(found) : null;
+  }
+
+  public queryShipments(filters: {
+    clientId?: string;
+    supplierId?: string;
+    carrierId?: string;
+    status?: ShipmentStatus;
+  } = {}): ShipmentRecord[] {
+    let list = this.state.shipments || [];
+    if (filters.clientId) {
+      list = list.filter((s) => s.clientId === filters.clientId);
+    }
+    if (filters.supplierId) {
+      list = list.filter((s) => s.supplierId === filters.supplierId);
+    }
+    if (filters.carrierId) {
+      list = list.filter((s) => s.carrierId === filters.carrierId);
+    }
+    if (filters.status) {
+      list = list.filter((s) => s.status === filters.status);
+    }
+    return list.map((s) => structuredClone(s));
+  }
+
+  public saveIncident(incident: IncidentRecord): IncidentRecord {
+    if (!this.state.incidents) this.state.incidents = [];
+    const idx = this.state.incidents.findIndex((i) => i.id === incident.id);
+    if (idx !== -1) {
+      this.state.incidents[idx] = structuredClone(incident);
+    } else {
+      this.state.incidents.unshift(structuredClone(incident));
+    }
+    return structuredClone(incident);
+  }
+
+  public findIncidentById(id: string): IncidentRecord | null {
+    if (!this.state.incidents) return null;
+    const found = this.state.incidents.find((i) => i.id === id);
+    return found ? structuredClone(found) : null;
+  }
+
+  public queryIncidents(filters: {
+    shipmentId?: string;
+    carrierId?: string;
+    status?: IncidentRecord['status'];
+  } = {}): IncidentRecord[] {
+    let list = this.state.incidents || [];
+    if (filters.shipmentId) {
+      list = list.filter((i) => i.shipmentId === filters.shipmentId);
+    }
+    if (filters.carrierId) {
+      list = list.filter((i) => i.carrierId === filters.carrierId);
+    }
+    if (filters.status) {
+      list = list.filter((i) => i.status === filters.status);
+    }
+    return list.map((i) => structuredClone(i));
   }
 }

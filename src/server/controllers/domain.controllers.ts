@@ -1819,7 +1819,7 @@ export class TradeLinkApiApplication {
     }
 
     // ============================================================================
-    // 9. MODULE LOGISTIQUE ET TRANSPORT MULTIMODAL (PROMPT 9)
+    // 9. MODULE LOGISTIQUE ET TRANSPORT MULTIMODAL (PROMPT 13)
     // ============================================================================
 
     if (method === 'GET' && path === '/api/v1/logistics/vehicles') {
@@ -1856,6 +1856,29 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, res);
     }
 
+    // Création d'une expédition complète avec colisage et adresses (Prompt 13)
+    if (method === 'POST' && path === '/api/v1/logistics/shipments') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'ADMIN']);
+      const res = this.services.createShipmentTransactional({
+        actor: user,
+        orderId: ctx.body?.orderId,
+        packages: ctx.body?.packages || [],
+        pickupAddress: ctx.body?.pickupAddress,
+        deliveryAddress: ctx.body?.deliveryAddress,
+        carrierId: ctx.body?.carrierId,
+        carrierName: ctx.body?.carrierName,
+        scheduledPickupDate: ctx.body?.scheduledPickupDate,
+        scheduledPickupTimeWindow: ctx.body?.scheduledPickupTimeWindow,
+        handlingInstructions: ctx.body?.handlingInstructions,
+        customsNotes: ctx.body?.customsNotes,
+        transportMode: ctx.body?.transportMode,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 201);
+    }
+
     if (method === 'GET' && path === '/api/v1/logistics/shipments') {
       const user = requireAuthenticatedSession(ctx);
       const allShipments = this.repo.getSnapshot().shipments;
@@ -1866,6 +1889,8 @@ export class TradeLinkApiApplication {
           ? allShipments.filter((s) => s.clientId === user.id)
           : user.role === 'TRANSPORTEUR'
           ? allShipments.filter((s) => s.carrierId === user.id)
+          : user.role === 'FOURNISSEUR'
+          ? allShipments.filter((s) => !s.supplierId || s.supplierId === user.id)
           : allShipments;
       return this.ok(ctx, scoped);
     }
@@ -1878,6 +1903,55 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, res);
     }
 
+    // Consultation d'une expédition par ID ou tracking number avec Anti-IDOR
+    if (
+      method === 'GET' &&
+      path.startsWith('/api/v1/logistics/shipments/') &&
+      !path.endsWith('/tracking') &&
+      !path.endsWith('/status') &&
+      !path.endsWith('/assign') &&
+      !path.endsWith('/gps') &&
+      !path.endsWith('/documents') &&
+      !path.endsWith('/pod')
+    ) {
+      const user = requireAuthenticatedSession(ctx);
+      const shipmentId = path.split('/').pop() || '';
+      const shipment = this.repo.getSnapshot().shipments.find((s) => s.id === shipmentId || s.trackingNumber === shipmentId);
+      if (!shipment) {
+        throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Expédition introuvable.');
+      }
+      if (user.role === 'CLIENT' && shipment.clientId !== user.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Accès interdit à cette expédition.');
+      }
+      if (user.role === 'TRANSPORTEUR' && shipment.carrierId !== user.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Accès interdit à cette expédition.');
+      }
+      if (user.role === 'FOURNISSEUR' && shipment.supplierId && shipment.supplierId !== user.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Accès interdit à cette expédition.');
+      }
+      return this.ok(ctx, shipment);
+    }
+
+    // Affectation ou réaffectation de transporteur (Prompt 13)
+    if (method === 'PUT' && path.startsWith('/api/v1/logistics/shipments/') && path.endsWith('/assign')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'ADMIN']);
+      const parts = path.split('/');
+      const shipmentId = parts[parts.length - 2];
+      const res = this.services.assignCarrierTransactional({
+        actor: user,
+        shipmentId,
+        carrierId: ctx.body?.carrierId,
+        carrierName: ctx.body?.carrierName,
+        vehicleId: ctx.body?.vehicleId,
+        driverName: ctx.body?.driverName,
+        reason: ctx.body?.reason,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res);
+    }
+
     if (method === 'PUT' && path.startsWith('/api/v1/logistics/shipments/') && path.endsWith('/status')) {
       const user = requireAuthenticatedSession(ctx);
       enforceRBACAndOwnership(ctx, ['TRANSPORTEUR', 'ADMIN']);
@@ -1887,10 +1961,35 @@ export class TradeLinkApiApplication {
         actor: user,
         shipmentId,
         nextStatus: ctx.body?.nextStatus,
+        reason: ctx.body?.reason,
+        actualDate: ctx.body?.actualDate,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
       });
       return this.ok(ctx, res);
+    }
+
+    // Émission télématique GPS temps réel & recalcul dynamique d'ETA (Prompt 13)
+    if (method === 'POST' && path.startsWith('/api/v1/logistics/shipments/') && path.endsWith('/gps')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['TRANSPORTEUR', 'ADMIN']);
+      const parts = path.split('/');
+      const shipmentId = parts[parts.length - 2];
+      const res = this.services.recordShipmentGpsLocationTransactional({
+        actor: user,
+        shipmentId,
+        latitude: Number(ctx.body?.latitude),
+        longitude: Number(ctx.body?.longitude),
+        altitudeMeters: ctx.body?.altitudeMeters,
+        speedKmh: ctx.body?.speedKmh,
+        headingDeg: ctx.body?.headingDeg,
+        ambientTempCelsius: ctx.body?.ambientTempCelsius,
+        batteryLevelPct: ctx.body?.batteryLevelPct,
+        addressDescription: ctx.body?.addressDescription,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 201);
     }
 
     if (method === 'POST' && path.startsWith('/api/v1/logistics/shipments/') && path.endsWith('/documents')) {
@@ -1901,6 +2000,7 @@ export class TradeLinkApiApplication {
       const docs = this.services.generateTransportDocumentsTransactional({
         actor: user,
         shipmentId,
+        fullBundle: Boolean(ctx.body?.fullBundle),
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
       });
@@ -1931,6 +2031,24 @@ export class TradeLinkApiApplication {
         ipAddress: ctx.ipAddress,
       } as any);
       return this.ok(ctx, inc, 201);
+    }
+
+    // Résolution d'incident logistique (Prompt 13)
+    if (method === 'PUT' && path.startsWith('/api/v1/logistics/incidents/') && path.endsWith('/resolve')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['TRANSPORTEUR', 'FOURNISSEUR', 'ADMIN']);
+      const parts = path.split('/');
+      const incidentId = parts[parts.length - 2];
+      const res = this.services.resolveLogisticsIncidentTransactional({
+        actor: user,
+        incidentId,
+        resolutionNotes: ctx.body?.resolutionNotes,
+        actionTaken: ctx.body?.actionTaken,
+        resumeShipmentStatus: ctx.body?.resumeShipmentStatus,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res);
     }
 
     if (method === 'GET' && path === '/api/v1/logistics/incidents') {
