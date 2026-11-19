@@ -8,13 +8,14 @@
     <script>
       try {
         const savedScheme = localStorage.getItem("color-scheme");
+        // Par défaut, le thème CLAIR (lumineux / blanc) est activé pour une interface B2B claire.
+        // Le mode sombre ne s'active que si l'utilisateur l'a explicitement choisi ("dark").
+        const isDark = savedScheme === "dark";
         const meta = document.querySelector('meta[name="color-scheme"]');
         if (meta) {
-          meta.content = savedScheme ?? "light dark";
+          meta.content = isDark ? "dark" : "light";
         }
-        const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-        const resolvedDark = savedScheme ? savedScheme === "dark" : prefersDark;
-        document.documentElement.classList.toggle("dark", resolvedDark);
+        document.documentElement.classList.toggle("dark", isDark);
       } catch (e) {}
     </script>
     <title>TRADELINK V6.0 — Plateforme SaaS B2B Commerce, Logistique, Comptabilité & IA</title>

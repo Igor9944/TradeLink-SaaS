@@ -153,12 +153,19 @@ export const PublicNavbar: React.FC = () => {
               type="button"
               onClick={toggleQuickTheme}
               aria-label="Basculer entre le thème blanc et le thème noir"
-              className="p-2.5 rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B3438] hover:border-[#E85D22]"
+              title={resolvedDark ? 'Passer en Mode Clair (Blanc)' : 'Passer en Mode Sombre (Nuit)'}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B3438] hover:border-[#E85D22] text-xs font-semibold text-slate-700 dark:text-slate-200 transition-all shadow-xs"
             >
               {resolvedDark ? (
-                <Sun className="w-4 h-4 text-amber-400" />
+                <>
+                  <Sun className="w-4 h-4 text-amber-400" />
+                  <span className="hidden sm:inline">Mode Blanc</span>
+                </>
               ) : (
-                <Moon className="w-4 h-4 text-[#0B3438]" />
+                <>
+                  <Moon className="w-4 h-4 text-[#0B3438]" />
+                  <span className="hidden sm:inline">Mode Sombre</span>
+                </>
               )}
             </button>
 

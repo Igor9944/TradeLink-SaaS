@@ -2181,13 +2181,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const saved = localStorage.getItem('color-scheme');
       if (saved === 'light' || saved === 'dark') return saved;
     } catch {}
-    return 'system';
+    return 'light';
   });
-  const [systemDark, setSystemDark] = useState<boolean>(() =>
-    typeof window !== 'undefined' && window.matchMedia
-      ? window.matchMedia('(prefers-color-scheme: dark)').matches
-      : false
-  );
 
   const [currentUser, setCurrentUser] = useState<UserProfile>(DEMO_USERS.ADMIN_1);
   const [products, setProducts] = useState<ProductItem[]>(INITIAL_PRODUCTS);
@@ -2538,30 +2533,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   useEffect(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
-    mq.addEventListener('change', onChange);
-
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'color-scheme') {
         const val = e.newValue;
         if (val === 'light' || val === 'dark') setThemeState(val);
-        else setThemeState('system');
       }
     };
     window.addEventListener('storage', onStorage);
     return () => {
-      mq.removeEventListener('change', onChange);
       window.removeEventListener('storage', onStorage);
     };
   }, []);
 
-  const resolvedDark = theme === 'system' ? systemDark : theme === 'dark';
+  const resolvedDark = theme === 'dark';
 
   useEffect(() => {
     const meta = document.querySelector('meta[name="color-scheme"]');
     if (meta) {
-      meta.setAttribute('content', theme === 'system' ? 'light dark' : theme);
+      meta.setAttribute('content', theme === 'dark' ? 'dark' : 'light');
     }
     document.documentElement.classList.toggle('dark', resolvedDark);
   }, [theme, resolvedDark]);
@@ -2594,22 +2583,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setTheme = (mode: ThemeMode) => {
     setThemeState(mode);
     try {
-      if (mode === 'system') {
-        localStorage.removeItem('color-scheme');
-      } else {
-        localStorage.setItem('color-scheme', mode);
-      }
+      localStorage.setItem('color-scheme', mode);
     } catch {}
+    document.documentElement.classList.toggle('dark', mode === 'dark');
   };
 
   const toggleQuickTheme = () => {
-    const targetScheme: 'light' | 'dark' = resolvedDark ? 'light' : 'dark';
-    const currentSys: 'light' | 'dark' = systemDark ? 'dark' : 'light';
-    if (targetScheme === currentSys) {
-      setTheme('system');
-    } else {
-      setTheme(targetScheme);
-    }
+    const nextMode: ThemeMode = resolvedDark ? 'light' : 'dark';
+    setTheme(nextMode);
   };
 
   const t = (key: string): string => {

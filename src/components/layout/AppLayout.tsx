@@ -576,14 +576,20 @@ export const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children })
                 <button
                   type="button"
                   onClick={toggleQuickTheme}
-                  aria-label={resolvedDark ? 'Passer au thème clair' : 'Passer au thème noir'}
-                  title={resolvedDark ? 'Thème Noir actif (Cliquer pour Thème Blanc)' : 'Thème Blanc actif (Cliquer pour Thème Noir)'}
-                  className="p-2 rounded-xl border border-slate-300 dark:border-teal-800 bg-white dark:bg-[#0D353A] hover:border-[#E85D22] transition-colors"
+                  aria-label={resolvedDark ? 'Passer au thème blanc' : 'Passer au thème noir'}
+                  title={resolvedDark ? 'Mode Nuit actif — Cliquer pour Mode Blanc' : 'Mode Blanc actif — Cliquer pour Mode Sombre'}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-teal-800 bg-white dark:bg-[#0D353A] hover:border-[#E85D22] text-xs font-semibold text-slate-700 dark:text-slate-200 transition-all shadow-xs"
                 >
                   {resolvedDark ? (
-                    <Sun className="w-4 h-4 text-amber-400" />
+                    <>
+                      <Sun className="w-4 h-4 text-amber-400" />
+                      <span className="hidden md:inline text-[11px]">Mode Blanc</span>
+                    </>
                   ) : (
-                    <Moon className="w-4 h-4 text-[#0B3438]" />
+                    <>
+                      <Moon className="w-4 h-4 text-[#0B3438]" />
+                      <span className="hidden md:inline text-[11px]">Mode Sombre</span>
+                    </>
                   )}
                 </button>
 
