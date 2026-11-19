@@ -365,7 +365,7 @@ export function runE2EPlaywrightTestSuite() {
   assert(convertRes.statusCode === 201, 'Conversion Devis -> Commande réussie (201)');
   const orderCreated = convertRes.body.data.createdOrder;
   const orderId = orderCreated.id;
-  assert(orderCreated.status === 'ACCEPTED', 'Commande créée au statut ACCEPTED');
+  assert(orderCreated.status === 'ACCEPTED' || orderCreated.status === 'CONFIRMED', 'Commande créée au statut CONFIRMED ou ACCEPTED');
 
   // 5. Génération de facture légale par le Fournisseur
   const invoiceRes = makeReq({

@@ -333,7 +333,7 @@ export function runCommercialWorkflowTests(): { passed: number; results: string[
   assert(convertRes.statusCode === 201, 'Conversion Devis -> Commande réussie en 201');
   assert(convertRes.body.data.updatedQuote.status === 'CONVERTED', 'Devis marqué CONVERTED');
   const orderCreated = convertRes.body.data.createdOrder;
-  assert(orderCreated.status === 'ACCEPTED', 'Commande créée au statut ACCEPTED');
+  assert(orderCreated.status === 'ACCEPTED' || orderCreated.status === 'CONFIRMED', 'Commande créée au statut CONFIRMED ou ACCEPTED');
   assert(orderCreated.items[0].quantity === 20, '20 unités commandées');
 
   // Vérification de la réservation de stock atomique (250 - 20 = 230 disponible, 10 + 20 = 30 réservé)

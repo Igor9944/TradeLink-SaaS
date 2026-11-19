@@ -1,19 +1,29 @@
+// Vibe — TRADELINK V6.0 : Performance, Security & Reliability First.
 // ============================================================================
-// TRADELINK V6.0 — MOTEUR COMMERCIAL COMPLET (PROMPT 7)
-// Gestion Catégories, Produits multilingues, Médias 3D, Prix & Devises,
-// Stocks & Mouvements, Devis, Commandes, Facturation, Stripe Idempotent
+// TRADELINK V6.0 — MOTEUR COMMERCIAL CENTRALISÉ (PROMPTS 07 & 11)
+// Panier serveur déterministe, Devis (RFQ) & Négociation, Cycle de Commande
+// complet, Multi-paiements (Stripe, Konnect, Flouci, CMI, Virement B2B),
+// Remboursements, Webhooks HMAC-SHA256, Idempotence & Sécurité Financière
 // ============================================================================
 
+import crypto from 'crypto';
 import Decimal from 'decimal.js';
 import {
+  CartValidationResult,
+  CommercialDisputeRecord,
+  DisputeReason,
   Icon3DName,
   InvoiceRecord,
   Locale,
   OrderRecord,
+  OrderStatus,
+  PaymentProvider,
+  PaymentReceiptRecord,
   PaymentRecord,
   ProductItem,
   QuoteRecord,
   UserRoleCode,
+  VerifiedCartItem,
 } from '../types';
 
 Decimal.set({ precision: 34, rounding: Decimal.ROUND_HALF_UP });
@@ -69,8 +79,11 @@ export interface QuoteCreateInput {
   clientName: string;
   supplierId: string;
   supplierName: string;
-  currency: string;
+  currency?: string;
   validityDays?: number;
+  incoterm?: string;
+  paymentTerms?: string;
+  specialInstructions?: string;
   lines: {
     productId?: string;
     description: string;
@@ -82,13 +95,17 @@ export interface QuoteCreateInput {
 export interface QuoteRespondInput {
   quoteId: string;
   supplierId: string;
+  supplierNotes?: string;
+  incoterm?: string;
+  paymentTerms?: string;
+  validUntilDate: string;
   lines: {
+    productId?: string;
     description: string;
     quantity: number;
     unitPrice: string;
     discountPct?: string;
   }[];
-  validUntilDate: string;
 }
 
 export interface StripeCheckoutSessionSimulated {
@@ -100,6 +117,22 @@ export interface StripeCheckoutSessionSimulated {
   customerEmail: string;
   paymentStatus: 'unpaid' | 'paid';
   checkoutUrl: string;
+}
+
+export interface GenericPaymentSession {
+  sessionId: string;
+  orderId: string;
+  orderNumber?: string;
+  invoiceId: string;
+  invoiceNumber?: string;
+  provider: PaymentProvider;
+  amount: string;
+  currency: string;
+  customerEmail: string;
+  checkoutUrl: string;
+  virtualIban?: string;
+  qrCodeData?: string;
+  expiresAt: string;
 }
 
 export interface StripeWebhookPayloadSimulated {
@@ -329,8 +362,176 @@ export class CommercialEngine {
     return { updatedProduct: updated, movementRecord, alertTriggered };
   }
 
+  // ============================================================================
+  // 3. MATRICE DE TRANSITION D'ÉTAT DU CYCLE DE COMMANDE
+  // ============================================================================
+  public static readonly ORDER_TRANSITION_MATRIX: Record<OrderStatus, OrderStatus[]> = {
+    DRAFT: ['PENDING', 'PENDING_VALIDATION', 'CANCELLED'],
+    PENDING: ['PENDING_VALIDATION', 'CONFIRMED', 'ACCEPTED', 'REFUSED', 'CANCELLED'],
+    PENDING_VALIDATION: ['CONFIRMED', 'ACCEPTED', 'REFUSED', 'CANCELLED'],
+    ACCEPTED: ['CONFIRMED', 'PENDING_PAYMENT', 'PAID', 'PREPARING', 'IN_PREPARATION', 'CANCELLED'],
+    CONFIRMED: ['PENDING_PAYMENT', 'PAID', 'PREPARING', 'IN_PREPARATION', 'CANCELLED'],
+    PENDING_PAYMENT: ['PAID', 'PREPARING', 'IN_PREPARATION', 'CANCELLED'],
+    PAID: ['PREPARING', 'IN_PREPARATION', 'READY_FOR_PICKUP', 'CANCELLED', 'DISPUTED'],
+    PREPARING: ['IN_PREPARATION', 'READY_FOR_PICKUP', 'SHIPPED', 'CANCELLED'],
+    IN_PREPARATION: ['READY_FOR_PICKUP', 'SHIPPED', 'CANCELLED'],
+    READY_FOR_PICKUP: ['SHIPPED', 'CANCELLED'],
+    SHIPPED: ['IN_TRANSIT', 'DELIVERED', 'DISPUTED'],
+    IN_TRANSIT: ['DELIVERED', 'DISPUTED'],
+    DELIVERED: ['COMPLETED', 'DISPUTED'],
+    COMPLETED: ['DISPUTED'],
+    REFUSED: [],
+    CANCELLED: [],
+    DISPUTED: ['COMPLETED', 'CANCELLED', 'IN_PREPARATION', 'SHIPPED', 'DELIVERED'],
+  };
+
+  public static isValidOrderTransition(current: OrderStatus, target: OrderStatus): boolean {
+    if (current === target) return true;
+    const allowed = this.ORDER_TRANSITION_MATRIX[current] || [];
+    return allowed.includes(target);
+  }
+
+  public static assertOrderTransition(current: OrderStatus, target: OrderStatus): void {
+    if (!this.isValidOrderTransition(current, target)) {
+      throw new Error(
+        `Transition de statut de commande non autorisée : tentative de passage de '${current}' à '${target}'.`
+      );
+    }
+  }
+
+  // ============================================================================
+  // 4. RÉFÉRENTIEL MONÉTAIRE & TAUX DE CONVERSION B2B (EUR, USD, TND, MAD)
+  // ============================================================================
+  public static readonly CURRENCY_RATES_TO_EUR: Record<string, string> = {
+    EUR: '1.0000',
+    USD: '0.9250',
+    TND: '0.2985',
+    MAD: '0.0921',
+  };
+
+  public static convertCurrency(amountStr: string, fromCurrency = 'EUR', toCurrency = 'EUR'): string {
+    if (fromCurrency === toCurrency) return amountStr;
+    const fromRate = new Decimal(this.CURRENCY_RATES_TO_EUR[fromCurrency] || '1.0000');
+    const toRate = new Decimal(this.CURRENCY_RATES_TO_EUR[toCurrency] || '1.0000');
+    const amountDec = new Decimal(amountStr);
+    const amountInEur = amountDec.times(fromRate);
+    const converted = amountInEur.dividedBy(toRate);
+    return converted.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+  }
+
+  // ============================================================================
+  // 5. VALIDATION DU PANIER CÔTÉ SERVEUR (Zéro confiance dans le frontend)
+  // ============================================================================
+  public static validateCart(
+    items: { productId: string; quantity: number }[],
+    productsCatalog: ProductItem[],
+    currency = 'EUR',
+    vatRatePct = '20.00',
+    shippingFlatRate = '650.00'
+  ): CartValidationResult {
+    let subtotalDec = new Decimal(0);
+    const verifiedItems: VerifiedCartItem[] = [];
+    const warnings: string[] = [];
+    let unavailableCount = 0;
+
+    for (const reqItem of items) {
+      const prodId = reqItem.productId || (reqItem as any).product?.id;
+      const prod = productsCatalog.find((p) => p.id === prodId);
+      if (!prod) {
+        unavailableCount++;
+        warnings.push(`Le produit référence ID ${prodId || 'INCONNU'} n'existe plus au catalogue.`);
+        verifiedItems.push({
+          productId: prodId || 'UNKNOWN',
+          sku: 'UNKNOWN',
+          name: 'Produit Indisponible',
+          requestedQuantity: reqItem.quantity,
+          availableStock: 0,
+          minOrderQuantity: 1,
+          unitPrice: '0.00',
+          lineTotal: '0.00',
+          currency,
+          isAvailable: false,
+          status: 'OUT_OF_STOCK',
+          warningMessage: 'Produit retiré du catalogue.',
+        });
+        continue;
+      }
+
+      const moq = prod.minOrderQuantity || 1;
+      let itemStatus: VerifiedCartItem['status'] = 'IN_STOCK';
+      let isAvailable = true;
+      let warningMessage: string | undefined;
+
+      if (prod.stockAvailable <= 0) {
+        itemStatus = 'OUT_OF_STOCK';
+        isAvailable = false;
+        unavailableCount++;
+        warningMessage = `Rupture totale : stock épuisé pour ${prod.name.fr}.`;
+        warnings.push(warningMessage);
+      } else if (prod.stockAvailable < reqItem.quantity) {
+        itemStatus = 'PARTIAL_STOCK';
+        warningMessage = `Stock limité pour ${prod.name.fr} : ${prod.stockAvailable} disponible(s) sur ${reqItem.quantity} demandé(s).`;
+        warnings.push(warningMessage);
+      } else if (reqItem.quantity < moq) {
+        itemStatus = 'BELOW_MOQ';
+        warningMessage = `Quantité minimale de commande (MOQ) non atteinte pour ${prod.name.fr} : minimum requis ${moq}.`;
+        warnings.push(warningMessage);
+      }
+
+      // Calcul avec le prix catalogue officiel côté serveur dans la devise demandée
+      const unitPriceConverted = this.convertCurrency(prod.unitPrice, prod.currency || 'EUR', currency);
+      const unitDec = new Decimal(unitPriceConverted);
+      const lineTotalDec = unitDec.times(reqItem.quantity).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+      if (isAvailable) {
+        subtotalDec = subtotalDec.plus(lineTotalDec);
+      }
+
+      verifiedItems.push({
+        productId: prod.id,
+        sku: prod.sku,
+        name: prod.name.fr,
+        requestedQuantity: reqItem.quantity,
+        availableStock: prod.stockAvailable,
+        minOrderQuantity: moq,
+        unitPrice: unitDec.toFixed(2),
+        lineTotal: lineTotalDec.toFixed(2),
+        currency,
+        isAvailable,
+        status: itemStatus,
+        warningMessage,
+      });
+    }
+
+    const roundedSubtotal = subtotalDec.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const taxRateDec = new Decimal(vatRatePct).dividedBy(100);
+    const taxDec = roundedSubtotal.times(taxRateDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const shippingDec = verifiedItems.length > 0 && verifiedItems.some((i) => i.isAvailable)
+      ? new Decimal(shippingFlatRate)
+      : new Decimal('0.00');
+    const totalDec = roundedSubtotal.plus(taxDec).plus(shippingDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+    const hasBlockingIssues =
+      unavailableCount > 0 ||
+      verifiedItems.some((it) => !it.isAvailable || it.status === 'BELOW_MOQ' || it.status === 'PARTIAL_STOCK');
+
+    return {
+      valid: !hasBlockingIssues && verifiedItems.length > 0,
+      hasUnavailableItems: unavailableCount > 0 || hasBlockingIssues,
+      unavailableCount,
+      items: verifiedItems,
+      subtotalAmount: roundedSubtotal.toFixed(2),
+      taxRatePct: vatRatePct,
+      taxAmount: taxDec.toFixed(2),
+      shippingAmount: shippingDec.toFixed(2),
+      totalAmount: totalDec.toFixed(2),
+      currency,
+      warnings,
+    };
+  }
+
   /**
-   * Création d'un devis initial par un client
+   * Création d'une demande de devis (RFQ) par un client
    */
   public static createQuote(input: QuoteCreateInput): QuoteRecord {
     const validityDays = input.validityDays ?? 30;
@@ -343,8 +544,10 @@ export class CommercialEngine {
       const unit = l.targetPrice ? new Decimal(l.targetPrice) : new Decimal('0.00');
       const totalLine = unit.times(l.quantity).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       return {
+        productId: l.productId,
         description: l.description,
         quantity: l.quantity,
+        targetPrice: l.targetPrice,
         unitPrice: unit.toFixed(2),
         discountPct: '0.00',
         totalLine: totalLine.toFixed(2),
@@ -368,15 +571,18 @@ export class CommercialEngine {
       amountInWords: `${totals.totalAmount} ${input.currency || 'EUR'} TTC`,
       validUntil: expiry.toISOString().split('T')[0],
       createdAt: new Date().toISOString(),
+      incoterm: input.incoterm || 'FOB',
+      paymentTerms: input.paymentTerms || 'Acompte 30% à la commande, solde avant expédition',
+      specialInstructions: input.specialInstructions,
       lines: initialLines,
     };
   }
 
   /**
-   * Réponse et chiffrage du devis par le Fournisseur
+   * Réponse et chiffrage du devis par le Fournisseur (Contre-proposition)
    */
   public static respondToQuote(quote: QuoteRecord, input: QuoteRespondInput): QuoteRecord {
-    if (quote.status === 'CONVERTED' || quote.status === 'REFUSED') {
+    if (quote.status === 'CONVERTED' || quote.status === 'REFUSED' || quote.status === 'REJECTED') {
       throw new Error(`Le devis ${quote.quoteNumber} ne peut plus être modifié (statut actuel: ${quote.status}).`);
     }
 
@@ -387,6 +593,7 @@ export class CommercialEngine {
       const lineTotal = discountedUnit.times(l.quantity).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
       return {
+        productId: l.productId,
         description: l.description,
         quantity: l.quantity,
         unitPrice: unit.toFixed(2),
@@ -400,12 +607,55 @@ export class CommercialEngine {
     return {
       ...quote,
       status: 'RESPONDED',
-      validUntil: input.validUntilDate,
+      validUntil: input.validUntilDate || quote.validUntil,
+      supplierNotes: input.supplierNotes,
+      incoterm: input.incoterm || quote.incoterm,
+      paymentTerms: input.paymentTerms || quote.paymentTerms,
       lines: calculatedLines,
       subtotalAmount: totals.subtotalAmount,
       taxAmount: totals.taxAmount,
       totalAmount: totals.totalAmount,
       amountInWords: `${totals.totalAmount} ${quote.currency} TTC`,
+    };
+  }
+
+  /**
+   * Acceptation formelle d'un devis par le Client
+   */
+  public static acceptQuote(quote: QuoteRecord, actorId: string): QuoteRecord {
+    if (quote.clientId !== actorId) {
+      throw new Error('Seul le client émetteur de la demande est habilité à accepter ce devis.');
+    }
+    if (quote.status === 'CONVERTED' || quote.status === 'REFUSED' || quote.status === 'REJECTED') {
+      throw new Error(`Le devis ${quote.quoteNumber} a déjà été finalisé (statut actuel: ${quote.status}).`);
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (quote.validUntil && quote.validUntil < todayStr) {
+      throw new Error(`Le devis ${quote.quoteNumber} a expiré le ${quote.validUntil}.`);
+    }
+
+    return {
+      ...quote,
+      status: 'ACCEPTED',
+    };
+  }
+
+  /**
+   * Refus d'un devis par le Client avec motif obligatoire
+   */
+  public static rejectQuote(quote: QuoteRecord, actorId: string, reason: string): QuoteRecord {
+    if (quote.clientId !== actorId) {
+      throw new Error('Seul le client émetteur de la demande est habilité à refuser ce devis.');
+    }
+    if (!reason || reason.trim().length < 5) {
+      throw new Error('Un motif explicite d’au moins 5 caractères est obligatoire pour refuser un devis.');
+    }
+
+    return {
+      ...quote,
+      status: 'REFUSED',
+      rejectionReason: reason.trim(),
     };
   }
 
@@ -422,7 +672,7 @@ export class CommercialEngine {
     createdOrder: OrderRecord;
     updatedProducts: ProductItem[];
   } {
-    if (quote.status !== 'RESPONDED' && quote.status !== 'ACCEPTED') {
+    if (quote.status !== 'RESPONDED' && quote.status !== 'ACCEPTED' && quote.status !== 'QUOTATION_ISSUED') {
       throw new Error(
         `Impossible de convertir le devis ${quote.quoteNumber} en commande : il doit être au statut RESPONDED ou ACCEPTED (statut actuel: ${quote.status}).`
       );
@@ -430,7 +680,7 @@ export class CommercialEngine {
 
     // Vérification de la date de validité
     const nowStr = new Date().toISOString().split('T')[0];
-    if (quote.validUntil < nowStr) {
+    if (quote.validUntil && quote.validUntil < nowStr) {
       throw new Error(`Le devis ${quote.quoteNumber} a expiré le ${quote.validUntil}.`);
     }
 
@@ -438,9 +688,10 @@ export class CommercialEngine {
     const orderItems: OrderRecord['items'] = [];
 
     for (const line of quote.lines) {
-      // Trouver le produit correspondant par description ou SKU
+      // Trouver le produit correspondant par ID, description ou SKU
       const matched = productsCatalog.find(
         (p) =>
+          (line.productId && p.id === line.productId) ||
           p.sku.toLowerCase() === line.description.toLowerCase() ||
           p.name.fr.toLowerCase().includes(line.description.toLowerCase()) ||
           line.description.toLowerCase().includes(p.name.fr.toLowerCase())
@@ -456,6 +707,7 @@ export class CommercialEngine {
       const prodCopy = { ...matched };
       prodCopy.stockAvailable -= line.quantity;
       prodCopy.stockReserved += line.quantity;
+      prodCopy.stockOrdered = (prodCopy.stockOrdered || 0) + line.quantity;
       updatedProducts.push(prodCopy);
 
       orderItems.push({
@@ -478,7 +730,10 @@ export class CommercialEngine {
       clientName: quote.clientName,
       supplierId: quote.supplierId,
       supplierName: quote.supplierName,
-      status: 'ACCEPTED',
+      status: 'CONFIRMED',
+      quoteId: quote.id,
+      quoteNumber: quote.quoteNumber,
+      paymentStatus: 'UNPAID',
       subtotalAmount: quote.subtotalAmount,
       taxAmount: quote.taxAmount,
       shippingAmount: '0.00',
@@ -495,7 +750,7 @@ export class CommercialEngine {
           completed: true,
         },
         {
-          step: 'Stock réservé atomiquement et commande validée',
+          step: 'Stock réservé atomiquement et commande confirmée',
           timestamp: new Date().toISOString(),
           actor: quote.supplierName,
           completed: true,
@@ -506,6 +761,8 @@ export class CommercialEngine {
     const updatedQuote: QuoteRecord = {
       ...quote,
       status: 'CONVERTED',
+      orderId: createdOrder.id,
+      orderNumber: createdOrder.orderNumber,
     };
 
     return { updatedQuote, createdOrder, updatedProducts };
@@ -569,6 +826,329 @@ export class CommercialEngine {
   }
 
   /**
+   * Initialisation d'une session de paiement multi-prestataires (Stripe, Konnect, Flouci, CMI, Virement)
+   */
+  public static initiatePaymentSession(
+    order: OrderRecord,
+    invoice: InvoiceRecord,
+    provider: PaymentProvider,
+    customerEmail: string,
+    currency?: string
+  ): GenericPaymentSession {
+    if (invoice.status === 'PAID') {
+      throw new Error(`PAYMENT_ALREADY_SETTLED : La facture ${invoice.invoiceNumber} est déjà réglée en totalité.`);
+    }
+
+    const payCurrency = (currency || invoice.currency || 'EUR').toUpperCase();
+    const targetAmount = this.convertCurrency(invoice.totalAmount, invoice.currency || 'EUR', payCurrency);
+    const expiryDate = new Date();
+    expiryDate.setHours(expiryDate.getHours() + 24);
+
+    const sessionId = `sess_${provider.toLowerCase()}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    let checkoutUrl = '';
+    let virtualIban: string | undefined;
+    let qrCodeData: string | undefined;
+
+    switch (provider) {
+      case 'STRIPE':
+        checkoutUrl = `https://checkout.stripe.com/pay/${sessionId}`;
+        break;
+      case 'KONNECT':
+        checkoutUrl = `https://api.konnect.network/gateway/pay/${sessionId}`;
+        break;
+      case 'FLOUCI':
+        checkoutUrl = `https://app.flouci.com/pay/${sessionId}`;
+        qrCodeData = `flouci://pay?ref=${sessionId}&amount=${targetAmount}&cur=${payCurrency}`;
+        break;
+      case 'CMI':
+        checkoutUrl = `https://payment.cmi.co.ma/gateway/${sessionId}`;
+        break;
+      case 'WIRE_TRANSFER':
+        virtualIban = 'FR76 3000 4000 0100 2026 8841 X99';
+        checkoutUrl = `/client/paiements/virement?ref=${order.orderNumber}&iban=${virtualIban}`;
+        break;
+      default:
+        checkoutUrl = `https://checkout.tradelink.com/pay/${sessionId}`;
+    }
+
+    return {
+      sessionId,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      provider,
+      amount: targetAmount,
+      currency: payCurrency,
+      customerEmail,
+      checkoutUrl,
+      virtualIban,
+      qrCodeData,
+      expiresAt: expiryDate.toISOString(),
+    };
+  }
+
+  /**
+   * Confirmation définitive d'un paiement (Bloque les doubles paiements)
+   */
+  public static confirmPayment(
+    payment: PaymentRecord,
+    order: OrderRecord,
+    invoice: InvoiceRecord,
+    providerTxId?: string
+  ): {
+    updatedPayment: PaymentRecord;
+    updatedInvoice: InvoiceRecord;
+    updatedOrder: OrderRecord;
+    receipt: PaymentReceiptRecord;
+  } {
+    if (payment.status === 'SUCCEEDED') {
+      throw new Error(`Le paiement ${payment.paymentReference} a déjà été confirmé.`);
+    }
+
+    const updatedPayment: PaymentRecord = {
+      ...payment,
+      status: 'SUCCEEDED',
+      rawProviderReference: providerTxId || payment.rawProviderReference,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedInvoice: InvoiceRecord = {
+      ...invoice,
+      status: 'PAID',
+      paidAt: new Date().toISOString().split('T')[0],
+    };
+
+    const nextOrderStatus: OrderStatus = order.status === 'CONFIRMED' || order.status === 'PENDING_PAYMENT'
+      ? 'IN_PREPARATION'
+      : order.status;
+
+    const updatedOrder: OrderRecord = {
+      ...order,
+      status: nextOrderStatus,
+      paymentStatus: 'PAID',
+      paidAmount: payment.amount,
+      paymentMethod: payment.provider,
+      timeline: [
+        ...order.timeline,
+        {
+          step: `Paiement ${payment.provider} confirmé (${payment.amount} ${payment.currency})`,
+          timestamp: new Date().toISOString(),
+          actor: `${payment.provider} Payment Gateway`,
+          completed: true,
+        },
+      ],
+    };
+
+    const receipt = this.generatePaymentReceipt(updatedPayment, updatedOrder, updatedInvoice);
+    updatedPayment.receiptNumber = receipt.receiptNumber;
+
+    return { updatedPayment, updatedInvoice, updatedOrder, receipt };
+  }
+
+  /**
+   * Échec d'un paiement
+   */
+  public static failPayment(payment: PaymentRecord, reason: string): PaymentRecord {
+    return {
+      ...payment,
+      status: 'FAILED',
+      failureReason: reason,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Annulation d'un paiement
+   */
+  public static cancelPayment(payment: PaymentRecord, reason: string): PaymentRecord {
+    return {
+      ...payment,
+      status: 'CANCELLED',
+      failureReason: reason,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Remboursement partiel ou total avec contrôle arithmétique strict (Decimal.js)
+   */
+  public static refundPayment(
+    payment: PaymentRecord,
+    invoice: InvoiceRecord,
+    order: OrderRecord,
+    refundAmountStr?: string,
+    reason = 'Remboursement commercial accordé'
+  ): {
+    updatedPayment: PaymentRecord;
+    updatedInvoice: InvoiceRecord;
+    updatedOrder: OrderRecord;
+    refundedAmount: string;
+    isFullRefund: boolean;
+  } {
+    if (payment.status !== 'SUCCEEDED' && payment.status !== 'PARTIALLY_REFUNDED') {
+      throw new Error(`Seul un paiement au statut SUCCEEDED ou PARTIALLY_REFUNDED peut être remboursé (statut actuel: ${payment.status}).`);
+    }
+
+    const originalDec = new Decimal(payment.amount);
+    const alreadyRefundedDec = new Decimal(payment.refundedAmount || '0.00');
+    const remainingRefundableDec = originalDec.minus(alreadyRefundedDec);
+
+    const requestedRefundDec = refundAmountStr ? new Decimal(refundAmountStr) : remainingRefundableDec;
+
+    if (requestedRefundDec.lte(0)) {
+      throw new Error('Le montant à rembourser doit être strictement supérieur à zéro.');
+    }
+    if (requestedRefundDec.gt(remainingRefundableDec)) {
+      throw new Error(
+        `Montant de remboursement (${requestedRefundDec.toFixed(2)}) supérieur au solde résiduel disponible (${remainingRefundableDec.toFixed(2)}).`
+      );
+    }
+
+    const newTotalRefundedDec = alreadyRefundedDec.plus(requestedRefundDec);
+    const isFullRefund = newTotalRefundedDec.gte(originalDec);
+
+    const updatedPayment: PaymentRecord = {
+      ...payment,
+      status: isFullRefund ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+      refundedAmount: newTotalRefundedDec.toFixed(2),
+      refundReason: reason,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedInvoice: InvoiceRecord = {
+      ...invoice,
+      status: isFullRefund ? 'CANCELLED' : invoice.status,
+    };
+
+    const updatedOrder: OrderRecord = {
+      ...order,
+      paymentStatus: isFullRefund ? 'REFUNDED' : 'PARTIALLY_PAID',
+      timeline: [
+        ...order.timeline,
+        {
+          step: `Remboursement émis : ${requestedRefundDec.toFixed(2)} ${payment.currency} (${reason})`,
+          timestamp: new Date().toISOString(),
+          actor: 'Service Trésorerie TRADELINK',
+          completed: true,
+        },
+      ],
+    };
+
+    return {
+      updatedPayment,
+      updatedInvoice,
+      updatedOrder,
+      refundedAmount: requestedRefundDec.toFixed(2),
+      isFullRefund,
+    };
+  }
+
+  /**
+   * Génération d'une quittance / reçu de paiement certifié avec signature numérique SHA-256
+   */
+  public static generatePaymentReceipt(
+    payment: PaymentRecord,
+    order: OrderRecord,
+    invoice: InvoiceRecord
+  ): PaymentReceiptRecord {
+    const receiptNumber = `REC-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+    const issuedAt = new Date().toISOString();
+
+    const rawPayload = `${receiptNumber}|${payment.id}|${payment.paymentReference}|${order.orderNumber}|${invoice.invoiceNumber}|${payment.amount}|${payment.currency}|${issuedAt}`;
+    const digitalSignatureSha256 = crypto.createHash('sha256').update(rawPayload).digest('hex');
+
+    return {
+      receiptNumber,
+      paymentId: payment.id,
+      paymentReference: payment.paymentReference,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      invoiceNumber: invoice.invoiceNumber,
+      clientId: order.clientId,
+      clientName: order.clientName,
+      supplierId: order.supplierId,
+      supplierName: order.supplierName,
+      amountPaid: payment.amount,
+      currency: payment.currency,
+      provider: payment.provider,
+      taxRate: (invoice.jurisdiction && invoice.jurisdiction.includes('20')) ? '20.00' : '20.00',
+      taxAmount: invoice.taxAmount,
+      issuedAt,
+      digitalSignatureSha256,
+    };
+  }
+
+  /**
+   * Vérification cryptographique des signatures de Webhooks (HMAC-SHA256 & Anti-Rejeu)
+   */
+  public static verifyWebhookSignature(
+    payload: string | object,
+    signatureHeader: string,
+    secretKey: string,
+    maxAgeSecondsOrTimestamp?: number | string,
+    optionalMaxAge = 300
+  ): { valid: boolean; error?: string; reason?: string } {
+    if (!signatureHeader || !secretKey) {
+      return { valid: false, error: 'MISSING_CREDENTIALS', reason: 'En-tête de signature ou secret de webhook manquant.' };
+    }
+
+    const payloadString = typeof payload === 'string' ? payload : JSON.stringify(payload);
+
+    // Extraction du timestamp depuis l'en-tête (ex: t=1700000000,v1=...)
+    let timestampStr: string | undefined;
+    const tMatch = signatureHeader.match(/t=([0-9]+)/);
+    if (tMatch) {
+      timestampStr = tMatch[1];
+    } else if (typeof maxAgeSecondsOrTimestamp === 'string' || (typeof maxAgeSecondsOrTimestamp === 'number' && maxAgeSecondsOrTimestamp > 1000000)) {
+      timestampStr = String(maxAgeSecondsOrTimestamp);
+    }
+
+    const maxAgeSeconds = typeof maxAgeSecondsOrTimestamp === 'number' && maxAgeSecondsOrTimestamp < 1000000
+      ? maxAgeSecondsOrTimestamp
+      : optionalMaxAge;
+
+    // Protection anti-rejeu par horodatage (tolérance maxAgeSeconds, défaut 300s)
+    if (timestampStr) {
+      const tsNum = parseInt(timestampStr, 10);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const tsInSec = tsNum > 1e11 ? Math.floor(tsNum / 1000) : tsNum;
+      if (Math.abs(nowSec - tsInSec) > maxAgeSeconds) {
+        return {
+          valid: false,
+          error: 'TIMESTAMP_OUT_OF_TOLERANCE',
+          reason: `Échec anti-rejeu : horodatage expiré (${Math.abs(nowSec - tsInSec)}s > ${maxAgeSeconds}s).`,
+        };
+      }
+    }
+
+    // Calcul du HMAC-SHA256 (format Stripe : `${timestamp}.${payload}` si timestamp présent, sinon `${payload}`)
+    const payloadToSign = timestampStr ? `${timestampStr}.${payloadString}` : payloadString;
+    const expectedHmac = crypto.createHmac('sha256', secretKey).update(payloadToSign).digest('hex');
+
+    // Normalisation de l'en-tête (gestion du format Stripe t=...,v1=... ou signature directe)
+    let extractedSig = signatureHeader.trim();
+    if (signatureHeader.includes('v1=')) {
+      const match = signatureHeader.match(/v1=([a-f0-9]+)/i);
+      if (match) {
+        extractedSig = match[1];
+      }
+    }
+
+    try {
+      const bufA = Buffer.from(extractedSig, 'hex');
+      const bufB = Buffer.from(expectedHmac, 'hex');
+      if (bufA.length !== bufB.length) {
+        return { valid: false, error: 'SIGNATURE_MISMATCH', reason: 'Longueur de signature cryptographique invalide.' };
+      }
+      const isMatch = crypto.timingSafeEqual(bufA, bufB);
+      return isMatch ? { valid: true } : { valid: false, error: 'SIGNATURE_MISMATCH', reason: 'Signature HMAC-SHA256 non concordante.' };
+    } catch {
+      return { valid: false, error: 'SIGNATURE_MISMATCH', reason: 'Format de hachage hexadécimal invalide.' };
+    }
+  }
+
+  /**
    * Traitement idempotent d'un webhook Stripe
    * Garantit l'absence de double comptabilisation ou double paiement
    */
@@ -616,6 +1196,8 @@ export class CommercialEngine {
       paymentReference: `PAY-STRIPE-${object.id.slice(-8).toUpperCase()}`,
       invoiceId: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
+      orderId: order?.id,
+      orderNumber: order?.orderNumber,
       clientId: clientId || invoice.clientId,
       supplierId: supplierId || invoice.supplierId,
       provider: 'STRIPE',
@@ -642,6 +1224,8 @@ export class CommercialEngine {
       updatedOrder = {
         ...order,
         status: 'PREPARING',
+        paymentStatus: 'PAID',
+        paidAmount: paidAmountDecimal,
         timeline: [
           ...order.timeline,
           {
@@ -662,6 +1246,104 @@ export class CommercialEngine {
     };
   }
 
+  // ============================================================================
+  // 6. GESTION DES LITIGES COMMERCIAUX (DISPUTES) & ANOMALIES
+  // ============================================================================
+  public static openOrderDispute(
+    order: OrderRecord,
+    initiator: { id: string; name: string; role: UserRoleCode },
+    reason: DisputeReason,
+    description: string
+  ): { updatedOrder: OrderRecord; dispute: CommercialDisputeRecord } {
+    if (order.status === 'CANCELLED') {
+      throw new Error('Impossible d’ouvrir un litige sur une commande déjà annulée.');
+    }
+    if (!description || description.trim().length < 10) {
+      throw new Error('Une description détaillée d’au moins 10 caractères est requise pour ouvrir un litige.');
+    }
+
+    const disputeNumber = `LIT-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+    const disputeId = `disp-${Date.now()}`;
+
+    const dispute: CommercialDisputeRecord = {
+      id: disputeId,
+      disputeNumber,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      initiatorId: initiator.id,
+      initiatorName: initiator.name,
+      initiatorRole: initiator.role,
+      reason,
+      description: description.trim(),
+      status: 'OPEN',
+      createdAt: new Date().toISOString(),
+    };
+
+    const updatedOrder: OrderRecord = {
+      ...order,
+      status: 'DISPUTED',
+      disputeId,
+      timeline: [
+        ...order.timeline,
+        {
+          step: `Litige commercial ouvert : ${disputeNumber} (${reason})`,
+          timestamp: new Date().toISOString(),
+          actor: initiator.name,
+          completed: true,
+          note: description.trim(),
+        },
+      ],
+    };
+
+    return { updatedOrder, dispute };
+  }
+
+  public static resolveOrderDispute(
+    dispute: CommercialDisputeRecord,
+    order: OrderRecord,
+    resolver: { id: string; name: string },
+    resolution: string,
+    action: 'REFUND_TOTAL' | 'REFUND_PARTIAL' | 'FORCE_DELIVERY' | 'DISMISSED'
+  ): { updatedDispute: CommercialDisputeRecord; updatedOrder: OrderRecord } {
+    if (dispute.status === 'RESOLVED') {
+      throw new Error(`Le litige ${dispute.disputeNumber} est déjà résolu.`);
+    }
+
+    const updatedDispute: CommercialDisputeRecord = {
+      ...dispute,
+      status: 'RESOLVED',
+      resolution,
+      arbitrationAction: action,
+      resolvedByUserId: resolver.id,
+      resolvedByUserName: resolver.name,
+      resolvedAt: new Date().toISOString(),
+    };
+
+    let nextOrderStatus: OrderStatus = 'COMPLETED';
+    if (action === 'REFUND_TOTAL') {
+      nextOrderStatus = 'CANCELLED';
+    } else if (action === 'FORCE_DELIVERY') {
+      nextOrderStatus = 'DELIVERED';
+    }
+
+    const updatedOrder: OrderRecord = {
+      ...order,
+      status: nextOrderStatus,
+      timeline: [
+        ...order.timeline,
+        {
+          step: `Litige ${dispute.disputeNumber} résolu par l'Administrateur (${action})`,
+          timestamp: new Date().toISOString(),
+          actor: resolver.name,
+          completed: true,
+          note: resolution,
+        },
+      ],
+    };
+
+    return { updatedDispute, updatedOrder };
+  }
+
   /**
    * Sécurité & RBAC : Blocage strict des mutations commerciales pour le rôle COMPTABLE
    * "Le comptable conserve ses droits de lecture seule sur les données commerciales sources"
@@ -677,3 +1359,35 @@ export class CommercialEngine {
     }
   }
 }
+
+// ============================================================================
+// 7. GESTIONNAIRE D'IDEMPOTENCE EN MÉMOIRE
+// ============================================================================
+export class IdempotencyStore {
+  private cache = new Map<string, { response: any; createdAt: number }>();
+  private readonly ttlMs: number;
+
+  constructor(ttlMs = 24 * 3600 * 1000) {
+    this.ttlMs = ttlMs;
+  }
+
+  public get<T = any>(key: string): T | null {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.createdAt > this.ttlMs) {
+      this.cache.delete(key);
+      return null;
+    }
+    return entry.response as T;
+  }
+
+  public set(key: string, response: any): void {
+    this.cache.set(key, { response, createdAt: Date.now() });
+  }
+
+  public clear(): void {
+    this.cache.clear();
+  }
+}
+
+export const defaultIdempotencyStore = new IdempotencyStore();

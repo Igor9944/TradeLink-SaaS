@@ -259,6 +259,8 @@ export const SupplierWorkspacePage: React.FC<{
   // --------------------------------------------------------------------------
   const [quoteToRespond, setQuoteToRespond] = useState<string | null>(null);
   const [negotiatedAmount, setNegotiatedAmount] = useState('11500.00');
+  const [negotiatedIncoterm, setNegotiatedIncoterm] = useState('DAP');
+  const [negotiatedValidityDays, setNegotiatedValidityDays] = useState(30);
   const [negotiationNotes, setNegotiationNotes] = useState('Remise de 8% accordée pour engagement semestriel.');
 
   // --------------------------------------------------------------------------
@@ -2647,15 +2649,43 @@ export const SupplierWorkspacePage: React.FC<{
               Émettre une Proposition Commerciale Négociée
             </h3>
 
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold mb-1">Montant total négocié (EUR) :</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={negotiatedAmount}
+                  onChange={(e) => setNegotiatedAmount(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs font-mono font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1">Validité de l'offre (jours) :</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="180"
+                  value={negotiatedValidityDays}
+                  onChange={(e) => setNegotiatedValidityDays(Number(e.target.value))}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs font-bold"
+                />
+              </div>
+            </div>
+
             <div>
-              <label className="block text-xs font-semibold mb-1">Montant total négocié (EUR) :</label>
-              <input
-                type="number"
-                step="0.01"
-                value={negotiatedAmount}
-                onChange={(e) => setNegotiatedAmount(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs"
-              />
+              <label className="block text-xs font-semibold mb-1">Incoterm Proposé :</label>
+              <select
+                value={negotiatedIncoterm}
+                onChange={(e) => setNegotiatedIncoterm(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs font-semibold"
+              >
+                <option value="DAP">DAP — Rendu au Lieu de Destination</option>
+                <option value="CIF">CIF — Coût, Assurance et Fret Maritime</option>
+                <option value="FOB">FOB — Franco à Bord Port de Chargement</option>
+                <option value="EXW">EXW — Départ Usine</option>
+              </select>
             </div>
 
             <div>
@@ -2675,7 +2705,8 @@ export const SupplierWorkspacePage: React.FC<{
               <Button
                 variant="primary"
                 onClick={() => {
-                  respondToQuote(quoteToRespond, negotiatedAmount, negotiationNotes);
+                  const enrichedNotes = `${negotiationNotes} [Incoterm: ${negotiatedIncoterm}, Validité: ${negotiatedValidityDays}j]`;
+                  respondToQuote(quoteToRespond, negotiatedAmount, enrichedNotes);
                   setQuoteToRespond(null);
                 }}
               >

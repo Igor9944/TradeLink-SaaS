@@ -38,7 +38,17 @@ import {
   PhysicalInventorySession,
   StockAlertRecord,
   StockMovementType,
+  CommercialDisputeRecord,
+  DisputeReason,
+  FinancialAnomalyRecord,
+  PaymentReceiptRecord,
+  CartValidationResult,
+  PaymentProvider,
 } from '../types';
+import {
+  CommercialEngine,
+  GenericPaymentSession,
+} from '../services/commercialEngine';
 import { INITIAL_CATALOG_CATEGORIES } from '../services/catalogEngine';
 import i18n from '../i18n/config';
 import { translations } from '../i18n/translations';
@@ -1019,6 +1029,56 @@ const INITIAL_PAYMENTS: PaymentRecord[] = [
   },
 ];
 
+const INITIAL_DISPUTES: CommercialDisputeRecord[] = [
+  {
+    id: 'disp-01',
+    disputeNumber: 'LIT-2026-8812',
+    orderId: 'ord-2026-8890',
+    orderNumber: 'CMD-2026-8890',
+    initiatorId: 'usr-client-01',
+    initiatorName: 'Atlas Import & Distribution S.A.',
+    initiatorRole: 'CLIENT',
+    reason: 'DAMAGED_GOODS',
+    description: 'Deux palettes de compresseurs présentent des chocs visibles sur les carters extérieurs à la livraison.',
+    status: 'OPEN',
+    createdAt: '2026-11-17T14:30:00Z',
+  },
+];
+
+const INITIAL_RECEIPTS: PaymentReceiptRecord[] = [
+  {
+    receiptNumber: 'REC-2026-771901',
+    paymentId: 'pay-01',
+    paymentReference: 'PAY-STRP-2026-7719A',
+    orderNumber: 'CMD-2026-8841',
+    invoiceNumber: 'FAC-2026-9901',
+    clientId: 'usr-client-01',
+    clientName: 'Atlas Import & Distribution S.A.',
+    supplierId: 'usr-supp-01',
+    supplierName: 'EuroTech Industrial & ColdChain GmbH',
+    amountPaid: '31430.00',
+    currency: 'EUR',
+    provider: 'STRIPE',
+    taxRate: '20.00',
+    taxAmount: '5030.00',
+    issuedAt: '2026-11-16T15:05:00Z',
+    digitalSignatureSha256: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+  },
+];
+
+const INITIAL_ANOMALIES: FinancialAnomalyRecord[] = [
+  {
+    id: 'anom-01',
+    anomalyType: 'DOUBLE_PAYMENT_BLOCKED',
+    severity: 'MEDIUM',
+    entityId: 'FAC-2026-9901',
+    entityType: 'INVOICE',
+    description: 'Tentative de ré-initiation de paiement bloquée avec succès : facture déjà réglée.',
+    timestamp: '2026-11-16T15:10:00Z',
+    resolved: true,
+  },
+];
+
 const INITIAL_MISSIONS: LogisticsMissionRecord[] = [
   {
     id: 'mis-2026-001',
@@ -1454,9 +1514,19 @@ interface AppContextValue {
   createQuote: (q: Omit<QuoteRecord, 'id' | 'quoteNumber' | 'createdAt'>) => void;
   convertQuoteToOrder: (quoteId: string) => void;
   respondToQuote: (quoteId: string, adjustedAmount: string, notes?: string) => void;
+  rejectQuote: (quoteId: string, reason: string) => void;
   invoices: InvoiceRecord[];
   payInvoice: (invoiceId: string) => void;
   payments: PaymentRecord[];
+  paymentReceipts: PaymentReceiptRecord[];
+  disputes: CommercialDisputeRecord[];
+  financialAnomalies: FinancialAnomalyRecord[];
+  openOrderDispute: (orderId: string, reason: DisputeReason, description: string) => CommercialDisputeRecord | null;
+  resolveOrderDispute: (disputeId: string, resolution: string, action: 'REFUND_TOTAL' | 'REFUND_PARTIAL' | 'FORCE_DELIVERY' | 'DISMISSED') => void;
+  initiatePaymentMultiProvider: (orderId: string, provider: PaymentProvider, currency?: string) => GenericPaymentSession | null;
+  confirmPaymentTransaction: (paymentId: string, providerTxId?: string) => void;
+  refundPaymentTransaction: (paymentId: string, refundAmountStr?: string, reason?: string) => void;
+  validateCartServer: () => CartValidationResult;
   shipments: ShipmentRecord[];
   updateShipmentStatus: (shipmentId: string, status: ShipmentStatus, podSign?: boolean) => void;
   incidents: IncidentRecord[];
@@ -1673,6 +1743,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [quotes, setQuotes] = useState<QuoteRecord[]>(INITIAL_QUOTES);
   const [invoices, setInvoices] = useState<InvoiceRecord[]>(INITIAL_INVOICES);
   const [payments, setPayments] = useState<PaymentRecord[]>(INITIAL_PAYMENTS);
+  const [disputes, setDisputes] = useState<CommercialDisputeRecord[]>(INITIAL_DISPUTES);
+  const [paymentReceipts, setPaymentReceipts] = useState<PaymentReceiptRecord[]>(INITIAL_RECEIPTS);
+  const [financialAnomalies] = useState<FinancialAnomalyRecord[]>(INITIAL_ANOMALIES);
   const [shipments, setShipments] = useState<ShipmentRecord[]>(INITIAL_SHIPMENTS);
   const [incidents, setIncidents] = useState<IncidentRecord[]>(INITIAL_INCIDENTS);
   const [vehicles, setVehicles] = useState<VehicleRecord[]>(INITIAL_CARRIER_VEHICLES);
@@ -2940,6 +3013,163 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     addAuditLog('QUOTE_RESPONDED', 'Quote', quoteId, 'SUCCESS', `Proposition commerciale émise pour devis ${quoteId} (${notes || 'Tarif négocié'}).`);
     notifyToast(`Proposition commerciale transmise au client (${adjustedAmount} EUR).`, 'success');
+  };
+
+  const rejectQuote = (quoteId: string, reason: string) => {
+    setQuotes((prev) =>
+      prev.map((q) =>
+        q.id === quoteId
+          ? {
+              ...q,
+              status: 'REFUSED',
+              rejectionReason: reason,
+            }
+          : q
+      )
+    );
+    addAuditLog('QUOTE_REJECTED', 'Quote', quoteId, 'SUCCESS', `Devis ${quoteId} rejeté par le client (Motif: ${reason}).`);
+    notifyToast(`Devis refusé (Motif: ${reason})`, 'info');
+  };
+
+  const validateCartServer = (): CartValidationResult => {
+    const rawItems = cart.map((c) => ({ productId: c.product.id, quantity: c.quantity }));
+    const result = CommercialEngine.validateCart(rawItems, products);
+    if (result.hasUnavailableItems) {
+      notifyToast(`Attention : ${result.unavailableCount} article(s) indisponible(s) ou modifiés dans le panier.`, 'warning');
+    }
+    return result;
+  };
+
+  const openOrderDispute = (orderId: string, reason: DisputeReason, description: string): CommercialDisputeRecord | null => {
+    const order = orders.find((o) => o.id === orderId);
+    if (!order) return null;
+
+    const { updatedOrder, dispute } = CommercialEngine.openOrderDispute(
+      order,
+      { id: currentUser.id, name: `${currentUser.firstName} ${currentUser.lastName}`, role: currentUser.role },
+      reason,
+      description
+    );
+
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? updatedOrder : o)));
+    setDisputes((prev) => [dispute, ...prev]);
+    addAuditLog('ORDER_DISPUTE_OPENED', 'Order', order.orderNumber, 'SUCCESS', `Litige ${dispute.disputeNumber} ouvert : ${reason}`);
+    notifyToast(`Litige ${dispute.disputeNumber} ouvert sur la commande ${order.orderNumber}`, 'warning');
+    return dispute;
+  };
+
+  const resolveOrderDispute = (
+    disputeId: string,
+    resolution: string,
+    action: 'REFUND_TOTAL' | 'REFUND_PARTIAL' | 'FORCE_DELIVERY' | 'DISMISSED'
+  ) => {
+    const dispute = disputes.find((d) => d.id === disputeId);
+    if (!dispute) return;
+    const order = orders.find((o) => o.id === dispute.orderId);
+    if (!order) return;
+
+    const { updatedDispute, updatedOrder } = CommercialEngine.resolveOrderDispute(
+      dispute,
+      order,
+      { id: currentUser.id, name: `${currentUser.firstName} ${currentUser.lastName}` },
+      resolution,
+      action
+    );
+
+    setDisputes((prev) => prev.map((d) => (d.id === disputeId ? updatedDispute : d)));
+    setOrders((prev) => prev.map((o) => (o.id === order.id ? updatedOrder : o)));
+
+    if (action === 'REFUND_TOTAL') {
+      setProducts((prev) =>
+        prev.map((p) => {
+          const item = order.items.find((it) => it.productId === p.id);
+          if (item) {
+            return {
+              ...p,
+              stockReserved: Math.max(0, p.stockReserved - item.quantity),
+              stockAvailable: p.stockAvailable + item.quantity,
+            };
+          }
+          return p;
+        })
+      );
+    }
+
+    addAuditLog('ORDER_DISPUTE_RESOLVED', 'Order', order.orderNumber, 'SUCCESS', `Litige ${dispute.disputeNumber} résolu (${action}).`);
+    notifyToast(`Litige ${dispute.disputeNumber} résolu par décision administrateur`, 'success');
+  };
+
+  const initiatePaymentMultiProvider = (orderId: string, provider: PaymentProvider, currency = 'EUR'): GenericPaymentSession | null => {
+    const order = orders.find((o) => o.id === orderId);
+    if (!order) return null;
+    let inv = invoices.find((i) => i.orderId === orderId);
+    if (!inv) {
+      inv = CommercialEngine.generateInvoiceFromOrder(order);
+      setInvoices((prev) => [inv!, ...prev]);
+    }
+
+    const session = CommercialEngine.initiatePaymentSession(order, inv, provider, currentUser.email, currency);
+    const newPayment: PaymentRecord = {
+      id: `pay-${Date.now()}`,
+      paymentReference: `PAY-${provider}-${order.orderNumber.replace('CMD-', '')}`,
+      invoiceId: inv.id,
+      invoiceNumber: inv.invoiceNumber,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      clientId: order.clientId,
+      supplierId: order.supplierId,
+      provider,
+      amount: session.amount,
+      currency: session.currency,
+      status: 'PENDING',
+      idempotencyVerified: true,
+      reconciled: false,
+      createdAt: new Date().toISOString(),
+    };
+    setPayments((prev) => [newPayment, ...prev]);
+    addAuditLog('PAYMENT_INITIATED', 'Payment', session.sessionId, 'SUCCESS', `Session ${provider} générée (${session.amount} ${session.currency}).`);
+    return session;
+  };
+
+  const confirmPaymentTransaction = (paymentId: string, providerTxId?: string) => {
+    const payment = payments.find((p) => p.id === paymentId || p.paymentReference === paymentId);
+    if (!payment || payment.status === 'SUCCEEDED') return;
+    const inv = invoices.find((i) => i.id === payment.invoiceId);
+    const ord = orders.find((o) => o.id === payment.orderId || o.id === inv?.orderId);
+    if (!inv || !ord) return;
+
+    const { updatedPayment, updatedInvoice, updatedOrder, receipt } = CommercialEngine.confirmPayment(
+      payment,
+      ord,
+      inv,
+      providerTxId
+    );
+
+    setPayments((prev) => prev.map((p) => (p.id === payment.id ? updatedPayment : p)));
+    setInvoices((prev) => prev.map((i) => (i.id === inv.id ? updatedInvoice : i)));
+    setOrders((prev) => prev.map((o) => (o.id === ord.id ? updatedOrder : o)));
+    setPaymentReceipts((prev) => [receipt, ...prev]);
+    addAuditLog('PAYMENT_CONFIRMED', 'Payment', updatedPayment.paymentReference, 'SUCCESS', `Règlement ${updatedPayment.amount} ${updatedPayment.currency} validé.`);
+    notifyToast(`Paiement ${updatedPayment.paymentReference} validé avec émission de quittance !`, 'success');
+  };
+
+  const refundPaymentTransaction = (paymentId: string, refundAmountStr?: string, reason?: string) => {
+    if (currentUser.role !== 'ADMIN' && currentUser.role !== 'COMPTABLE') {
+      notifyToast('Action réservée aux Administrateurs et Comptables.', 'error');
+      return;
+    }
+    const payment = payments.find((p) => p.id === paymentId || p.paymentReference === paymentId);
+    if (!payment) return;
+    const inv = invoices.find((i) => i.id === payment.invoiceId);
+    const ord = orders.find((o) => o.id === payment.orderId || o.id === inv?.orderId);
+    if (!inv || !ord) return;
+
+    const result = CommercialEngine.refundPayment(payment, inv, ord, refundAmountStr, reason);
+    setPayments((prev) => prev.map((p) => (p.id === payment.id ? result.updatedPayment : p)));
+    setInvoices((prev) => prev.map((i) => (i.id === inv.id ? result.updatedInvoice : i)));
+    setOrders((prev) => prev.map((o) => (o.id === ord.id ? result.updatedOrder : o)));
+    addAuditLog('PAYMENT_REFUNDED', 'Payment', result.updatedPayment.paymentReference, 'SUCCESS', `Remboursement de ${result.refundedAmount} ${payment.currency}.`);
+    notifyToast(`Remboursement de ${result.refundedAmount} ${payment.currency} exécuté avec succès.`, 'success');
   };
 
   const updateOrderStatusWithReason = (orderId: string, newStatus: OrderStatus, reason?: string) => {
@@ -4562,9 +4792,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         createQuote,
         convertQuoteToOrder,
         respondToQuote,
+        rejectQuote,
         invoices,
         payInvoice,
         payments,
+        paymentReceipts,
+        disputes,
+        financialAnomalies,
+        openOrderDispute,
+        resolveOrderDispute,
+        initiatePaymentMultiProvider,
+        confirmPaymentTransaction,
+        refundPaymentTransaction,
+        validateCartServer,
         shipments,
         updateShipmentStatus,
         incidents,

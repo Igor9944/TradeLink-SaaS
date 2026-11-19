@@ -26,6 +26,12 @@ import {
   FileCheck,
   X,
   Ban,
+  QrCode,
+  Building2,
+  CreditCard,
+  ShieldAlert,
+  ShieldCheck,
+  RefreshCw,
 } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import { formatCurrency, downloadDataExport } from '../i18n/translations';
@@ -47,7 +53,15 @@ import {
   Stepper,
 } from '../components/ui/DesignSystem';
 import { VoiceDictationButton } from '../components/voice/VoiceDictationButton';
-import { ProductItem, ThemeMode, IncidentRecord } from '../types';
+import {
+  ProductItem,
+  ThemeMode,
+  IncidentRecord,
+  CartValidationResult,
+  PaymentReceiptRecord,
+  DisputeReason,
+  PaymentProvider,
+} from '../types';
 
 export const ClientWorkspacePage: React.FC<{
   section:
@@ -92,6 +106,7 @@ export const ClientWorkspacePage: React.FC<{
     quotes,
     createQuote,
     convertQuoteToOrder,
+    rejectQuote,
     invoices,
     payInvoice,
     payments,
@@ -106,6 +121,12 @@ export const ClientWorkspacePage: React.FC<{
     voiceTranscript,
     notificationsList,
     notifyToast,
+    disputes,
+    paymentReceipts,
+    validateCartServer,
+    openOrderDispute,
+    initiatePaymentMultiProvider,
+    confirmPaymentTransaction,
   } = useApp();
 
   const navigate = useNavigate();
@@ -124,6 +145,12 @@ export const ClientWorkspacePage: React.FC<{
   const myShipments = shipments.filter(
     (s) => s.clientId === currentUser.id || currentUser.role === 'ADMIN'
   );
+  const myDisputes = disputes.filter(
+    (d) => d.initiatorId === currentUser.id || currentUser.role === 'ADMIN'
+  );
+  const myReceipts = paymentReceipts.filter(
+    (r) => r.clientId === currentUser.id || currentUser.role === 'ADMIN'
+  );
 
   // États Catalogue & Filtres
   const [search, setSearch] = useState('');
@@ -139,12 +166,31 @@ export const ClientWorkspacePage: React.FC<{
     setIsCompareDrawerOpen(true);
   };
 
+  // États Cycle Commercial & Panier Multi-Devises
+  const [cartCurrency, setCartCurrency] = useState<'EUR' | 'USD' | 'TND' | 'MAD'>('EUR');
+  const [serverCartValidation, setServerCartValidation] = useState<CartValidationResult | null>(null);
+  const [isValidatingCart, setIsValidatingCart] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<PaymentProvider>('STRIPE');
+  const [activePaymentSession, setActivePaymentSession] = useState<any>(null);
+  const [viewingReceipt, setViewingReceipt] = useState<PaymentReceiptRecord | null>(null);
+
+  // États Refus de Devis
+  const [rejectQuoteModalOpen, setRejectQuoteModalOpen] = useState(false);
+  const [quoteToRejectId, setQuoteToRejectId] = useState<string | null>(null);
+  const [quoteRejectReason, setQuoteRejectReason] = useState('');
+
+  // États Litige Commercial
+  const [disputeModalOpen, setDisputeModalOpen] = useState(false);
+  const [disputeOrderId, setDisputeOrderId] = useState<string | null>(null);
+  const [disputeReason, setDisputeReason] = useState<DisputeReason>('DAMAGED_GOODS');
+  const [disputeDescription, setDisputeDescription] = useState('');
+  const [disputeClaimedAmount, setDisputeClaimedAmount] = useState('150.00');
+
   // États Checkout & Commande
   const [checkoutStep, setCheckoutStep] = useState(0);
   const [shippingAddr, setShippingAddr] = useState(
     'Zone Logistique Zenata, Quai B - Lot 14, Casablanca, Maroc'
   );
-  const [paymentMethod, setPaymentMethod] = useState('STRIPE_B2B');
   const [cancelOrderTarget, setCancelOrderTarget] = useState<string | null>(null);
 
   // États Devis (RFQ)
@@ -917,13 +963,30 @@ export const ClientWorkspacePage: React.FC<{
       {section === 'panier' && (
         <Card
           title="Mon Panier Commercial B2B"
-          subtitle="Ajustement des quantités, calcul des taxes et réservation de stock sous contrat cadre"
+          subtitle="Vérification serveur stricte des stocks, calculs déterministes et gestion multi-devises (EUR / USD / TND / MAD)"
           action={
-            <Link to="/client/checkout">
-              <Button size="sm" variant="primary" disabled={cart.length === 0}>
-                Procéder au Checkout →
-              </Button>
-            </Link>
+            <div className="flex items-center gap-2">
+              <select
+                value={cartCurrency}
+                onChange={(e) => {
+                  const newCurr = e.target.value as any;
+                  setCartCurrency(newCurr);
+                  setServerCartValidation(null);
+                }}
+                className="px-2.5 py-1 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs font-bold"
+                title="Sélectionner la devise commerciale"
+              >
+                <option value="EUR">EUR (€)</option>
+                <option value="USD">USD ($)</option>
+                <option value="TND">TND (DT)</option>
+                <option value="MAD">MAD (DH)</option>
+              </select>
+              <Link to="/client/checkout">
+                <Button size="sm" variant="primary" disabled={cart.length === 0}>
+                  Procéder au Checkout →
+                </Button>
+              </Link>
+            </div>
           }
         >
           {cart.length === 0 ? (
@@ -936,6 +999,53 @@ export const ClientWorkspacePage: React.FC<{
             </div>
           ) : (
             <div className="space-y-4">
+              {/* BANDEAU DE VALIDATION SERVEUR DES PRIX ET DES STOCKS */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div>
+                  <span className="font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                    Contrôle Serveur Zéro-Confiance :
+                  </span>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Validation temps réel des seuils MOQ, des stocks disponibles et calcul des taxes douanières.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={isValidatingCart}
+                  onClick={() => {
+                    setIsValidatingCart(true);
+                    const res = validateCartServer();
+                    setServerCartValidation(res);
+                    setIsValidatingCart(false);
+                    if (res.valid) {
+                      notifyToast('Contrôle serveur validé : Stocks confirmés et prix garantis !', 'success');
+                    } else {
+                      notifyToast('Attention : Des ajustements ou ruptures ont été signalés par le serveur.', 'warning');
+                    }
+                  }}
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isValidatingCart ? 'animate-spin' : ''}`} />
+                  Vérifier Validité & Stocks Serveur
+                </Button>
+              </div>
+
+              {/* ALERTES SERVEUR LE CAS ÉCHÉANT */}
+              {serverCartValidation && !serverCartValidation.valid && (
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-amber-700 dark:text-amber-400">
+                    <AlertTriangle className="w-4 h-4" />
+                    Alertes de disponibilité commerciale :
+                  </div>
+                  <ul className="list-disc list-inside space-y-1 text-slate-700 dark:text-slate-300 text-[11px]">
+                    {serverCartValidation.warnings.map((anom: string, idx: number) => (
+                      <li key={idx}>{anom}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {cart.map((item) => (
                 <div
                   key={item.product.id}
@@ -948,7 +1058,7 @@ export const ClientWorkspacePage: React.FC<{
                         {item.product.name[locale] || item.product.name.fr}
                       </p>
                       <p className="text-slate-500 font-mono">
-                        SKU : {item.product.sku} • Prix : {formatCurrency(parseFloat(item.product.unitPrice))} HT / {item.product.unit}
+                        SKU : {item.product.sku} • Prix de base : {formatCurrency(parseFloat(item.product.unitPrice))} HT / {item.product.unit}
                       </p>
                     </div>
                   </div>
@@ -957,7 +1067,10 @@ export const ClientWorkspacePage: React.FC<{
                     <div className="inline-flex items-center gap-2 bg-white dark:bg-[#0B2D31] border border-slate-200 dark:border-teal-800 rounded-xl px-2.5 py-1">
                       <button
                         type="button"
-                        onClick={() => updateCartQuantity(item.product.id, -1)}
+                        onClick={() => {
+                          updateCartQuantity(item.product.id, -1);
+                          setServerCartValidation(null);
+                        }}
                         className="p-1 hover:text-[#E85D22]"
                         title="Diminuer"
                       >
@@ -966,7 +1079,10 @@ export const ClientWorkspacePage: React.FC<{
                       <span className="font-bold px-2">{item.quantity}</span>
                       <button
                         type="button"
-                        onClick={() => updateCartQuantity(item.product.id, 1)}
+                        onClick={() => {
+                          updateCartQuantity(item.product.id, 1);
+                          setServerCartValidation(null);
+                        }}
                         className="p-1 hover:text-[#E85D22]"
                         title="Augmenter"
                       >
@@ -980,7 +1096,10 @@ export const ClientWorkspacePage: React.FC<{
 
                     <button
                       type="button"
-                      onClick={() => removeFromCart(item.product.id)}
+                      onClick={() => {
+                        removeFromCart(item.product.id);
+                        setServerCartValidation(null);
+                      }}
                       className="p-1.5 text-red-500 hover:bg-red-500/10 rounded-lg"
                       title="Retirer l'article"
                     >
@@ -993,19 +1112,35 @@ export const ClientWorkspacePage: React.FC<{
               <div className="p-4 rounded-2xl bg-white dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 space-y-2 text-xs">
                 <div className="flex justify-between">
                   <span className="text-slate-500">Sous-total HT :</span>
-                  <span className="font-mono font-bold">{formatCurrency(cartSubtotal)}</span>
+                  <span className="font-mono font-bold">
+                    {serverCartValidation
+                      ? `${serverCartValidation.subtotalAmount} ${serverCartValidation.currency}`
+                      : formatCurrency(cartSubtotal)}
+                  </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">TVA Déductible (20%) :</span>
-                  <span className="font-mono">{formatCurrency(cartTax)}</span>
+                  <span className="text-slate-500">TVA Déductible ({serverCartValidation ? `${serverCartValidation.taxRatePct}%` : '20%'}) :</span>
+                  <span className="font-mono">
+                    {serverCartValidation
+                      ? `${serverCartValidation.taxAmount} ${serverCartValidation.currency}`
+                      : formatCurrency(cartTax)}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">Frais de Fret Multimodal Estimés :</span>
-                  <span className="font-mono">{formatCurrency(freightAmount)}</span>
+                  <span className="font-mono">
+                    {serverCartValidation
+                      ? `${serverCartValidation.shippingAmount} ${serverCartValidation.currency}`
+                      : formatCurrency(freightAmount)}
+                  </span>
                 </div>
                 <div className="flex justify-between text-base font-black pt-2 border-t border-slate-200 dark:border-teal-800 text-[#E85D22]">
-                  <span>Total TTC :</span>
-                  <span className="font-mono">{formatCurrency(cartTotal)}</span>
+                  <span>Total TTC Déterminé :</span>
+                  <span className="font-mono">
+                    {serverCartValidation
+                      ? `${serverCartValidation.totalAmount} ${serverCartValidation.currency}`
+                      : formatCurrency(cartTotal)}
+                  </span>
                 </div>
               </div>
 
@@ -1057,20 +1192,69 @@ export const ClientWorkspacePage: React.FC<{
                   />
                 </div>
 
-                <RadioGroup
-                  label="Moyen de Règlement Sécurisé B2B :"
-                  name="paymentMethod"
-                  value={paymentMethod}
-                  onChange={(val) => {
-                    setPaymentMethod(val);
-                    setCheckoutStep(2);
-                  }}
-                  options={[
-                    { value: 'STRIPE_B2B', label: 'Stripe B2B Séquestre Escrow', description: 'Fonds débloqués après émargement électronique POD' },
-                    { value: 'WIRE_SWIFT', label: 'Virement Bancaire International SWIFT', description: 'Rapprochement bancaire déterministe sous 24h' },
-                    { value: 'LETTER_OF_CREDIT', label: 'Crédit Documentaire L/C', description: 'Garanti par banque émettrice pour import maritime' },
-                  ]}
-                />
+                <div className="space-y-2">
+                  <label className="font-bold text-slate-700 dark:text-slate-300 block">
+                    Prestataire de Paiement Sécurisé (Multi-Providers) :
+                  </label>
+                  <div className="grid grid-cols-1 gap-2">
+                    {[
+                      {
+                        id: 'STRIPE' as PaymentProvider,
+                        title: 'Stripe B2B Séquestre Escrow',
+                        sub: 'Cartes bancaires internationales, 3D-Secure 2.0 & séquestre automatisé',
+                        icon: CreditCard,
+                      },
+                      {
+                        id: 'KONNECT' as PaymentProvider,
+                        title: 'Konnect Passerelle Maghreb',
+                        sub: 'Règlement direct dinars tunisiens (TND) ou multidevises Maghreb',
+                        icon: Building2,
+                      },
+                      {
+                        id: 'FLOUCI' as PaymentProvider,
+                        title: 'Flouci Wallet Mobile B2B',
+                        sub: 'Paiement instantané par QR Code et signature mobile souveraine',
+                        icon: QrCode,
+                      },
+                      {
+                        id: 'CMI' as PaymentProvider,
+                        title: 'CMI — Centre Monétique Interbancaire Maroc',
+                        sub: 'Cartes bancaires marocaines & internationales en dirhams (MAD)',
+                        icon: CreditCard,
+                      },
+                      {
+                        id: 'WIRE_TRANSFER' as PaymentProvider,
+                        title: 'Virement B2B avec IBAN Virtuel Dédié',
+                        sub: 'Attribution d’un IBAN virtuel unique TradeLink pour rapprochement automatique sous 24h',
+                        icon: Building2,
+                      },
+                    ].map((p) => {
+                      const IconComp = p.icon;
+                      const isSelected = selectedProvider === p.id;
+                      return (
+                        <div
+                          key={p.id}
+                          onClick={() => {
+                            setSelectedProvider(p.id);
+                            setCheckoutStep(2);
+                          }}
+                          className={`p-3 rounded-xl border cursor-pointer transition-all flex items-start gap-3 ${
+                            isSelected
+                              ? 'border-[#E85D22] bg-[#E85D22]/10 ring-1 ring-[#E85D22]'
+                              : 'border-slate-200 dark:border-teal-800 bg-white dark:bg-[#071E22] hover:border-slate-300'
+                          }`}
+                        >
+                          <IconComp className={`w-5 h-5 mt-0.5 ${isSelected ? 'text-[#E85D22]' : 'text-slate-400'}`} />
+                          <div className="flex-1">
+                            <p className="font-bold text-slate-900 dark:text-white">{p.title}</p>
+                            <p className="text-[11px] text-slate-500 mt-0.5">{p.sub}</p>
+                          </div>
+                          {isSelected && <CheckCircle2 className="w-4 h-4 text-[#E85D22] shrink-0" />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
 
               <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3">
@@ -1101,16 +1285,55 @@ export const ClientWorkspacePage: React.FC<{
                   className="w-full mt-4"
                   disabled={cart.length === 0}
                   onClick={() => {
-                    const created = createOrderFromCart(shippingAddr, paymentMethod);
+                    const created = createOrderFromCart(shippingAddr, selectedProvider);
                     if (created) {
-                      notifyToast(`Commande ${created.orderNumber} confirmée avec succès !`, 'success');
-                      navigate(`/client/commandes/${created.id}`);
+                      const session = initiatePaymentMultiProvider(created.id, selectedProvider, 'EUR');
+                      setActivePaymentSession(session);
+                      notifyToast(`Commande ${created.orderNumber} enregistrée ! Session de paiement ${selectedProvider} initialisée.`, 'success');
+                      if (session?.checkoutUrl) {
+                        navigate(`/client/commandes/${created.id}`);
+                      }
                     }
                   }}
                 >
                   <Lock className="w-4 h-4" />
-                  Confirmer la Commande ({formatCurrency(cartTotal)})
+                  Valider et Initier le Règlement ({formatCurrency(cartTotal)})
                 </Button>
+
+                {activePaymentSession && (
+                  <div className="mt-4 p-4 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 space-y-2">
+                    <div className="flex items-center gap-2 font-bold text-emerald-600 dark:text-emerald-400">
+                      <CheckCircle2 className="w-4 h-4" />
+                      Session {activePaymentSession.provider} active
+                    </div>
+                    {activePaymentSession.qrCodeData && (
+                      <div className="text-center py-2 space-y-2">
+                        <div className="inline-block p-3 bg-white rounded-lg border border-slate-300">
+                          <QrCode className="w-24 h-24 text-slate-800 mx-auto" />
+                        </div>
+                        <p className="text-[11px] font-mono text-slate-500">Scannez avec votre application Flouci B2B</p>
+                      </div>
+                    )}
+                    {activePaymentSession.virtualIban && (
+                      <div className="p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-[11px] font-mono space-y-1">
+                        <p><strong>IBAN Virtuel :</strong> {activePaymentSession.virtualIban}</p>
+                        <p><strong>Réf Virement :</strong> {activePaymentSession.sessionId}</p>
+                      </div>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      className="w-full"
+                      onClick={() => {
+                        confirmPaymentTransaction(activePaymentSession.sessionId, `tx_manual_${Date.now()}`);
+                        notifyToast('Règlement validé avec succès ! Quittance certifiée générée.', 'success');
+                        setActivePaymentSession(null);
+                      }}
+                    >
+                      Confirmer le Règlement & Obtenir la Quittance
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1198,8 +1421,25 @@ export const ClientWorkspacePage: React.FC<{
           subtitle={`Fournisseur : ${selectedOrder.supplierName} • Destination : ${selectedOrder.shippingAddress}`}
           action={
             <div className="flex flex-wrap items-center gap-2">
+              {/* BOUTON SIGNALEMENT DE LITIGE COMMERCIAL */}
+              {selectedOrder.status !== 'CANCELLED' && selectedOrder.status !== 'REFUSED' && selectedOrder.status !== 'DISPUTED' && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="text-amber-600 hover:text-amber-700"
+                  onClick={() => {
+                    setDisputeOrderId(selectedOrder.id);
+                    setDisputeClaimedAmount(selectedOrder.totalAmount);
+                    setDisputeModalOpen(true);
+                  }}
+                >
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
+                  Signaler un Litige
+                </Button>
+              )}
+
               {/* RÈGLE D'ANNULATION MÉTIER */}
-              {selectedOrder.status === 'PENDING' || selectedOrder.status === 'ACCEPTED' ? (
+              {selectedOrder.status === 'PENDING' || selectedOrder.status === 'PENDING_VALIDATION' || selectedOrder.status === 'ACCEPTED' ? (
                 <Button
                   size="sm"
                   variant="danger"
@@ -1210,7 +1450,7 @@ export const ClientWorkspacePage: React.FC<{
                 </Button>
               ) : (
                 <span className="text-[11px] text-slate-400 italic">
-                  (Annulation non autorisée : marchandise en cours d'acheminement)
+                  (Annulation verrouillée : marchandise en acheminement ou engagée)
                 </span>
               )}
 
@@ -1260,12 +1500,87 @@ export const ClientWorkspacePage: React.FC<{
               ))}
             </div>
 
-            {/* TIMELINE DE SUIVI DE LA COMMANDE */}
+            {/* BANDEAU LITIGE COMMERCIAL SI OUVERT */}
+            {(selectedOrder.status === 'DISPUTED' || myDisputes.some((d) => d.orderId === selectedOrder.id)) && (
+              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 font-bold text-amber-600 dark:text-amber-400">
+                    <ShieldAlert className="w-5 h-5" />
+                    Litige Commercial en Cours d'Instruction :
+                  </div>
+                  <Badge variant="warning">
+                    {myDisputes.find((d) => d.orderId === selectedOrder.id)?.status || 'EN_ARBITRAGE'}
+                  </Badge>
+                </div>
+                {myDisputes.filter((d) => d.orderId === selectedOrder.id).map((disp) => (
+                  <div key={disp.id} className="p-3 rounded-xl bg-white dark:bg-[#071E22] border border-amber-500/20 space-y-1">
+                    <p className="font-semibold text-slate-800 dark:text-white">
+                      Motif : <span className="font-mono text-[#E85D22]">{disp.reason}</span> • N° Dossier : <span className="font-mono font-bold">{disp.disputeNumber}</span>
+                    </p>
+                    <p className="text-slate-600 dark:text-slate-300 italic text-[11px]">« {disp.description} »</p>
+                    {disp.resolution && (
+                      <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                        Arbitrage Admin : {disp.resolution} (Action : {disp.arbitrationAction || 'EN_ATTENTE'})
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* TIMELINE DE SUIVI DU CYCLE COMMERCIAL COMPLET EN 9 ÉTAPES */}
             <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3">
-              <p className="text-xs font-bold uppercase text-slate-400">
-                Timeline d'Exécution & Traçabilité Serveur :
-              </p>
-              <div className="grid sm:grid-cols-5 gap-2.5 text-xs">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-bold uppercase text-slate-400">
+                  Cycle Commercial TRADELINK (9 Étapes Déterministes) :
+                </p>
+                <Badge variant={selectedOrder.status === 'COMPLETED' ? 'success' : selectedOrder.status === 'DISPUTED' ? 'warning' : 'info'}>
+                  Statut : {selectedOrder.status}
+                </Badge>
+              </div>
+
+              {/* GRILLE DES 9 ÉTAPES DU WORKFLOW */}
+              <div className="grid grid-cols-3 sm:grid-cols-9 gap-1.5 text-xs">
+                {[
+                  { key: 'PANIER', label: '1. Panier' },
+                  { key: 'DEVIS', label: '2. Devis' },
+                  { key: 'VALIDATION', label: '3. Validé' },
+                  { key: 'COMMANDE', label: '4. Commande' },
+                  { key: 'CONFIRMATION', label: '5. Stock' },
+                  { key: 'PREPARATION', label: '6. Usine' },
+                  { key: 'EXPEDITION', label: '7. Fret' },
+                  { key: 'LIVRAISON', label: '8. Livré' },
+                  { key: 'CLOTURE', label: '9. Clôturé' },
+                ].map((step, idx) => {
+                  const statusOrder = [
+                    'DRAFT',
+                    'PENDING',
+                    'PENDING_VALIDATION',
+                    'ACCEPTED',
+                    'CONFIRMED',
+                    'IN_PREPARATION',
+                    'SHIPPED',
+                    'DELIVERED',
+                    'COMPLETED',
+                  ];
+                  const currentIdx = statusOrder.indexOf(selectedOrder.status);
+                  const isPastOrCurrent = currentIdx >= idx || (selectedOrder.status === 'PAID' && idx <= 4);
+                  return (
+                    <div
+                      key={step.key}
+                      className={`p-2 rounded-xl text-center border transition-all ${
+                        isPastOrCurrent
+                          ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-700 dark:text-emerald-400 font-bold'
+                          : 'bg-white dark:bg-[#0B2D31] border-slate-200 dark:border-teal-800 opacity-50 text-slate-400'
+                      }`}
+                    >
+                      <p className="text-[10px] truncate">{step.label}</p>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="grid sm:grid-cols-5 gap-2.5 text-xs pt-2">
                 {selectedOrder.timeline.map((step, i) => (
                   <div
                     key={i}
@@ -1350,17 +1665,33 @@ export const ClientWorkspacePage: React.FC<{
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {q.status !== 'CONVERTED' && (
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      onClick={() => {
-                        convertQuoteToOrder(q.id);
-                        notifyToast(`Devis ${q.quoteNumber} converti en commande ferme avec succès !`, 'success');
-                      }}
-                    >
-                      Convertir en Commande Ferme
-                    </Button>
+                  {q.status !== 'CONVERTED' && q.status !== 'REFUSED' && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => {
+                          convertQuoteToOrder(q.id);
+                          notifyToast(`Devis ${q.quoteNumber} accepté et converti en commande ferme avec succès !`, 'success');
+                        }}
+                      >
+                        Accepter & Commander
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={() => {
+                          setQuoteToRejectId(q.id);
+                          setQuoteRejectReason('');
+                          setRejectQuoteModalOpen(true);
+                        }}
+                      >
+                        Refuser
+                      </Button>
+                    </>
+                  )}
+                  {q.status === 'REFUSED' && (
+                    <Badge variant="danger">Refusé par l'acheteur</Badge>
                   )}
                   <Button
                     size="sm"
@@ -1749,57 +2080,127 @@ export const ClientWorkspacePage: React.FC<{
 
       {/* 5B. HISTORIQUE DES PAIEMENTS (/client/paiements) */}
       {section === 'paiements' && (
-        <Card
-          title="Historique des Règlements & Séquestre B2B"
-          subtitle="Paiements sécurisés avec clé d'idempotence et traçabilité bancaire"
-        >
-          <DataTable
-            caption="Registre des paiements du compte"
-            keyExtractor={(p) => p.id}
-            data={payments.filter((p) => p.clientId === currentUser.id || currentUser.role === 'ADMIN')}
-            columns={[
-              {
-                key: 'ref',
-                header: 'Réf Paiement',
-                isRowHeader: true,
-                render: (p) => <span className="font-mono font-bold text-xs">{p.paymentReference}</span>,
-              },
-              {
-                key: 'inv',
-                header: 'Facture Cible',
-                render: (p) => <span className="font-mono text-xs text-[#E85D22]">{p.invoiceNumber}</span>,
-              },
-              {
-                key: 'method',
-                header: 'Moyen',
-                render: (p) => <Badge variant="neutral">{p.provider}</Badge>,
-              },
-              {
-                key: 'amount',
-                header: 'Montant',
-                render: (p) => (
-                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                    {formatCurrency(parseFloat(p.amount))}
-                  </span>
-                ),
-              },
-              {
-                key: 'date',
-                header: 'Date',
-                render: (p) => <span className="font-mono text-xs text-slate-400">{p.createdAt}</span>,
-              },
-              {
-                key: 'status',
-                header: 'Statut',
-                render: (p) => (
-                  <Badge variant={p.status === 'SUCCEEDED' ? 'success' : 'warning'}>
-                    {p.status}
-                  </Badge>
-                ),
-              },
-            ]}
-          />
-        </Card>
+        <div className="space-y-6">
+          <Card
+            title="Historique des Règlements & Séquestre B2B"
+            subtitle="Paiements multi-prestataires sécurisés avec clé d'idempotence et traçabilité bancaire"
+          >
+            <DataTable
+              caption="Registre des paiements du compte"
+              keyExtractor={(p) => p.id}
+              data={payments.filter((p) => p.clientId === currentUser.id || currentUser.role === 'ADMIN')}
+              columns={[
+                {
+                  key: 'ref',
+                  header: 'Réf Paiement',
+                  isRowHeader: true,
+                  render: (p) => <span className="font-mono font-bold text-xs">{p.paymentReference}</span>,
+                },
+                {
+                  key: 'inv',
+                  header: 'Facture Cible',
+                  render: (p) => <span className="font-mono text-xs text-[#E85D22]">{p.invoiceNumber}</span>,
+                },
+                {
+                  key: 'method',
+                  header: 'Moyen',
+                  render: (p) => <Badge variant="neutral">{p.provider}</Badge>,
+                },
+                {
+                  key: 'amount',
+                  header: 'Montant',
+                  render: (p) => (
+                    <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                      {formatCurrency(parseFloat(p.amount))}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'date',
+                  header: 'Date',
+                  render: (p) => <span className="font-mono text-xs text-slate-400">{p.createdAt}</span>,
+                },
+                {
+                  key: 'status',
+                  header: 'Statut',
+                  render: (p) => (
+                    <Badge variant={p.status === 'SUCCEEDED' ? 'success' : 'warning'}>
+                      {p.status}
+                    </Badge>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+
+          {/* SECTION QUITTANCES ET REÇUS CERTIFIÉS SHA-256 */}
+          <Card
+            title="Quittances de Règlement Sécurisées (Signature SHA-256)"
+            subtitle="Documents officiels certifiés infalsifiables et opposables aux tiers"
+          >
+            {myReceipts.length === 0 ? (
+              <p className="text-xs text-slate-500 py-6 text-center">
+                Aucune quittance émise pour l'instant. Les quittances sont générées dès validation d'un règlement.
+              </p>
+            ) : (
+              <div className="grid md:grid-cols-2 gap-4 text-xs">
+                {myReceipts.map((rec) => (
+                  <div
+                    key={rec.receiptNumber}
+                    className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <FileCheck className="w-4 h-4 text-emerald-500" />
+                        <span className="font-mono font-bold text-slate-900 dark:text-white">
+                          {rec.receiptNumber}
+                        </span>
+                      </div>
+                      <Badge variant="success">CERTIFIÉ CONFORME</Badge>
+                    </div>
+
+                    <div className="space-y-1 text-slate-600 dark:text-slate-300">
+                      <p>
+                        Montant réglé : <strong className="font-mono font-bold text-slate-900 dark:text-white">{rec.amountPaid} {rec.currency}</strong>
+                      </p>
+                      <p>
+                        Prestataire : <Badge variant="neutral">{rec.provider}</Badge> • Réf Tx : <span className="font-mono text-[11px]">{rec.paymentReference}</span>
+                      </p>
+                      <p className="text-[11px] font-mono text-slate-400">
+                        Date d'encaissement : {rec.issuedAt}
+                      </p>
+                    </div>
+
+                    <div className="p-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-200 dark:border-teal-800/60 font-mono text-[10px] text-slate-500 truncate">
+                      SHA256: {rec.digitalSignatureSha256}
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setViewingReceipt(rec)}
+                      >
+                        Consulter la Quittance
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => {
+                          downloadDataExport(`quittance_${rec.receiptNumber}.json`, JSON.stringify(rec, null, 2), 'application/json');
+                          notifyToast(`Quittance ${rec.receiptNumber} téléchargée !`, 'success');
+                        }}
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Télécharger
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
       )}
 
       {/* ===================================================================== */}
@@ -2101,6 +2502,184 @@ export const ClientWorkspacePage: React.FC<{
       {section === 'kyc' && <ActorKycWorkspaceView actorProfile="CLIENT" />}
       {section === 'kyc-upload' && (
         <ActorKycWorkspaceView actorProfile="CLIENT" focusUploadSection />
+      )}
+
+      {/* MODAL : REFUS DE DEVIS (MOTIF OBLIGATOIRE) */}
+      <Modal
+        open={rejectQuoteModalOpen}
+        onClose={() => setRejectQuoteModalOpen(false)}
+        title="Refuser la Proposition Commerciale"
+      >
+        <div className="space-y-4 text-xs">
+          <p className="text-slate-600 dark:text-slate-300">
+            Conformément aux règles commerciales TRADELINK, tout refus de cotation doit faire l'objet d'un motif explicite notifié au fournisseur.
+          </p>
+          <div>
+            <label className="font-bold text-slate-700 dark:text-slate-300 block mb-1">
+              Motif du Refus (Obligatoire) :
+            </label>
+            <textarea
+              rows={3}
+              value={quoteRejectReason}
+              onChange={(e) => setQuoteRejectReason(e.target.value)}
+              placeholder="Ex: Tarification supérieure au budget alloué, délai d'acheminement incompatible..."
+              className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setRejectQuoteModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button
+              variant="danger"
+              disabled={!quoteRejectReason.trim()}
+              onClick={() => {
+                if (!quoteToRejectId || !quoteRejectReason.trim()) return;
+                rejectQuote(quoteToRejectId, quoteRejectReason.trim());
+                notifyToast('Proposition commerciale refusée. Le fournisseur a été notifié du motif.', 'info');
+                setRejectQuoteModalOpen(false);
+                setQuoteToRejectId(null);
+                setQuoteRejectReason('');
+              }}
+            >
+              Confirmer le Refus
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL : OUVERTURE D'UN LITIGE COMMERCIAL */}
+      <Modal
+        open={disputeModalOpen}
+        onClose={() => setDisputeModalOpen(false)}
+        title="Ouverture d'un Litige Commercial"
+      >
+        <div className="space-y-4 text-xs">
+          <p className="text-slate-600 dark:text-slate-300">
+            L'ouverture d'un litige suspend la clôture financière et transfère le dossier aux arbitres assermentés de la plateforme TRADELINK.
+          </p>
+
+          <div>
+            <label className="font-bold text-slate-700 dark:text-slate-300 block mb-1">Motif du Litige :</label>
+            <select
+              value={disputeReason}
+              onChange={(e) => setDisputeReason(e.target.value as DisputeReason)}
+              className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 font-semibold"
+            >
+              <option value="DAMAGED_GOODS">Marchandise endommagée / Avarie de transport</option>
+              <option value="LATE_DELIVERY">Retard de livraison excessif hors Incoterm</option>
+              <option value="WRONG_ITEMS">Articles non conformes aux spécifications SKU</option>
+              <option value="MISSING_QUANTITY">Quantités manquantes au dépotage</option>
+              <option value="PRICE_MISMATCH">Écart tarifaire avec le devis contractuel</option>
+              <option value="OTHER">Autre contestation commerciale</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="font-bold text-slate-700 dark:text-slate-300 block mb-1">Montant Contesté / Réclamé (€) :</label>
+            <input
+              type="number"
+              step="0.01"
+              value={disputeClaimedAmount}
+              onChange={(e) => setDisputeClaimedAmount(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 font-bold font-mono"
+            />
+          </div>
+
+          <div>
+            <label className="font-bold text-slate-700 dark:text-slate-300 block mb-1">Exposé Détaillé des Faits :</label>
+            <textarea
+              rows={3}
+              value={disputeDescription}
+              onChange={(e) => setDisputeDescription(e.target.value)}
+              placeholder="Décrivez avec précision l'avarie ou l'incident constaté..."
+              className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setDisputeModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button
+              variant="danger"
+              disabled={!disputeDescription.trim()}
+              onClick={() => {
+                if (!disputeOrderId || !disputeDescription.trim()) return;
+                openOrderDispute(disputeOrderId, disputeReason, disputeDescription.trim());
+                notifyToast('Litige commercial enregistré ! Arbitrage engagé sous 24h ouvrées.', 'success');
+                setDisputeModalOpen(false);
+                setDisputeOrderId(null);
+                setDisputeDescription('');
+              }}
+            >
+              Engager la Procédure de Litige
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL : VISUALISATION DE QUITTANCE CERTIFIÉE */}
+      {viewingReceipt && (
+        <Modal
+          open={Boolean(viewingReceipt)}
+          onClose={() => setViewingReceipt(null)}
+          title={`Quittance Certifiée : ${viewingReceipt.receiptNumber}`}
+        >
+          <div className="p-4 rounded-2xl bg-white dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 space-y-4 text-xs font-sans">
+            <div className="flex items-center justify-between border-b pb-3 border-slate-200 dark:border-teal-800">
+              <div className="flex items-center gap-2">
+                <FileCheck className="w-5 h-5 text-emerald-500" />
+                <span className="font-bold text-sm text-slate-900 dark:text-white">CERTIFICAT DE RÈGLEMENT OFFICIEL</span>
+              </div>
+              <Badge variant="success">ACQUITTÉ SANS RÉSERVE</Badge>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <span className="text-slate-400">Réf. Quittance :</span>
+                <p className="font-mono font-bold text-slate-900 dark:text-white">{viewingReceipt.receiptNumber}</p>
+              </div>
+              <div>
+                <span className="text-slate-400">Date d'émission :</span>
+                <p className="font-mono text-slate-900 dark:text-white">{viewingReceipt.issuedAt}</p>
+              </div>
+              <div>
+                <span className="text-slate-400">Montant Décaissé :</span>
+                <p className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+                  {viewingReceipt.amountPaid} {viewingReceipt.currency}
+                </p>
+              </div>
+              <div>
+                <span className="text-slate-400">Prestataire Bancaire :</span>
+                <p className="font-bold text-slate-900 dark:text-white">{viewingReceipt.provider}</p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0B2D31] space-y-1">
+              <span className="text-[10px] font-bold uppercase text-slate-400">Empreinte Cryptographique (SHA-256) :</span>
+              <p className="font-mono text-[10px] break-all text-slate-700 dark:text-slate-300">
+                {viewingReceipt.digitalSignatureSha256}
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" onClick={() => setViewingReceipt(null)}>
+                Fermer
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  downloadDataExport(`quittance_${viewingReceipt.receiptNumber}.json`, JSON.stringify(viewingReceipt, null, 2), 'application/json');
+                  notifyToast(`Quittance ${viewingReceipt.receiptNumber} exportée !`, 'success');
+                }}
+              >
+                <Download className="w-3.5 h-3.5" />
+                Exporter Certificat
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   );

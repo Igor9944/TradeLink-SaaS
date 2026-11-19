@@ -54,10 +54,11 @@ import {
   ConfirmDialog,
   DataTable,
   FileUploader,
+  Modal,
   SearchBar,
   Stepper,
 } from '../components/ui/DesignSystem';
-import { UserRoleCode } from '../types';
+import { UserRoleCode, CommercialDisputeRecord } from '../types';
 
 export const AdminWorkspacePage: React.FC<{
   section:
@@ -121,6 +122,9 @@ export const AdminWorkspacePage: React.FC<{
     simulateKmsEnvelopeCipher,
     exportDatasetAction,
     verifyAuditChainAction,
+    disputes,
+    financialAnomalies,
+    resolveOrderDispute,
   } = useApp();
 
   const params = useParams();
@@ -135,9 +139,12 @@ export const AdminWorkspacePage: React.FC<{
   const [suspendedUserTarget, setSuspendedUserTarget] = useState<{ id: string; name: string; isSuspended: boolean } | null>(null);
   const [suspensionReasonInput, setSuspensionReasonInput] = useState('');
 
-  // États Section 4 (Commercial)
-  const [commercialTab, setCommercialTab] = useState<'catalog' | 'categories' | 'orders' | 'quotes' | 'partners' | 'commission'>('catalog');
+  // États Section 4 (Commercial & Litiges)
+  const [commercialTab, setCommercialTab] = useState<'catalog' | 'categories' | 'orders' | 'quotes' | 'partners' | 'commission' | 'disputes' | 'anomalies'>('catalog');
   const [commercialCategoryFilter, setCommercialCategoryFilter] = useState<string>('ALL');
+  const [disputeToResolve, setDisputeToResolve] = useState<CommercialDisputeRecord | null>(null);
+  const [arbitrationResolutionText, setArbitrationResolutionText] = useState('');
+  const [arbitrationAction, setArbitrationAction] = useState<'REFUND_TOTAL' | 'REFUND_PARTIAL' | 'FORCE_DELIVERY' | 'DISMISSED'>('REFUND_TOTAL');
 
   // États Section 5 (Finance & Moteur Decimal.js)
   const [financeTab, setFinanceTab] = useState<'overview' | 'invoices' | 'payments' | 'calc' | 'history'>('overview');
@@ -1201,6 +1208,8 @@ export const AdminWorkspacePage: React.FC<{
                   { id: 'orders', label: `Commandes (${orders.length})` },
                   { id: 'quotes', label: `Devis (${quotes.length})` },
                   { id: 'commission', label: 'Commissions' },
+                  { id: 'disputes', label: `Litiges (${disputes.length})` },
+                  { id: 'anomalies', label: `Anomalies (${financialAnomalies.length})` },
                 ].map((tab) => (
                   <Button
                     key={tab.id}
@@ -1700,6 +1709,157 @@ export const AdminWorkspacePage: React.FC<{
                     </Button>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* ONGLET 7 : GESTION DES LITIGES COMMERCIAUX & ARBITRAGE */}
+            {commercialTab === 'disputes' && (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 text-xs">
+                  <div className="flex items-center gap-2 font-bold text-slate-800 dark:text-white">
+                    <ShieldAlert className="w-4 h-4 text-amber-500" />
+                    Chambre d'Arbitrage Commercial Souverain TRADELINK :
+                  </div>
+                  <p className="text-slate-500 mt-1">
+                    Les administrateurs instruisent les contestations, ordonnent des remboursements (partiels ou totaux) ou prononcent le rejet après examen des bordereaux e-CMR et POD signés.
+                  </p>
+                </div>
+
+                {disputes.length === 0 ? (
+                  <p className="text-xs text-slate-500 py-6 text-center">Aucun litige commercial en cours d'instruction.</p>
+                ) : (
+                  <DataTable
+                    caption="Registre des litiges commerciaux ouverts"
+                    keyExtractor={(d) => d.id}
+                    data={disputes}
+                    columns={[
+                      {
+                        key: 'num',
+                        header: 'N° Dossier',
+                        isRowHeader: true,
+                        render: (d) => <span className="font-mono font-bold text-xs text-[#E85D22]">{d.disputeNumber}</span>,
+                      },
+                      {
+                        key: 'order',
+                        header: 'Commande',
+                        render: (d) => <span className="font-mono text-xs">{d.orderNumber}</span>,
+                      },
+                      {
+                        key: 'initiator',
+                        header: 'Déclarant',
+                        render: (d) => (
+                          <div>
+                            <p className="font-bold text-xs">{d.initiatorName}</p>
+                            <Badge variant="neutral">{d.initiatorRole}</Badge>
+                          </div>
+                        ),
+                      },
+                      {
+                        key: 'reason',
+                        header: 'Motif',
+                        render: (d) => <span className="font-semibold text-xs text-slate-800 dark:text-white">{d.reason}</span>,
+                      },
+                      {
+                        key: 'status',
+                        header: 'Statut',
+                        render: (d) => (
+                          <Badge variant={d.status === 'RESOLVED' ? 'success' : d.status === 'REJECTED' ? 'danger' : 'warning'}>
+                            {d.status}
+                          </Badge>
+                        ),
+                      },
+                      {
+                        key: 'actions',
+                        header: 'Arbitrage',
+                        render: (d) => (
+                          <div className="flex gap-2">
+                            {d.status !== 'RESOLVED' && d.status !== 'REJECTED' ? (
+                              <Button
+                                size="sm"
+                                variant="primary"
+                                onClick={() => {
+                                  setDisputeToResolve(d);
+                                  setArbitrationResolutionText('');
+                                  setArbitrationAction('REFUND_TOTAL');
+                                }}
+                              >
+                                Arbitrer Dossier
+                              </Button>
+                            ) : (
+                              <span className="text-[11px] text-emerald-600 font-bold">
+                                {d.arbitrationAction || 'Clôturé'}
+                              </span>
+                            )}
+                          </div>
+                        ),
+                      },
+                    ]}
+                  />
+                )}
+              </div>
+            )}
+
+            {/* ONGLET 8 : ANOMALIES FINANCIÈRES & AUDIT ARITHMÉTIQUE */}
+            {commercialTab === 'anomalies' && (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs">
+                  <div className="flex items-center gap-2 font-bold text-amber-700 dark:text-amber-400">
+                    <AlertTriangle className="w-4 h-4" />
+                    Détecteur d'Incohérences & d'Anomalies Financières Serveur :
+                  </div>
+                  <p className="text-slate-600 dark:text-slate-300 mt-1">
+                    Surveillance automatisée des écarts arithmétiques, des dépassements de TVA et des risques de double comptabilisation.
+                  </p>
+                </div>
+
+                {financialAnomalies.length === 0 ? (
+                  <p className="text-xs text-emerald-600 font-bold py-6 text-center">
+                    ✓ Aucune anomalie financière détectée. Intégrité des registres à 100%.
+                  </p>
+                ) : (
+                  <DataTable
+                    caption="Registre des alertes et anomalies financières"
+                    keyExtractor={(a) => a.id}
+                    data={financialAnomalies}
+                    columns={[
+                      {
+                        key: 'id',
+                        header: 'ID Anomalie',
+                        isRowHeader: true,
+                        render: (a) => <span className="font-mono text-xs">{a.id}</span>,
+                      },
+                      {
+                        key: 'entity',
+                        header: 'Type Entité',
+                        render: (a) => <Badge variant="neutral">{a.entityType}</Badge>,
+                      },
+                      {
+                        key: 'ref',
+                        header: 'Réf Entité',
+                        render: (a) => <span className="font-mono text-xs">{a.entityId}</span>,
+                      },
+                      {
+                        key: 'anomType',
+                        header: 'Type Anomalie',
+                        render: (a) => <span className="font-bold text-xs text-red-600 dark:text-red-400">{a.anomalyType}</span>,
+                      },
+                      {
+                        key: 'desc',
+                        header: 'Description des Faits',
+                        render: (a) => <span className="text-[11px] text-slate-600 dark:text-slate-300">{a.description}</span>,
+                      },
+                      {
+                        key: 'severity',
+                        header: 'Sévérité',
+                        render: (a) => (
+                          <Badge variant={a.severity === 'CRITICAL' ? 'danger' : 'warning'}>
+                            {a.severity}
+                          </Badge>
+                        ),
+                      },
+                    ]}
+                  />
+                )}
               </div>
             )}
           </Card>
@@ -4068,6 +4228,73 @@ export const AdminWorkspacePage: React.FC<{
             )}
           </Card>
         </div>
+      )}
+
+      {/* MODAL : ARBITRAGE DU LITIGE COMMERCIAL */}
+      {disputeToResolve && (
+        <Modal
+          open={Boolean(disputeToResolve)}
+          onClose={() => setDisputeToResolve(null)}
+          title={`Arbitrage du Litige ${disputeToResolve.disputeNumber}`}
+        >
+          <div className="space-y-4 text-xs font-sans">
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 space-y-1">
+              <p className="font-bold text-slate-900 dark:text-white">
+                Commande : {disputeToResolve.orderNumber} • Déclarant : {disputeToResolve.initiatorName}
+              </p>
+              <p className="text-slate-600 dark:text-slate-300">
+                Motif déclaré : <strong>{disputeToResolve.reason}</strong>
+              </p>
+              <p className="text-slate-500 italic text-[11px]">« {disputeToResolve.description} »</p>
+            </div>
+
+            <div>
+              <label className="font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                Décision de l'Arbitre :
+              </label>
+              <select
+                value={arbitrationAction}
+                onChange={(e) => setArbitrationAction(e.target.value as any)}
+                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 font-semibold"
+              >
+                <option value="REFUND_TOTAL">Remboursement Intégral & Réintégration du Stock Usine</option>
+                <option value="REFUND_PARTIAL">Remboursement Partiel (Avoir commercial)</option>
+                <option value="FORCE_DELIVERY">Maintien de la Commande & Expédition Forcée</option>
+                <option value="DISMISSED">Rejet du Litige (POD conforme et non contestable)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                Motivation de la Sentence Arbitrale :
+              </label>
+              <textarea
+                rows={3}
+                value={arbitrationResolutionText}
+                onChange={(e) => setArbitrationResolutionText(e.target.value)}
+                placeholder="Indiquez les constatations matérielles et les motifs de la sentence..."
+                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" onClick={() => setDisputeToResolve(null)}>
+                Annuler
+              </Button>
+              <Button
+                variant="primary"
+                disabled={!arbitrationResolutionText.trim()}
+                onClick={() => {
+                  resolveOrderDispute(disputeToResolve.id, arbitrationResolutionText.trim(), arbitrationAction);
+                  notifyToast(`Litige ${disputeToResolve.disputeNumber} tranché : ${arbitrationAction}`, 'success');
+                  setDisputeToResolve(null);
+                }}
+              >
+                Prononcer la Sentence d'Arbitrage
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   );

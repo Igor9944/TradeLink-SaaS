@@ -340,6 +340,37 @@ export interface ProductItem {
 export interface CartItem {
   product: ProductItem;
   quantity: number;
+  unitPriceOverride?: string;
+  notes?: string;
+}
+
+export interface VerifiedCartItem {
+  productId: string;
+  sku: string;
+  name: string;
+  requestedQuantity: number;
+  availableStock: number;
+  minOrderQuantity: number;
+  unitPrice: string;
+  lineTotal: string;
+  currency: string;
+  isAvailable: boolean;
+  status: 'IN_STOCK' | 'PARTIAL_STOCK' | 'OUT_OF_STOCK' | 'PRICE_UPDATED' | 'BELOW_MOQ';
+  warningMessage?: string;
+}
+
+export interface CartValidationResult {
+  valid: boolean;
+  hasUnavailableItems: boolean;
+  unavailableCount: number;
+  items: VerifiedCartItem[];
+  subtotalAmount: string;
+  taxRatePct: string;
+  taxAmount: string;
+  shippingAmount: string;
+  totalAmount: string;
+  currency: string;
+  warnings: string[];
 }
 
 // ============================================================================
@@ -468,12 +499,21 @@ export interface StockValuationReport {
 export type OrderStatus =
   | 'DRAFT'
   | 'PENDING'
+  | 'PENDING_VALIDATION'
   | 'ACCEPTED'
+  | 'CONFIRMED'
+  | 'PENDING_PAYMENT'
+  | 'PAID'
   | 'PREPARING'
+  | 'IN_PREPARATION'
+  | 'READY_FOR_PICKUP'
   | 'SHIPPED'
+  | 'IN_TRANSIT'
   | 'DELIVERED'
+  | 'COMPLETED'
   | 'REFUSED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'DISPUTED';
 
 export interface OrderRecord {
   id: string;
@@ -506,9 +546,29 @@ export interface OrderRecord {
     timestamp: string;
     actor: string;
     completed: boolean;
+    note?: string;
   }[];
+  quoteId?: string;
+  quoteNumber?: string;
+  paymentStatus?: 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' | 'REFUNDED';
+  paidAmount?: string;
+  paymentMethod?: string;
+  disputeId?: string;
+  cancellationReason?: string;
+  trackingNumber?: string;
   authorizedRoomId?: string;
 }
+
+export type QuoteStatus =
+  | 'DRAFT'
+  | 'SENT'
+  | 'RFQ_SUBMITTED'
+  | 'RESPONDED'
+  | 'QUOTATION_ISSUED'
+  | 'ACCEPTED'
+  | 'CONVERTED'
+  | 'REFUSED'
+  | 'REJECTED';
 
 export interface QuoteRecord {
   id: string;
@@ -517,7 +577,7 @@ export interface QuoteRecord {
   clientName: string;
   supplierId: string;
   supplierName: string;
-  status: 'DRAFT' | 'SENT' | 'RESPONDED' | 'ACCEPTED' | 'CONVERTED' | 'REFUSED';
+  status: QuoteStatus;
   subtotalAmount: string;
   taxAmount: string;
   totalAmount: string;
@@ -531,7 +591,16 @@ export interface QuoteRecord {
     unitPrice: string;
     discountPct: string;
     totalLine: string;
+    productId?: string;
+    targetPrice?: string;
   }[];
+  incoterm?: string;
+  paymentTerms?: string;
+  specialInstructions?: string;
+  supplierNotes?: string;
+  rejectionReason?: string;
+  orderId?: string;
+  orderNumber?: string;
 }
 
 export interface InvoiceRecord {
@@ -554,21 +623,120 @@ export interface InvoiceRecord {
   paidAt?: string;
 }
 
+export type PaymentProvider =
+  | 'STRIPE'
+  | 'KONNECT'
+  | 'FLOUCI'
+  | 'CMI'
+  | 'WIRE_TRANSFER'
+  | 'LETTER_OF_CREDIT';
+
+export type PaymentStatus =
+  | 'PENDING'
+  | 'AUTHORIZED'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'CANCELLED'
+  | 'REFUNDED'
+  | 'PARTIALLY_REFUNDED';
+
 export interface PaymentRecord {
   id: string;
   paymentReference: string;
   invoiceId: string;
   invoiceNumber: string;
+  orderId?: string;
+  orderNumber?: string;
   clientId: string;
   supplierId: string;
-  provider: 'STRIPE' | 'WIRE_TRANSFER' | 'LETTER_OF_CREDIT';
+  provider: PaymentProvider;
   amount: string;
   currency: string;
-  status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'REFUNDED';
-  webhookEventId: string;
+  status: PaymentStatus;
+  webhookEventId?: string;
   idempotencyVerified: boolean;
+  idempotencyKey?: string;
   reconciled: boolean;
+  failureReason?: string;
+  refundedAmount?: string;
+  refundReason?: string;
+  receiptNumber?: string;
+  receiptUrl?: string;
+  rawProviderReference?: string;
+  metadata?: Record<string, string>;
   createdAt: string;
+  updatedAt?: string;
+}
+
+export interface PaymentReceiptRecord {
+  receiptNumber: string;
+  paymentId: string;
+  paymentReference: string;
+  orderId?: string;
+  orderNumber: string;
+  invoiceNumber: string;
+  clientId: string;
+  clientName: string;
+  supplierId: string;
+  supplierName: string;
+  amountPaid: string;
+  currency: string;
+  provider: PaymentProvider;
+  taxRate: string;
+  taxAmount: string;
+  issuedAt: string;
+  digitalSignatureSha256: string;
+}
+
+export type DisputeReason =
+  | 'NON_CONFORMING_PRODUCT'
+  | 'LATE_DELIVERY'
+  | 'DAMAGED_GOODS'
+  | 'PAYMENT_ISSUE'
+  | 'INCORRECT_QUANTITY'
+  | 'OTHER';
+
+export type DisputeStatus =
+  | 'OPEN'
+  | 'IN_MEDIATION'
+  | 'RESOLVED'
+  | 'REJECTED';
+
+export interface CommercialDisputeRecord {
+  id: string;
+  disputeNumber: string;
+  orderId: string;
+  orderNumber: string;
+  initiatorId: string;
+  initiatorName: string;
+  initiatorRole: UserRoleCode;
+  reason: DisputeReason;
+  description: string;
+  status: DisputeStatus;
+  resolution?: string;
+  arbitrationAction?: 'REFUND_TOTAL' | 'REFUND_PARTIAL' | 'FORCE_DELIVERY' | 'DISMISSED';
+  resolvedByUserId?: string;
+  resolvedByUserName?: string;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+export interface FinancialAnomalyRecord {
+  id: string;
+  anomalyType:
+    | 'PAYMENT_FAILURE'
+    | 'PRICE_TAMPERING_ATTEMPT'
+    | 'DOUBLE_PAYMENT_BLOCKED'
+    | 'WEBHOOK_SIGNATURE_INVALID'
+    | 'REPLAY_ATTACK_DETECTED'
+    | 'UNRESOLVED_DISPUTE'
+    | 'STOCK_OUT_DURING_CHECKOUT';
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  entityId: string;
+  entityType: 'ORDER' | 'PAYMENT' | 'INVOICE' | 'WEBHOOK' | 'CART';
+  description: string;
+  timestamp: string;
+  resolved: boolean;
 }
 
 export type ShipmentStatus =

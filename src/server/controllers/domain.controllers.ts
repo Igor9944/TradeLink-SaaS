@@ -878,6 +878,49 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, report);
     }
 
+    // ============================================================================
+    // 4A. PANIER CLIENT (Validation serveur, prix déterministes, devises, persistance)
+    // ============================================================================
+    if (method === 'POST' && path === '/api/v1/cart/validate') {
+      const user = ctx.user;
+      const { items, currency, vatRatePct, shippingFlatRate, persist } = ctx.body || {};
+      if (!Array.isArray(items)) {
+        throw new AppError(400, 'INVALID_CART_PAYLOAD', 'La liste items est obligatoire.');
+      }
+
+      const res = this.services.validateCartService({
+        items,
+        currency: currency ? String(currency) : 'EUR',
+        vatRatePct: vatRatePct ? String(vatRatePct) : '20.00',
+        shippingFlatRate: shippingFlatRate ? String(shippingFlatRate) : '650.00',
+        saveForUserId: persist && user ? user.id : undefined,
+      });
+
+      return this.ok(ctx, res, 200);
+    }
+
+    if (method === 'GET' && path === '/api/v1/cart') {
+      const user = requireAuthenticatedSession(ctx);
+      const cartItems = this.services.getPersistedCartService(user.id);
+      return this.ok(ctx, cartItems, 200);
+    }
+
+    if (method === 'PUT' && path === '/api/v1/cart') {
+      const user = requireAuthenticatedSession(ctx);
+      const items = ctx.body?.items;
+      if (!Array.isArray(items)) {
+        throw new AppError(400, 'INVALID_CART_ITEMS', 'items doit être un tableau d’articles.');
+      }
+      const saved = this.services.savePersistedCartService(user.id, items);
+      return this.ok(ctx, saved, 200);
+    }
+
+    if (method === 'DELETE' && path === '/api/v1/cart') {
+      const user = requireAuthenticatedSession(ctx);
+      this.services.savePersistedCartService(user.id, []);
+      return this.ok(ctx, { success: true, message: 'Panier réinitialisé.' }, 200);
+    }
+
     // 4. Commandes Transactionnelles, Ownership & Réservation de Stock
     if (method === 'GET' && path === '/api/v1/orders') {
       const user = requireAuthenticatedSession(ctx);
@@ -889,6 +932,81 @@ export class TradeLinkApiApplication {
         totalItems: res.totalItems,
         totalPages: res.totalPages,
       });
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/orders/') && path.endsWith('/status')) {
+      const user = requireAuthenticatedSession(ctx);
+      if (user.role === 'COMPTABLE') {
+        throw new AppError(
+          403,
+          'COMPTABLE_STAGE3_READONLY_SOURCE_DATA',
+          'Interdit (Stage 3 Cahier des Charges) : Le rôle COMPTABLE ne peut modifier aucune commande commerciale source.'
+        );
+      }
+      const parts = path.split('/');
+      const orderId = parts[parts.length - 2];
+      const { status, reason } = ctx.body || {};
+      if (!status) {
+        throw new AppError(400, 'STATUS_REQUIRED', 'Le statut cible est obligatoire.');
+      }
+
+      const updated = this.services.updateOrderStatusTransactional({
+        actor: user,
+        orderId,
+        targetStatus: status,
+        reason,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+
+      return this.ok(ctx, updated, 200);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/orders/') && path.endsWith('/cancel')) {
+      const user = requireAuthenticatedSession(ctx);
+      if (user.role === 'COMPTABLE') {
+        throw new AppError(
+          403,
+          'COMPTABLE_STAGE3_READONLY_SOURCE_DATA',
+          'Interdit (Stage 3 Cahier des Charges) : Le rôle COMPTABLE ne peut modifier aucune commande commerciale source.'
+        );
+      }
+      const parts = path.split('/');
+      const orderId = parts[parts.length - 2];
+      const { reason } = ctx.body || {};
+
+      const updated = this.services.updateOrderStatusTransactional({
+        actor: user,
+        orderId,
+        targetStatus: 'CANCELLED',
+        reason: reason || 'Annulation demandée par l’utilisateur',
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+
+      return this.ok(ctx, updated, 200);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/orders/') && path.endsWith('/disputes')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR']);
+      const parts = path.split('/');
+      const orderId = parts[parts.length - 2];
+      const { reason, description } = ctx.body || {};
+      if (!reason || !description) {
+        throw new AppError(400, 'DISPUTE_FIELDS_REQUIRED', 'reason et description sont obligatoires.');
+      }
+
+      const result = this.services.openOrderDisputeTransactional({
+        actor: user,
+        orderId,
+        reason,
+        description,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+
+      return this.ok(ctx, result, 201);
     }
 
     if (method === 'GET' && path.startsWith('/api/v1/orders/')) {
@@ -963,6 +1081,41 @@ export class TradeLinkApiApplication {
         ipAddress: ctx.ipAddress,
       });
       return this.ok(ctx, quote, 201);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/quotes/') && !path.includes('/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const quoteId = path.split('/').pop() || '';
+      const quote = this.repo.findQuoteById(quoteId);
+      if (!quote) {
+        throw new AppError(404, 'QUOTE_NOT_FOUND', 'Devis introuvable.');
+      }
+      enforceRBACAndOwnership(
+        ctx,
+        ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN'],
+        user.role === 'CLIENT' ? quote.clientId : user.role === 'FOURNISSEUR' ? quote.supplierId : undefined
+      );
+      return this.ok(ctx, quote);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/quotes/') && path.endsWith('/reject')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'ADMIN']);
+      const parts = path.split('/');
+      const quoteId = parts[parts.length - 2];
+      const { reason } = ctx.body || {};
+      if (!reason) {
+        throw new AppError(400, 'REJECTION_REASON_REQUIRED', 'Un motif explicite de refus est obligatoire.');
+      }
+
+      const res = this.services.rejectQuoteTransactional({
+        actor: user,
+        quoteId,
+        reason: String(reason),
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res);
     }
 
     if (method === 'PUT' && path.startsWith('/api/v1/quotes/') && path.endsWith('/respond')) {
@@ -1098,6 +1251,166 @@ export class TradeLinkApiApplication {
           ? allPayments.filter((p) => p.supplierId === user.id)
           : allPayments;
       return this.ok(ctx, scoped);
+    }
+
+    // ============================================================================
+    // 4D. PAIEMENTS MULTI-PRESTATAIRES (Stripe, Konnect, Flouci, CMI, Virement)
+    // ============================================================================
+    if (method === 'POST' && path === '/api/v1/payments/initiate') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'ADMIN']);
+      const { orderId, invoiceId, provider, customerEmail, currency } = ctx.body || {};
+      if (!orderId || !provider) {
+        throw new AppError(400, 'PAYMENT_INITIATE_VALIDATION', 'orderId et provider sont obligatoires.');
+      }
+
+      const idempotencyKey = ctx.headers['idempotency-key'] as string | undefined;
+
+      const session = this.services.initiateMultiProviderPaymentTransactional({
+        actor: user,
+        orderId: String(orderId),
+        invoiceId: invoiceId ? String(invoiceId) : undefined,
+        provider,
+        customerEmail: customerEmail || user.email,
+        currency,
+        idempotencyKey,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+
+      return this.ok(ctx, session, 201);
+    }
+
+    if (method === 'POST' && path === '/api/v1/payments/confirm') {
+      const user = requireAuthenticatedSession(ctx);
+      const { paymentId, providerTxId } = ctx.body || {};
+      if (!paymentId) {
+        throw new AppError(400, 'PAYMENT_ID_REQUIRED', 'paymentId est obligatoire.');
+      }
+
+      const result = this.services.confirmPaymentTransactional({
+        actor: user,
+        paymentId: String(paymentId),
+        providerTxId,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+
+      return this.ok(ctx, result, 200);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/payments/') && path.endsWith('/refund')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['ADMIN', 'COMPTABLE']);
+      const parts = path.split('/');
+      const paymentId = parts[parts.length - 2];
+      const { refundAmountStr, reason } = ctx.body || {};
+
+      const result = this.services.refundPaymentTransactional({
+        actor: user,
+        paymentId,
+        refundAmountStr: refundAmountStr ? String(refundAmountStr) : undefined,
+        reason: reason ? String(reason) : undefined,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+
+      return this.ok(ctx, result, 200);
+    }
+
+    if (method === 'GET' && path === '/api/v1/payments/receipts') {
+      const user = requireAuthenticatedSession(ctx);
+      const receipts = this.repo.getPaymentReceiptsForActor(user.id, user.role);
+      return this.ok(ctx, receipts, 200);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/payments/') && path.endsWith('/receipt')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const paymentId = parts[parts.length - 2];
+      const receipts = this.repo.getPaymentReceiptsForActor(user.id, user.role);
+      const receipt = receipts.find((r) => r.paymentId === paymentId || r.paymentReference === paymentId);
+      if (!receipt) {
+        throw new AppError(404, 'RECEIPT_NOT_FOUND', 'Quittance de paiement introuvable.');
+      }
+      return this.ok(ctx, receipt, 200);
+    }
+
+    // ============================================================================
+    // 4E. WEBHOOKS DE PAIEMENT SÉCURISÉS (HMAC-SHA256 & Anti-Rejeu)
+    // ============================================================================
+    if (method === 'POST' && path.startsWith('/api/v1/webhooks/payments/')) {
+      const provider = path.split('/').pop()?.toUpperCase() as any;
+      const signatureHeader = (
+        ctx.headers['stripe-signature'] ||
+        ctx.headers['x-tradelink-signature'] ||
+        ctx.headers['x-konnect-signature'] ||
+        ctx.headers['x-flouci-signature'] ||
+        ctx.headers['x-cmi-signature'] ||
+        ctx.headers['x-signature'] ||
+        ''
+      ) as string;
+
+      const timestampHeader = (
+        ctx.headers['x-timestamp'] ||
+        ctx.headers['x-tradelink-timestamp']
+      ) as string | undefined;
+
+      const webhookSecret = `whsec_${provider ? String(provider).toLowerCase() : 'gateway'}_secret_key_v6`;
+
+      const result = this.services.processSecureMultiProviderWebhookTransactional({
+        provider,
+        rawPayload: ctx.body,
+        signatureHeader,
+        timestampHeader,
+        webhookSecret,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+
+      return this.ok(ctx, result, 200);
+    }
+
+    // ============================================================================
+    // 4F. GESTION DES LITIGES (DISPUTES) & ARBITRAGE ADMINISTRATEUR
+    // ============================================================================
+    if (method === 'GET' && path === '/api/v1/disputes') {
+      const user = requireAuthenticatedSession(ctx);
+      const pagination = validatePaginationAndFilters(ctx.query);
+      const disputes = this.repo.getDisputesForActor(user.id, user.role, pagination);
+      return this.ok(ctx, disputes, 200);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/disputes/') && path.endsWith('/resolve')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
+      const parts = path.split('/');
+      const disputeId = parts[parts.length - 2];
+      const { resolution, action } = ctx.body || {};
+      if (!resolution || !action) {
+        throw new AppError(400, 'RESOLUTION_PARAMS_REQUIRED', 'resolution et action sont obligatoires.');
+      }
+
+      const result = this.services.resolveOrderDisputeTransactional({
+        actor: user,
+        disputeId,
+        resolution: String(resolution),
+        action,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+
+      return this.ok(ctx, result, 200);
+    }
+
+    // ============================================================================
+    // 4G. VUE GLOBALE DU CYCLE COMMERCIAL ADMINISTRATEUR
+    // ============================================================================
+    if (method === 'GET' && path === '/api/v1/commercial/admin/overview') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['ADMIN', 'COMPTABLE']);
+      const overview = this.services.getCommercialOverviewAdmin({ actor: user });
+      return this.ok(ctx, overview, 200);
     }
 
     // 5. MODULE KYC COMPLET (PROMPT 6 — Référentiel par profil, Upload chiffré, Prévisualisation KMS, Commentaires, Décisions Admin & Cron J+1/J+3/J+5/J+6/J+7)

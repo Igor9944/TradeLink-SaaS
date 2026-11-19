@@ -44,6 +44,10 @@ import {
   PhysicalInventorySession,
   StockAlertRecord,
   StockValuationReport,
+  CartItem,
+  CommercialDisputeRecord,
+  FinancialAnomalyRecord,
+  PaymentReceiptRecord,
 } from '../../types';
 import { defaultCatalogEngine } from '../../services/catalogEngine';
 import { defaultStockEngine } from '../../services/stockEngine';
@@ -73,6 +77,9 @@ export interface DatabaseStateSnapshot {
   quotes?: QuoteRecord[];
   invoices?: InvoiceRecord[];
   payments?: PaymentRecord[];
+  disputes?: CommercialDisputeRecord[];
+  financialAnomalies?: FinancialAnomalyRecord[];
+  paymentReceipts?: PaymentReceiptRecord[];
   shipments?: ShipmentRecord[];
   incidents?: IncidentRecord[];
   stockMovements?: StockMovementRecord[];
@@ -103,6 +110,7 @@ export class TradeLinkRepositoryStore {
   private notificationPreferencesStore: Map<string, NotificationPreferencesRecord> = new Map();
   private conversationsStore: Map<string, ConversationRecord> = new Map();
   private messagesStore: Map<string, ConversationMessageRecord[]> = new Map();
+  private userCartsStore: Map<string, CartItem[]> = new Map();
 
   constructor(initialState: DatabaseStateSnapshot, isProdDbConnected = false) {
     this.state = structuredClone({
@@ -110,6 +118,9 @@ export class TradeLinkRepositoryStore {
       quotes: initialState.quotes ?? [],
       invoices: initialState.invoices ?? [],
       payments: initialState.payments ?? [],
+      disputes: initialState.disputes ?? [],
+      financialAnomalies: initialState.financialAnomalies ?? [],
+      paymentReceipts: initialState.paymentReceipts ?? [],
       shipments: initialState.shipments ?? [],
       incidents: initialState.incidents ?? [],
       stockMovements: initialState.stockMovements ?? [],
@@ -886,5 +897,231 @@ export class TradeLinkRepositoryStore {
 
   public getStockValuationReport(supplierId?: string): StockValuationReport {
     return defaultStockEngine.getValuationReport(supplierId);
+  }
+
+  // ============================================================================
+  // CYCLE COMMERCIAL : DEVIS, COMMANDES, PAIEMENTS & LITIGES (PROMPT 11)
+  // ============================================================================
+
+  public getActiveQuotesForActor(actorId: string, role: string, params: PaginationAndFilterParams) {
+    const quotes = this.state.quotes || [];
+    const scoped =
+      role === 'ADMIN' || role === 'COMPTABLE'
+        ? quotes
+        : role === 'CLIENT'
+        ? quotes.filter((q) => q.clientId === actorId)
+        : role === 'FOURNISSEUR'
+        ? quotes.filter((q) => q.supplierId === actorId)
+        : quotes;
+
+    const filtered = params.status
+      ? scoped.filter((q) => q.status === params.status)
+      : scoped;
+
+    const totalItems = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / params.limit));
+    const items = filtered.slice((params.page - 1) * params.limit, params.page * params.limit);
+    return { items, page: params.page, limit: params.limit, totalItems, totalPages };
+  }
+
+  public findQuoteById(id: string): QuoteRecord | null {
+    return (this.state.quotes || []).find((q) => q.id === id) ?? null;
+  }
+
+  public findQuoteByNumber(quoteNumber: string): QuoteRecord | null {
+    return (this.state.quotes || []).find((q) => q.quoteNumber === quoteNumber) ?? null;
+  }
+
+  public getActivePaymentsForActor(actorId: string, role: string, params: PaginationAndFilterParams) {
+    const payments = this.state.payments || [];
+    const scoped =
+      role === 'ADMIN' || role === 'COMPTABLE'
+        ? payments
+        : role === 'CLIENT'
+        ? payments.filter((p) => p.clientId === actorId)
+        : role === 'FOURNISSEUR'
+        ? payments.filter((p) => p.supplierId === actorId)
+        : payments;
+
+    const filtered = params.status
+      ? scoped.filter((p) => p.status === params.status)
+      : scoped;
+
+    const totalItems = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / params.limit));
+    const items = filtered.slice((params.page - 1) * params.limit, params.page * params.limit);
+    return { items, page: params.page, limit: params.limit, totalItems, totalPages };
+  }
+
+  public findPaymentById(id: string): PaymentRecord | null {
+    return (this.state.payments || []).find((p) => p.id === id) ?? null;
+  }
+
+  public findPaymentByReference(ref: string): PaymentRecord | null {
+    return (this.state.payments || []).find((p) => p.paymentReference === ref) ?? null;
+  }
+
+  public findInvoiceById(id: string): InvoiceRecord | null {
+    return (this.state.invoices || []).find((i) => i.id === id) ?? null;
+  }
+
+  public findInvoiceByOrderId(orderId: string): InvoiceRecord | null {
+    return (this.state.invoices || []).find((i) => i.orderId === orderId) ?? null;
+  }
+
+  public getDisputesForActor(actorId: string, role: string, params?: PaginationAndFilterParams) {
+    const disputes = this.state.disputes || [];
+    const scoped =
+      role === 'ADMIN' || role === 'COMPTABLE'
+        ? disputes
+        : role === 'CLIENT'
+        ? disputes.filter((d) => d.initiatorId === actorId)
+        : role === 'FOURNISSEUR'
+        ? disputes.filter((d) => {
+            const ord = (this.state.orders || []).find((o) => o.id === d.orderId);
+            return ord?.supplierId === actorId;
+          })
+        : disputes;
+
+    if (!params) return scoped;
+
+    const filtered = params.status
+      ? scoped.filter((d) => d.status === params.status)
+      : scoped;
+
+    const totalItems = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / params.limit));
+    const items = filtered.slice((params.page - 1) * params.limit, params.page * params.limit);
+    return { items, page: params.page, limit: params.limit, totalItems, totalPages };
+  }
+
+  public findDisputeById(id: string): CommercialDisputeRecord | null {
+    return (this.state.disputes || []).find((d) => d.id === id) ?? null;
+  }
+
+  public saveDispute(dispute: CommercialDisputeRecord): CommercialDisputeRecord {
+    const idx = (this.state.disputes || []).findIndex((d) => d.id === dispute.id);
+    if (idx !== -1) {
+      this.state.disputes[idx] = structuredClone(dispute);
+    } else {
+      this.state.disputes.unshift(structuredClone(dispute));
+    }
+    return structuredClone(dispute);
+  }
+
+  public getFinancialAnomalies(params?: { unresolvedOnly?: boolean }): FinancialAnomalyRecord[] {
+    const list = this.state.financialAnomalies || [];
+    if (params?.unresolvedOnly) {
+      return list.filter((a) => !a.resolved);
+    }
+    return structuredClone(list);
+  }
+
+  public saveFinancialAnomaly(anomaly: FinancialAnomalyRecord): FinancialAnomalyRecord {
+    const idx = (this.state.financialAnomalies || []).findIndex((a) => a.id === anomaly.id);
+    if (idx !== -1) {
+      this.state.financialAnomalies[idx] = structuredClone(anomaly);
+    } else {
+      this.state.financialAnomalies.unshift(structuredClone(anomaly));
+    }
+    return structuredClone(anomaly);
+  }
+
+  public getPaymentReceiptsForActor(actorId: string, role: string): PaymentReceiptRecord[] {
+    const receipts = this.state.paymentReceipts || [];
+    if (role === 'ADMIN' || role === 'COMPTABLE') {
+      return structuredClone(receipts);
+    }
+    if (role === 'CLIENT') {
+      return structuredClone(receipts.filter((r) => r.clientId === actorId));
+    }
+    if (role === 'FOURNISSEUR') {
+      return structuredClone(receipts.filter((r) => r.supplierId === actorId));
+    }
+    return [];
+  }
+
+  public findPaymentReceiptByNumber(receiptNumber: string): PaymentReceiptRecord | null {
+    return (this.state.paymentReceipts || []).find((r) => r.receiptNumber === receiptNumber) ?? null;
+  }
+
+  public savePaymentReceipt(receipt: PaymentReceiptRecord): PaymentReceiptRecord {
+    const idx = (this.state.paymentReceipts || []).findIndex((r) => r.receiptNumber === receipt.receiptNumber);
+    if (idx !== -1) {
+      this.state.paymentReceipts[idx] = structuredClone(receipt);
+    } else {
+      this.state.paymentReceipts.unshift(structuredClone(receipt));
+    }
+    return structuredClone(receipt);
+  }
+
+  public getUserCart(userId: string): CartItem[] {
+    return structuredClone(this.userCartsStore.get(userId) || []);
+  }
+
+  public saveUserCart(userId: string, items: CartItem[]): CartItem[] {
+    this.userCartsStore.set(userId, structuredClone(items));
+    return structuredClone(items);
+  }
+
+  public saveProduct(product: ProductItem): ProductItem {
+    const idx = this.state.products.findIndex((p) => p.id === product.id);
+    if (idx !== -1) {
+      this.state.products[idx] = structuredClone(product);
+    } else {
+      this.state.products.unshift(structuredClone(product));
+    }
+    return structuredClone(product);
+  }
+
+  public findProductById(id: string): ProductItem | null {
+    return this.state.products.find((p) => p.id === id && !p.deletedAt) ?? null;
+  }
+
+  public saveOrder(order: OrderRecord): OrderRecord {
+    const idx = this.state.orders.findIndex((o) => o.id === order.id);
+    if (idx !== -1) {
+      this.state.orders[idx] = structuredClone(order);
+    } else {
+      this.state.orders.unshift(structuredClone(order));
+    }
+    return structuredClone(order);
+  }
+
+  public findOrderById(id: string): OrderRecord | null {
+    return this.state.orders.find((o) => o.id === id && !o.deletedAt) ?? null;
+  }
+
+  public saveQuote(quote: QuoteRecord): QuoteRecord {
+    if (!this.state.quotes) this.state.quotes = [];
+    const idx = this.state.quotes.findIndex((q) => q.id === quote.id);
+    if (idx !== -1) {
+      this.state.quotes[idx] = structuredClone(quote);
+    } else {
+      this.state.quotes.unshift(structuredClone(quote));
+    }
+    return structuredClone(quote);
+  }
+
+  public saveInvoice(invoice: InvoiceRecord): InvoiceRecord {
+    if (!this.state.invoices) this.state.invoices = [];
+    const idx = this.state.invoices.findIndex((i) => i.id === invoice.id);
+    if (idx !== -1) {
+      this.state.invoices[idx] = structuredClone(invoice);
+    } else {
+      this.state.invoices.unshift(structuredClone(invoice));
+    }
+    return structuredClone(invoice);
+  }
+
+  public savePayment(payment: PaymentRecord): PaymentRecord {
+    if (!this.state.payments) this.state.payments = [];
+    const idx = this.state.payments.findIndex((p) => p.id === payment.id);
+    if (idx !== -1) {
+      this.state.payments[idx] = structuredClone(payment);
+    } else {
+      this.state.payments.unshift(structuredClone(payment));
+    }
+    return structuredClone(payment);
   }
 }

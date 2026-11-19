@@ -101,6 +101,14 @@ import {
   StockAlertRecord,
   StockValuationReport,
   StockMovementType,
+  OrderStatus,
+  PaymentProvider,
+  PaymentRecord,
+  PaymentReceiptRecord,
+  CommercialDisputeRecord,
+  DisputeReason,
+  CartValidationResult,
+  CartItem,
 } from '../../types';
 import {
   defaultStockEngine,
@@ -142,6 +150,8 @@ import {
   StockMovementRecord as LegacyCommercialStockMovementRecord,
   StripeCheckoutSessionSimulated,
   StripeWebhookPayloadSimulated,
+  GenericPaymentSession,
+  defaultIdempotencyStore,
 } from '../../services/commercialEngine';
 import {
   INITIAL_SHIPMENT_WAYPOINTS,
@@ -3625,6 +3635,825 @@ export class TradeLinkDomainServices {
         order: result.updatedOrder,
       };
     });
+  }
+
+  // ============================================================================
+  // PROMPT 11 : CYCLE COMMERCIAL CENTRALISÉ (PANIER, DEVIS, COMMANDES & PAIEMENTS)
+  // ============================================================================
+
+  public validateCartService(params: {
+    items: { productId: string; quantity: number }[];
+    currency?: string;
+    vatRatePct?: string;
+    shippingFlatRate?: string;
+    saveForUserId?: string;
+  }): CartValidationResult {
+    const products = this.repo.getSnapshot().products.filter((p) => !p.deletedAt);
+    const result = CommercialEngine.validateCart(
+      params.items,
+      products,
+      params.currency || 'EUR',
+      params.vatRatePct || '20.00',
+      params.shippingFlatRate || '650.00'
+    );
+
+    if (params.saveForUserId) {
+      const cartItemsToPersist: CartItem[] = result.items.map((vi) => {
+        const prod = products.find((p) => p.id === vi.productId) || products[0];
+        return {
+          product: prod,
+          quantity: vi.requestedQuantity,
+        };
+      });
+      this.repo.saveUserCart(params.saveForUserId, cartItemsToPersist);
+    }
+
+    return result;
+  }
+
+  public getPersistedCartService(userId: string): CartItem[] {
+    return this.repo.getUserCart(userId);
+  }
+
+  public savePersistedCartService(userId: string, items: CartItem[]): CartItem[] {
+    return this.repo.saveUserCart(userId, items);
+  }
+
+  public updateOrderStatusTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    orderId: string;
+    targetStatus: OrderStatus;
+    reason?: string;
+    correlationId: string;
+    ipAddress: string;
+  }): OrderRecord {
+    if (params.actor.role === 'COMPTABLE') {
+      throw new AppError(
+        403,
+        'COMPTABLE_STAGE3_READONLY_SOURCE_DATA',
+        'Interdit (Stage 3 Cahier des Charges) : Le rôle COMPTABLE ne peut modifier aucune commande commerciale source.'
+      );
+    }
+
+    return this.repo.executeTransaction((tx) => {
+      const order = tx.orders.find((o) => o.id === params.orderId && !o.deletedAt);
+      if (!order) {
+        throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande introuvable.');
+      }
+
+      // Contrôle de propriété ou de rôle
+      if (params.actor.role === 'CLIENT' && order.clientId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez modifier que vos propres commandes.');
+      }
+      if (params.actor.role === 'FOURNISSEUR' && order.supplierId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez modifier que les commandes qui vous sont attribuées.');
+      }
+
+      // Validation de la transition d'état
+      CommercialEngine.assertOrderTransition(order.status, params.targetStatus);
+
+      const previousStatus = order.status;
+      order.status = params.targetStatus;
+
+      order.timeline.push({
+        step: `Statut mis à jour : ${previousStatus} ➔ ${params.targetStatus}`,
+        timestamp: new Date().toISOString(),
+        actor: `${params.actor.email} (${params.actor.role})`,
+        completed: true,
+        note: params.reason,
+      });
+
+      // Synchronisation automatique des stocks selon la transition
+      if (params.targetStatus === 'CANCELLED') {
+        order.cancellationReason = params.reason || 'Annulation commerciale';
+        // Libérer les réservations de stock associées si existantes
+        try {
+          defaultStockEngine.releaseReservation({
+            orderId: order.id,
+            actor: {
+              id: params.actor.id,
+              name: params.actor.email,
+              role: params.actor.role,
+            },
+            reason: params.reason || 'Annulation de la commande',
+          });
+        } catch (err: any) {
+          if (err?.code !== 'NO_ACTIVE_RESERVATION_FOUND') {
+            throw err;
+          }
+        }
+
+        // Restaurer le stock dans le snapshot
+        for (const item of order.items) {
+          const prod = tx.products.find((p) => p.id === item.productId && !p.deletedAt);
+          if (prod) {
+            prod.stockReserved = Math.max(0, prod.stockReserved - item.quantity);
+            prod.stockAvailable += item.quantity;
+            prod.stockOrdered = Math.max(0, (prod.stockOrdered || 0) - item.quantity);
+          }
+        }
+      } else if (params.targetStatus === 'SHIPPED') {
+        // Confirmation de sortie définitive du stock réservé si existant
+        try {
+          defaultStockEngine.fulfillReservation({
+            orderId: order.id,
+            actor: {
+              id: params.actor.id,
+              name: params.actor.email,
+              role: params.actor.role,
+            },
+          });
+        } catch (err: any) {
+          if (err?.code !== 'NO_ACTIVE_RESERVATION_FOUND') {
+            throw err;
+          }
+        }
+
+        for (const item of order.items) {
+          const prod = tx.products.find((p) => p.id === item.productId && !p.deletedAt);
+          if (prod) {
+            prod.stockReserved = Math.max(0, prod.stockReserved - item.quantity);
+            prod.stockShipped = (prod.stockShipped || 0) + item.quantity;
+          }
+        }
+      }
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'ORDER_STATUS_TRANSITION',
+        targetType: 'Order',
+        targetId: order.orderNumber,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Commande ${order.orderNumber} passée de ${previousStatus} à ${params.targetStatus}.${params.reason ? ` Motif: ${params.reason}` : ''}`,
+      });
+
+      // Notification multi-acteurs
+      const notifStatus = params.targetStatus === 'CANCELLED'
+        ? 'CANCELLED'
+        : params.targetStatus === 'SHIPPED'
+        ? 'SHIPPED'
+        : params.targetStatus === 'DELIVERED'
+        ? 'DELIVERED'
+        : 'CONFIRMED';
+
+      const orderNotif = defaultNotificationDispatcher.createOrderNotification({
+        userId: params.actor.role === 'CLIENT' ? order.supplierId : order.clientId,
+        orderNumber: order.orderNumber,
+        status: notifStatus,
+        totalAmount: order.totalAmount,
+        currency: order.currency,
+      });
+      defaultNotificationDispatcher.dispatch({ notification: orderNotif });
+
+      return order;
+    });
+  }
+
+  public rejectQuoteTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    quoteId: string;
+    reason: string;
+    correlationId: string;
+    ipAddress: string;
+  }): QuoteRecord {
+    return this.repo.executeTransaction((tx) => {
+      const quote = tx.quotes.find((q) => q.id === params.quoteId);
+      if (!quote) {
+        throw new AppError(404, 'QUOTE_NOT_FOUND', 'Devis introuvable.');
+      }
+      if (params.actor.role === 'CLIENT' && quote.clientId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez refuser que vos propres devis.');
+      }
+
+      const updated = CommercialEngine.rejectQuote(quote, params.actor.id, params.reason);
+      const idx = tx.quotes.findIndex((q) => q.id === updated.id);
+      if (idx !== -1) {
+        tx.quotes[idx] = updated;
+      }
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'QUOTE_REJECTED_BY_CLIENT',
+        targetType: 'Quote',
+        targetId: updated.quoteNumber,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Devis ${updated.quoteNumber} refusé par le client. Motif: ${params.reason}`,
+      });
+
+      const quoteNotif = defaultNotificationDispatcher.createQuoteNotification({
+        userId: quote.supplierId,
+        quoteNumber: quote.quoteNumber,
+        action: 'REJECTED',
+      });
+      defaultNotificationDispatcher.dispatch({ notification: quoteNotif });
+
+      return updated;
+    });
+  }
+
+  public initiateMultiProviderPaymentTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    orderId: string;
+    invoiceId?: string;
+    provider: PaymentProvider;
+    customerEmail: string;
+    currency?: string;
+    idempotencyKey?: string;
+    correlationId: string;
+    ipAddress: string;
+  }): GenericPaymentSession {
+    // Vérification de la clé d'idempotence pour éviter tout double prélèvement
+    if (params.idempotencyKey) {
+      const cached = defaultIdempotencyStore.get<GenericPaymentSession>(`pay-init-${params.idempotencyKey}`);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    return this.repo.executeTransaction((tx) => {
+      const order = tx.orders.find((o) => o.id === params.orderId && !o.deletedAt);
+      if (!order) {
+        throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande introuvable.');
+      }
+
+      // Trouver ou générer la facture correspondante
+      let invoice = tx.invoices.find((i) => i.id === params.invoiceId || i.orderId === order.id);
+      if (!invoice) {
+        invoice = CommercialEngine.generateInvoiceFromOrder(order);
+        tx.invoices.unshift(invoice);
+      }
+
+      if (invoice.status === 'PAID') {
+        throw new AppError(
+          409,
+          'PAYMENT_ALREADY_SETTLED',
+          `La commande ${order.orderNumber} et la facture ${invoice.invoiceNumber} sont déjà intégralement payées.`
+        );
+      }
+
+      const session = CommercialEngine.initiatePaymentSession(
+        order,
+        invoice,
+        params.provider,
+        params.customerEmail,
+        params.currency
+      );
+
+      // Création d'un enregistrement de paiement PENDING
+      const paymentRecord: PaymentRecord = {
+        id: `pay-${Date.now()}`,
+        paymentReference: `PAY-${params.provider}-${order.orderNumber.replace('CMD-', '')}`,
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        clientId: order.clientId,
+        supplierId: order.supplierId,
+        provider: params.provider,
+        amount: session.amount,
+        currency: session.currency,
+        status: 'PENDING',
+        idempotencyKey: params.idempotencyKey,
+        idempotencyVerified: Boolean(params.idempotencyKey),
+        reconciled: false,
+        createdAt: new Date().toISOString(),
+      };
+
+      tx.payments.unshift(paymentRecord);
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'PAYMENT_SESSION_INITIATED',
+        targetType: 'Payment',
+        targetId: session.sessionId,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Session de paiement ${params.provider} initiée pour ${order.orderNumber} (${session.amount} ${session.currency}).`,
+      });
+
+      if (params.idempotencyKey) {
+        defaultIdempotencyStore.set(`pay-init-${params.idempotencyKey}`, session);
+      }
+
+      return session;
+    });
+  }
+
+  public confirmPaymentTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    paymentId: string;
+    providerTxId?: string;
+    correlationId: string;
+    ipAddress: string;
+  }): {
+    payment: PaymentRecord;
+    invoice: InvoiceRecord;
+    order: OrderRecord;
+    receipt: PaymentReceiptRecord;
+  } {
+    return this.repo.executeTransaction((tx) => {
+      const payment = tx.payments.find((p) => p.id === params.paymentId || p.paymentReference === params.paymentId);
+      if (!payment) {
+        throw new AppError(404, 'PAYMENT_NOT_FOUND', 'Paiement introuvable.');
+      }
+      if (payment.status === 'SUCCEEDED') {
+        throw new AppError(409, 'PAYMENT_ALREADY_SUCCEEDED', 'Ce paiement a déjà été validé sans double débit.');
+      }
+
+      const invoice = tx.invoices.find((i) => i.id === payment.invoiceId);
+      if (!invoice) {
+        throw new AppError(404, 'INVOICE_NOT_FOUND', 'Facture associée introuvable.');
+      }
+
+      const order = tx.orders.find((o) => o.id === invoice.orderId && !o.deletedAt);
+      if (!order) {
+        throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande associée introuvable.');
+      }
+
+      const { updatedPayment, updatedInvoice, updatedOrder, receipt } = CommercialEngine.confirmPayment(
+        payment,
+        order,
+        invoice,
+        params.providerTxId
+      );
+
+      // Mettre à jour dans tx
+      const pIdx = tx.payments.findIndex((p) => p.id === updatedPayment.id);
+      if (pIdx !== -1) tx.payments[pIdx] = updatedPayment;
+
+      const iIdx = tx.invoices.findIndex((i) => i.id === updatedInvoice.id);
+      if (iIdx !== -1) tx.invoices[iIdx] = updatedInvoice;
+
+      const oIdx = tx.orders.findIndex((o) => o.id === updatedOrder.id);
+      if (oIdx !== -1) tx.orders[oIdx] = updatedOrder;
+
+      // Sauvegarder la quittance certifiée
+      this.repo.savePaymentReceipt(receipt);
+
+      // Générer l'écriture comptable automatique
+      const cashEntry = AccountingEngine.createPaymentCashEntry(
+        updatedPayment,
+        '1.20',
+        '0.15',
+        `${params.actor.email} (${params.actor.role})`
+      );
+      tx.accountingEntries.unshift(cashEntry);
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'PAYMENT_CONFIRMED_SUCCESSFULLY',
+        targetType: 'Payment',
+        targetId: updatedPayment.paymentReference,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Paiement ${updatedPayment.paymentReference} (${updatedPayment.amount} ${updatedPayment.currency}) validé. Reçu ${receipt.receiptNumber} émis.`,
+      });
+
+      // Notification au client
+      const payNotif = defaultNotificationDispatcher.createPaymentNotification({
+        userId: order.clientId,
+        invoiceNumber: invoice.invoiceNumber,
+        status: 'PAYMENT_RECEIVED',
+        amount: updatedPayment.amount,
+        currency: updatedPayment.currency,
+      });
+      defaultNotificationDispatcher.dispatch({ notification: payNotif });
+
+      return { payment: updatedPayment, invoice: updatedInvoice, order: updatedOrder, receipt };
+    });
+  }
+
+  public refundPaymentTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    paymentId: string;
+    refundAmountStr?: string;
+    reason?: string;
+    correlationId: string;
+    ipAddress: string;
+  }): {
+    payment: PaymentRecord;
+    invoice: InvoiceRecord;
+    order: OrderRecord;
+    refundedAmount: string;
+    isFullRefund: boolean;
+  } {
+    if (params.actor.role !== 'ADMIN' && params.actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN_REFUND_OPERATION', 'Seul un Administrateur ou un Comptable peut autoriser un remboursement.');
+    }
+
+    return this.repo.executeTransaction((tx) => {
+      const payment = tx.payments.find((p) => p.id === params.paymentId || p.paymentReference === params.paymentId);
+      if (!payment) {
+        throw new AppError(404, 'PAYMENT_NOT_FOUND', 'Paiement introuvable.');
+      }
+
+      const invoice = tx.invoices.find((i) => i.id === payment.invoiceId);
+      if (!invoice) {
+        throw new AppError(404, 'INVOICE_NOT_FOUND', 'Facture associée introuvable.');
+      }
+
+      const order = tx.orders.find((o) => o.id === invoice.orderId && !o.deletedAt);
+      if (!order) {
+        throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande associée introuvable.');
+      }
+
+      const result = CommercialEngine.refundPayment(
+        payment,
+        invoice,
+        order,
+        params.refundAmountStr,
+        params.reason || 'Remboursement autorisé par la direction financière'
+      );
+
+      const pIdx = tx.payments.findIndex((p) => p.id === result.updatedPayment.id);
+      if (pIdx !== -1) tx.payments[pIdx] = result.updatedPayment;
+
+      const iIdx = tx.invoices.findIndex((i) => i.id === result.updatedInvoice.id);
+      if (iIdx !== -1) tx.invoices[iIdx] = result.updatedInvoice;
+
+      const oIdx = tx.orders.findIndex((o) => o.id === result.updatedOrder.id);
+      if (oIdx !== -1) tx.orders[oIdx] = result.updatedOrder;
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'PAYMENT_REFUNDED',
+        targetType: 'Payment',
+        targetId: result.updatedPayment.paymentReference,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Remboursement de ${result.refundedAmount} ${payment.currency} validé (${result.isFullRefund ? 'Total' : 'Partiel'}). Motif: ${params.reason}`,
+      });
+
+      const refundNotif = defaultNotificationDispatcher.createPaymentNotification({
+        userId: order.clientId,
+        invoiceNumber: invoice.invoiceNumber,
+        status: 'REFUNDED',
+        amount: result.refundedAmount,
+        currency: payment.currency,
+      });
+      defaultNotificationDispatcher.dispatch({ notification: refundNotif });
+
+      return {
+        payment: result.updatedPayment,
+        invoice: result.updatedInvoice,
+        order: result.updatedOrder,
+        refundedAmount: result.refundedAmount,
+        isFullRefund: result.isFullRefund,
+      };
+    });
+  }
+
+  public processSecureMultiProviderWebhookTransactional(params: {
+    provider: PaymentProvider;
+    rawPayload: string | object;
+    signatureHeader: string;
+    timestampHeader?: string | number;
+    webhookSecret: string;
+    correlationId: string;
+    ipAddress: string;
+  }): {
+    status: 'PROCESSED' | 'IDEMPOTENT_REPLAY';
+    paymentId?: string;
+    orderId?: string;
+  } {
+    // Vérification cryptographique de la signature HMAC-SHA256 et de l'anti-rejeu
+    const sigCheck = CommercialEngine.verifyWebhookSignature(
+      params.rawPayload,
+      params.signatureHeader,
+      params.webhookSecret,
+      params.timestampHeader,
+      300
+    );
+
+    if (!sigCheck.valid) {
+      this.repo.saveFinancialAnomaly({
+        id: `anom-${Date.now()}`,
+        anomalyType: 'WEBHOOK_SIGNATURE_INVALID',
+        severity: 'CRITICAL',
+        entityId: params.provider,
+        entityType: 'WEBHOOK',
+        description: `Signature invalide pour le webhook ${params.provider} : ${sigCheck.reason}`,
+        timestamp: new Date().toISOString(),
+        resolved: false,
+      });
+
+      throw new AppError(400, 'WEBHOOK_SIGNATURE_INVALID', `Échec de vérification cryptographique : ${sigCheck.reason}`);
+    }
+
+    const payloadObj = typeof params.rawPayload === 'string' ? JSON.parse(params.rawPayload) : params.rawPayload;
+    const eventId = String(payloadObj.id || payloadObj.eventId || payloadObj.reference || `evt_${Date.now()}`);
+
+    return this.repo.executeTransaction((tx) => {
+      // Vérification d'idempotence stricte
+      if (this.processedStripeEventIds.has(eventId)) {
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: `${params.provider} Webhook Gateway`,
+          actorRole: 'SUPPORT',
+          action: 'WEBHOOK_IDEMPOTENT_REPLAY_IGNORED',
+          targetType: 'Payment',
+          targetId: eventId,
+          result: 'SUCCESS',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `Webhook ${params.provider} (${eventId}) déjà traité : rejeu idempotent ignoré sans double écriture.`,
+        });
+
+        return { status: 'IDEMPOTENT_REPLAY' };
+      }
+
+      this.processedStripeEventIds.add(eventId);
+
+      // Traitement des données du webhook
+      const meta = payloadObj.data?.object?.metadata || payloadObj.metadata || {};
+      const orderId = meta.orderId || payloadObj.orderId;
+      const invoiceId = meta.invoiceId || payloadObj.invoiceId;
+
+      const order = tx.orders.find((o) => o.id === orderId || o.orderNumber === orderId && !o.deletedAt);
+      const invoice = tx.invoices.find((i) => i.id === invoiceId || i.orderId === order?.id);
+
+      if (order && invoice) {
+        invoice.status = 'PAID';
+        invoice.paidAt = new Date().toISOString().split('T')[0];
+
+        order.status = 'IN_PREPARATION';
+        order.paymentStatus = 'PAID';
+        order.timeline.push({
+          step: `Paiement ${params.provider} certifié par webhook (${eventId})`,
+          timestamp: new Date().toISOString(),
+          actor: `${params.provider} Gateway`,
+          completed: true,
+        });
+
+        const payment: PaymentRecord = {
+          id: `pay-${Date.now()}`,
+          paymentReference: `PAY-${params.provider}-${eventId.slice(-8).toUpperCase()}`,
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          clientId: order.clientId,
+          supplierId: order.supplierId,
+          provider: params.provider,
+          amount: invoice.totalAmount,
+          currency: invoice.currency,
+          status: 'SUCCEEDED',
+          webhookEventId: eventId,
+          idempotencyVerified: true,
+          reconciled: false,
+          createdAt: new Date().toISOString(),
+        };
+
+        tx.payments.unshift(payment);
+
+        const receipt = CommercialEngine.generatePaymentReceipt(payment, order, invoice);
+        this.repo.savePaymentReceipt(receipt);
+
+        const cashEntry = AccountingEngine.createPaymentCashEntry(payment, '1.40', '0.25', `${params.provider} Webhook`);
+        tx.accountingEntries.unshift(cashEntry);
+
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: `${params.provider} Webhook Gateway`,
+          actorRole: 'SUPPORT',
+          action: 'WEBHOOK_PROCESSED_SUCCESSFULLY',
+          targetType: 'Payment',
+          targetId: eventId,
+          result: 'SUCCESS',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `Webhook ${params.provider} validé : Commande ${order.orderNumber} réglée (${invoice.totalAmount} ${invoice.currency}).`,
+        });
+
+        return { status: 'PROCESSED', paymentId: payment.id, orderId: order.id };
+      }
+
+      return { status: 'PROCESSED' };
+    });
+  }
+
+  public openOrderDisputeTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    orderId: string;
+    reason: DisputeReason;
+    description: string;
+    correlationId: string;
+    ipAddress: string;
+  }): { dispute: CommercialDisputeRecord; order: OrderRecord } {
+    return this.repo.executeTransaction((tx) => {
+      const order = tx.orders.find((o) => o.id === params.orderId && !o.deletedAt);
+      if (!order) {
+        throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande introuvable.');
+      }
+
+      if (params.actor.role === 'CLIENT' && order.clientId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez ouvrir un litige que sur vos commandes.');
+      }
+      if (params.actor.role === 'FOURNISSEUR' && order.supplierId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez ouvrir un litige que sur les commandes qui vous sont confiées.');
+      }
+
+      const { updatedOrder, dispute } = CommercialEngine.openOrderDispute(
+        order,
+        { id: params.actor.id, name: params.actor.email, role: params.actor.role },
+        params.reason,
+        params.description
+      );
+
+      const oIdx = tx.orders.findIndex((o) => o.id === updatedOrder.id);
+      if (oIdx !== -1) tx.orders[oIdx] = updatedOrder;
+
+      this.repo.saveDispute(dispute);
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'ORDER_DISPUTE_OPENED',
+        targetType: 'Order',
+        targetId: order.orderNumber,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Litige commercial ${dispute.disputeNumber} ouvert sur la commande ${order.orderNumber} (${params.reason}).`,
+      });
+
+      // Alerte aux administrateurs
+      const disputeNotif = defaultNotificationDispatcher.createSecurityNotification({
+        userId: 'usr-admin-01',
+        alertType: 'SUSPICIOUS_IP',
+        details: `Litige commercial ouvert sur la commande ${order.orderNumber}. Motif: ${params.reason}`,
+      });
+      disputeNotif.title = `Litige commercial ouvert : ${order.orderNumber}`;
+      disputeNotif.body = `Un litige a été ouvert par ${params.actor.email}. Motif: ${params.reason}.`;
+      disputeNotif.category = 'COMMERCIAL';
+      disputeNotif.actionUrl = `/admin/litiges/${dispute.id}`;
+      defaultNotificationDispatcher.dispatch({ notification: disputeNotif });
+
+      return { dispute, order: updatedOrder };
+    });
+  }
+
+  public resolveOrderDisputeTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    disputeId: string;
+    resolution: string;
+    action: 'REFUND_TOTAL' | 'REFUND_PARTIAL' | 'FORCE_DELIVERY' | 'DISMISSED';
+    correlationId: string;
+    ipAddress: string;
+  }): { dispute: CommercialDisputeRecord; order: OrderRecord } {
+    if (params.actor.role !== 'ADMIN') {
+      throw new AppError(403, 'ADMIN_PRIVILEGE_REQUIRED', 'Seul un Administrateur peut arbitrer un litige commercial.');
+    }
+
+    return this.repo.executeTransaction((tx) => {
+      const dispute = this.repo.findDisputeById(params.disputeId);
+      if (!dispute) {
+        throw new AppError(404, 'DISPUTE_NOT_FOUND', 'Litige introuvable.');
+      }
+
+      const order = tx.orders.find((o) => o.id === dispute.orderId && !o.deletedAt);
+      if (!order) {
+        throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande associée introuvable.');
+      }
+
+      const { updatedDispute, updatedOrder } = CommercialEngine.resolveOrderDispute(
+        dispute,
+        order,
+        { id: params.actor.id, name: params.actor.email },
+        params.resolution,
+        params.action
+      );
+
+      const oIdx = tx.orders.findIndex((o) => o.id === updatedOrder.id);
+      if (oIdx !== -1) tx.orders[oIdx] = updatedOrder;
+
+      this.repo.saveDispute(updatedDispute);
+
+      if (params.action === 'REFUND_TOTAL') {
+        // Libérer le stock réservé
+        defaultStockEngine.releaseReservation({
+          orderId: order.id,
+          actor: {
+            id: params.actor.id,
+            name: params.actor.email,
+            role: params.actor.role,
+          },
+          reason: `Arbitrage litige ${dispute.disputeNumber} : Remboursement total`,
+        });
+      }
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'ORDER_DISPUTE_RESOLVED',
+        targetType: 'Order',
+        targetId: order.orderNumber,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Litige ${dispute.disputeNumber} résolu par arbitrage administrateur (${params.action}) : ${params.resolution}`,
+      });
+
+      return { dispute: updatedDispute, order: updatedOrder };
+    });
+  }
+
+  public getCommercialOverviewAdmin(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+  }) {
+    if (params.actor.role !== 'ADMIN' && params.actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'ADMIN_PRIVILEGE_REQUIRED', 'Accès réservé aux Administrateurs et Comptables.');
+    }
+
+    const snap = this.repo.getSnapshot();
+    const activeOrders = snap.orders.filter((o) => !o.deletedAt);
+    const quotes = snap.quotes || [];
+    const payments = snap.payments || [];
+    const rawDisputes = this.repo.getDisputesForActor(params.actor.id, params.actor.role);
+    const disputes: CommercialDisputeRecord[] = Array.isArray(rawDisputes)
+      ? rawDisputes
+      : ((rawDisputes as any).items || []);
+    const anomalies = this.repo.getFinancialAnomalies();
+
+    let totalGmvDec = new Decimal(0);
+    const ordersByStatus: Record<string, number> = {};
+    for (const o of activeOrders) {
+      ordersByStatus[o.status] = (ordersByStatus[o.status] || 0) + 1;
+      totalGmvDec = totalGmvDec.plus(new Decimal(o.totalAmount || '0.00'));
+    }
+
+    let totalPaymentsCollectedDec = new Decimal(0);
+    const paymentsByProvider: Record<string, { count: number; totalAmount: string }> = {};
+    for (const p of payments) {
+      if (p.status === 'SUCCEEDED') {
+        totalPaymentsCollectedDec = totalPaymentsCollectedDec.plus(new Decimal(p.amount || '0.00'));
+      }
+      if (!paymentsByProvider[p.provider]) {
+        paymentsByProvider[p.provider] = { count: 0, totalAmount: '0.00' };
+      }
+      paymentsByProvider[p.provider].count += 1;
+      paymentsByProvider[p.provider].totalAmount = new Decimal(paymentsByProvider[p.provider].totalAmount)
+        .plus(new Decimal(p.amount || '0.00'))
+        .toFixed(2);
+    }
+
+    return {
+      orders: {
+        totalCount: activeOrders.length,
+        totalGmvEur: totalGmvDec.toDecimalPlaces(2).toFixed(2),
+        byStatus: ordersByStatus,
+      },
+      quotes: {
+        totalCount: quotes.length,
+        pendingReviewCount: quotes.filter((q) => q.status === 'SENT' || q.status === 'RFQ_SUBMITTED').length,
+        issuedCount: quotes.filter((q) => q.status === 'RESPONDED' || q.status === 'QUOTATION_ISSUED').length,
+        convertedCount: quotes.filter((q) => q.status === 'CONVERTED').length,
+      },
+      payments: {
+        totalCount: payments.length,
+        totalCollectedEur: totalPaymentsCollectedDec.toDecimalPlaces(2).toFixed(2),
+        byProvider: paymentsByProvider,
+      },
+      disputes: {
+        totalCount: disputes.length,
+        openCount: disputes.filter((d) => d.status === 'OPEN').length,
+        inMediationCount: disputes.filter((d) => d.status === 'IN_MEDIATION').length,
+        resolvedCount: disputes.filter((d) => d.status === 'RESOLVED').length,
+      },
+      anomalies: {
+        totalCount: anomalies.length,
+        unresolvedCount: anomalies.filter((a) => !a.resolved).length,
+        items: anomalies.slice(0, 10),
+      },
+    };
   }
 
   // ============================================================================
