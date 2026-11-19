@@ -2143,6 +2143,116 @@ export class TradeLinkApiApplication {
     }
 
     // ============================================================================
+    // MOTEUR DE CALCUL FINANCIER DÉTERMINISTE, AGING BALANCE, FEC & FISCAL PERIODS (PROMPT 14)
+    // ============================================================================
+
+    if (method === 'POST' && path === '/api/v1/accounting/calculate-interest') {
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
+      const result = this.services.calculateFinancialInterestService(
+        ctx.user!,
+        ctx.body as any,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, result);
+    }
+
+    if (method === 'GET' && path === '/api/v1/accounting/calculation-history') {
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
+      const limit = ctx.query?.limit ? parseInt(ctx.query.limit, 10) : 100;
+      const history = this.services.listCalculationHistoryService(ctx.user!, limit);
+      return this.ok(ctx, history);
+    }
+
+    if (method === 'GET' && path === '/api/v1/accounting/financial-config') {
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
+      const config = this.services.getFinancialEngineConfigService(ctx.user!);
+      return this.ok(ctx, config);
+    }
+
+    if (method === 'PUT' && path === '/api/v1/accounting/financial-config') {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
+      const res = this.services.updateFinancialEngineConfigService(
+        ctx.user!,
+        ctx.body as any,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, res);
+    }
+
+    if (method === 'GET' && path === '/api/v1/accounting/financial-config/audits') {
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
+      const audits = this.services.listFinancialConfigAuditsService(ctx.user!);
+      return this.ok(ctx, audits);
+    }
+
+    if (method === 'GET' && path === '/api/v1/accounting/benchmark-rates') {
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
+      const rates = this.services.listBenchmarkRatesService(ctx.user!);
+      return this.ok(ctx, rates);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/accounting/benchmark-rates/')) {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
+      const code = path.replace('/api/v1/accounting/benchmark-rates/', '');
+      const newRatePct = ctx.body?.currentRatePct ?? ctx.body?.ratePct;
+      if (!newRatePct) {
+        throw new AppError(400, 'INVALID_RATE_PAYLOAD', 'Le paramètre currentRatePct est obligatoire.');
+      }
+      const updated = this.services.updateBenchmarkRateService(
+        ctx.user!,
+        code,
+        String(newRatePct),
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, updated);
+    }
+
+    if (method === 'GET' && path === '/api/v1/accounting/aging-balance') {
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
+      const asOfDate = ctx.query?.asOfDate;
+      const report = this.services.getAgingBalanceReportService(ctx.user!, asOfDate);
+      return this.ok(ctx, report);
+    }
+
+    if (method === 'GET' && path === '/api/v1/accounting/export/fec') {
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
+      const fiscalYear = ctx.query?.fiscalYear ? parseInt(ctx.query.fiscalYear, 10) : 2026;
+      const fec = this.services.exportFecService(ctx.user!, fiscalYear);
+      return {
+        statusCode: 200,
+        headers: {
+          'Content-Type': fec.mimeType,
+          'Content-Disposition': `attachment; filename="${fec.filename}"`,
+          'X-Correlation-Id': ctx.correlationId,
+        },
+        body: fec.fecContent as any,
+      };
+    }
+
+    if (method === 'GET' && path === '/api/v1/accounting/fiscal-periods') {
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
+      const periods = this.services.listFiscalPeriodsService(ctx.user!);
+      return this.ok(ctx, periods);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/accounting/fiscal-periods/') && path.endsWith('/lock')) {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
+      const periodCode = path
+        .replace('/api/v1/accounting/fiscal-periods/', '')
+        .replace('/lock', '');
+      const locked = this.services.lockFiscalPeriodService(
+        ctx.user!,
+        periodCode,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, locked);
+    }
+
+    // ============================================================================
     // PROMPT 11 : ADMINISTRATION AVANCÉE, IMPORTS, KMS, BACKUPS ET AUDIT
     // ============================================================================
 

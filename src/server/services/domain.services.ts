@@ -120,6 +120,14 @@ import {
   DocumentPartyInfo,
   TemporaryDownloadTokenPayload,
   DocumentTransportDetails,
+  AgingBalanceReport,
+  BenchmarkRateRecord,
+  CalculationResultRecord,
+  FinancialConfigAuditRecord,
+  FinancialEngineConfigRecord,
+  FinancialRateType,
+  FinancialRoundingMode,
+  FiscalPeriodRecord,
 } from '../../types';
 import {
   BillingDocumentEngine,
@@ -5242,8 +5250,16 @@ export class TradeLinkDomainServices {
         );
       }
 
-      const entryNumber = `${params.journalCode}-2026-${Math.floor(10000 + Math.random() * 90000)}`;
       const now = new Date();
+      const entryDate = params.date || now.toISOString().slice(0, 10);
+      const fiscalPeriods = this.repo.listFiscalPeriods();
+      try {
+        AccountingEngine.validateFiscalPeriodNotLocked(entryDate, fiscalPeriods);
+      } catch (err: any) {
+        throw new AppError(400, 'FISCAL_PERIOD_LOCKED', err.message);
+      }
+
+      const entryNumber = `${params.journalCode}-2026-${Math.floor(10000 + Math.random() * 90000)}`;
 
       const createdEntry: AccountingEntryRecord = {
         id: `ent-${Date.now()}`,
@@ -5353,6 +5369,257 @@ export class TradeLinkDomainServices {
   public exportTrialBalanceCsv(framework: AccountingFramework = 'PCG'): string {
     const trial = this.getTrialBalance(framework);
     return AccountingEngine.exportTrialBalanceToCsv(trial.items);
+  }
+
+  // ============================================================================
+  // SERVICES MOTEUR DE CALCUL FINANCIER DÉTERMINISTE (PROMPT 14)
+  // Montant × Taux × Nombre de jours / Base annuelle (Decimal.js)
+  // Conventions ACT/365, ACT/360, ACT/ACT, Taux fixes/variables, Arrondis IEEE 754
+  // ============================================================================
+
+  public calculateFinancialInterestService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    params: {
+      principalStr: string;
+      annualRatePctStr?: string;
+      rateType?: FinancialRateType;
+      benchmarkRateCode?: string;
+      benchmarkRatePctStr?: string;
+      spreadPctStr?: string;
+      startDateStr: string;
+      endDateStr: string;
+      basis?: DayCountBasis;
+      roundingMode?: FinancialRoundingMode;
+      roundingDecimals?: number;
+      currency?: string;
+    },
+    correlationId: string,
+    ipAddress: string
+  ): CalculationResultRecord {
+    if (actor.role !== 'ADMIN' && actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN', 'Accès réservé aux administrateurs et comptables.');
+    }
+
+    const config = this.repo.getFinancialConfig();
+    const benchmarkRates = this.repo.listBenchmarkRates();
+
+    const calcResult = AccountingEngine.calculateFinancialInterest({
+      principalStr: params.principalStr,
+      annualRatePctStr: params.annualRatePctStr,
+      rateType: params.rateType,
+      benchmarkRateCode: params.benchmarkRateCode,
+      benchmarkRatePctStr: params.benchmarkRatePctStr,
+      spreadPctStr: params.spreadPctStr,
+      startDateStr: params.startDateStr,
+      endDateStr: params.endDateStr,
+      basis: params.basis ?? config.defaultBasis,
+      roundingMode: params.roundingMode ?? config.defaultRoundingMode,
+      roundingDecimals: params.roundingDecimals ?? config.defaultRoundingDecimals,
+      currency: params.currency ?? config.fixedRecoveryFeeCurrency ?? 'EUR',
+      executedBy: actor.email,
+      ruleVersion: config.version,
+      benchmarksRegistry: benchmarkRates,
+    });
+
+    this.repo.saveCalculationResult(calcResult);
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: actor.email,
+        actorRole: actor.role,
+        action: 'FINANCIAL_INTEREST_CALCULATED',
+        targetType: 'CalculationResult',
+        targetId: calcResult.id,
+        result: 'SUCCESS',
+        correlationId,
+        ipAddress,
+        details: `Calcul d'intérêt financier exécuté : ${calcResult.principal} à ${calcResult.annualRatePct}% sur ${calcResult.daysCount} jours (${calcResult.basis}) = ${calcResult.interestAmount} ${calcResult.currency}.`,
+      });
+      return null;
+    });
+
+    return calcResult;
+  }
+
+  public listCalculationHistoryService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    limit = 100
+  ): CalculationResultRecord[] {
+    if (actor.role !== 'ADMIN' && actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN', 'Accès réservé aux administrateurs et comptables.');
+    }
+    return this.repo.listCalculationHistory(limit);
+  }
+
+  public getFinancialEngineConfigService(
+    actor: NonNullable<ServerRequestContext['user']>
+  ): FinancialEngineConfigRecord {
+    if (actor.role !== 'ADMIN' && actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN', 'Accès réservé aux administrateurs et comptables.');
+    }
+    return this.repo.getFinancialConfig();
+  }
+
+  public updateFinancialEngineConfigService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    updates: Partial<FinancialEngineConfigRecord>,
+    correlationId: string,
+    ipAddress: string
+  ): { updated: FinancialEngineConfigRecord; audits: FinancialConfigAuditRecord[] } {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(
+        403,
+        'ADMIN_ROLE_REQUIRED',
+        'Seul un administrateur peut modifier la configuration globale du moteur financier.'
+      );
+    }
+    const res = this.repo.updateFinancialConfig(updates, actor.email, 'Mise à jour des paramètres financiers applicables');
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: actor.email,
+        actorRole: actor.role,
+        action: 'FINANCIAL_ENGINE_CONFIG_UPDATED',
+        targetType: 'FinancialEngineConfig',
+        targetId: 'DEFAULT',
+        result: 'SUCCESS',
+        correlationId,
+        ipAddress,
+        details: `Configuration financière mise à jour (${res.audits.length} modification(s) enregistrée(s)).`,
+      });
+      return null;
+    });
+    return res;
+  }
+
+  public listFinancialConfigAuditsService(
+    actor: NonNullable<ServerRequestContext['user']>
+  ): FinancialConfigAuditRecord[] {
+    if (actor.role !== 'ADMIN' && actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN', 'Accès réservé aux administrateurs et comptables.');
+    }
+    return this.repo.listFinancialConfigAudits();
+  }
+
+  public listBenchmarkRatesService(
+    actor: NonNullable<ServerRequestContext['user']>
+  ): BenchmarkRateRecord[] {
+    if (actor.role !== 'ADMIN' && actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN', 'Accès réservé aux administrateurs et comptables.');
+    }
+    return this.repo.listBenchmarkRates();
+  }
+
+  public updateBenchmarkRateService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    code: string,
+    newRatePct: string,
+    correlationId: string,
+    ipAddress: string
+  ): BenchmarkRateRecord {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(
+        403,
+        'ADMIN_ROLE_REQUIRED',
+        'Seul un administrateur peut mettre à jour les taux de référence de marché.'
+      );
+    }
+    const updated = this.repo.updateBenchmarkRate(code, newRatePct, actor.email);
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: actor.email,
+        actorRole: actor.role,
+        action: 'BENCHMARK_RATE_UPDATED',
+        targetType: 'BenchmarkRate',
+        targetId: code,
+        result: 'SUCCESS',
+        correlationId,
+        ipAddress,
+        details: `Taux monétaire ${code} mis à jour : ${newRatePct}%.`,
+      });
+      return null;
+    });
+    return updated;
+  }
+
+  public getAgingBalanceReportService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    asOfDateStr?: string
+  ): AgingBalanceReport {
+    if (actor.role !== 'ADMIN' && actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN', 'Accès réservé aux administrateurs et comptables.');
+    }
+    const invoices = this.repo.getSnapshot().invoices;
+    const payments = this.repo.getSnapshot().payments;
+    return AccountingEngine.calculateAgingBalance({
+      invoices,
+      payments,
+      asOfDateStr,
+    });
+  }
+
+  public exportFecService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    fiscalYear: number
+  ): { fecContent: string; filename: string; mimeType: string } {
+    if (actor.role !== 'ADMIN' && actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN', 'Accès réservé aux administrateurs et comptables.');
+    }
+    const entries = this.repo.getSnapshot().accountingEntries;
+    const fecContent = AccountingEngine.exportFecAccountingFile(entries, fiscalYear);
+    const filename = `FEC_${fiscalYear}_TRADELINK_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.txt`;
+    return {
+      fecContent,
+      filename,
+      mimeType: 'text/plain; charset=UTF-8',
+    };
+  }
+
+  public listFiscalPeriodsService(
+    actor: NonNullable<ServerRequestContext['user']>
+  ): FiscalPeriodRecord[] {
+    if (actor.role !== 'ADMIN' && actor.role !== 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN', 'Accès réservé aux administrateurs et comptables.');
+    }
+    return this.repo.listFiscalPeriods();
+  }
+
+  public lockFiscalPeriodService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    periodCode: string,
+    correlationId: string,
+    ipAddress: string
+  ): FiscalPeriodRecord {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(
+        403,
+        'ADMIN_ROLE_REQUIRED',
+        'Seul un administrateur peut verrouiller et clôturer une période comptable.'
+      );
+    }
+    const locked = this.repo.lockFiscalPeriod(periodCode, actor.email);
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: actor.email,
+        actorRole: actor.role,
+        action: 'FISCAL_PERIOD_LOCKED',
+        targetType: 'FiscalPeriod',
+        targetId: periodCode,
+        result: 'SUCCESS',
+        correlationId,
+        ipAddress,
+        details: `Période comptable ${periodCode} verrouillée. Aucune nouvelle écriture ne peut être enregistrée.`,
+      });
+      return null;
+    });
+    return locked;
   }
 
   // ============================================================================

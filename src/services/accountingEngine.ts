@@ -1,17 +1,34 @@
+// Vibe — TRADELINK V6.0 : Performance, Security & Reliability First.
 // ============================================================================
-// TRADELINK V6.0 — MOTEUR COMPTABLE & AUDIT FINANCIER COMPLET (PROMPT 8)
-// Plan comptable configurable (PCG, IFRS, OHADA), Journaux (VTE, ACH, BNQ, OD),
+// TRADELINK V6.0 — MOTEUR FINANCIER & COMPTABILITÉ COMPLÈTE (PROMPTS 8 & 14)
+// Moteur de calcul déterministe Decimal.js (ACT/365, ACT/360, ACT/ACT bissextile),
+// Taux fixes, Taux variables (EURIBOR, SOFR, TMP), Arrondis configurables (IEEE 754),
+// Plans comptables multijuridictions (PCG, IFRS, OHADA, PCM), Journaux (VTE, ACH, BNQ, OD, RAN),
 // Écritures en partie double Débit = Crédit, Grand Livre, Balance générale,
-// Comptes tiers, Rapprochement bancaire, Bilan, Compte de résultat,
-// Moteur financier déterministe Decimal.js (ACT/365, ACT/360, ACT/ACT bissextile)
+// Balance âgée des créances, Pénalités de retard, Rapprochement bancaire,
+// États financiers (Bilan, Compte de Résultat), Exports FEC/CSV & Audit logs
 // ============================================================================
 
 import Decimal from 'decimal.js';
-import { InvoiceRecord, PaymentRecord, UserRoleCode } from '../types';
+import {
+  AgingBalanceReport,
+  AgingBucketDetail,
+  AgingInvoiceDetail,
+  BenchmarkRateRecord,
+  CalculationResultRecord,
+  DayCountBasis,
+  FinancialEngineConfigRecord,
+  FinancialRateType,
+  FinancialRoundingMode,
+  FiscalPeriodRecord,
+  InvoiceRecord,
+  PaymentRecord,
+  UserRoleCode,
+} from '../types';
 
 Decimal.set({ precision: 34, rounding: Decimal.ROUND_HALF_UP });
 
-export type AccountingFramework = 'PCG' | 'IFRS' | 'OHADA';
+export type AccountingFramework = 'PCG' | 'IFRS' | 'OHADA' | 'PCM';
 
 export interface AccountDefinition {
   accountCode: string;
@@ -22,8 +39,10 @@ export interface AccountDefinition {
   auxiliaryRequired?: boolean;
 }
 
+export type JournalCode = 'VTE' | 'ACH' | 'BNQ' | 'OD' | 'RAN';
+
 export interface AccountingJournalRecord {
-  code: 'VTE' | 'ACH' | 'BNQ' | 'OD';
+  code: JournalCode;
   name: string;
   description: string;
 }
@@ -36,12 +55,13 @@ export interface AccountingEntryLineRecord {
   label: string;
   debit: string; // Decimal string
   credit: string; // Decimal string
+  reconciliationKey?: string;
 }
 
 export interface AccountingEntryRecord {
   id: string;
   entryNumber: string;
-  journalCode: 'VTE' | 'ACH' | 'BNQ' | 'OD';
+  journalCode: JournalCode;
   date: string;
   fiscalPeriod: string; // '2026-11'
   pieceReference: string; // FAC-2026-XXXXX, PAY-STRIPE-XXXX, etc.
@@ -147,7 +167,7 @@ export interface AmortizationScheduleRow {
 }
 
 // ============================================================================
-// 1. PLANS COMPTABLES CONFIGURABLES PAR JURIDICTION (PCG, IFRS, OHADA)
+// 1. PLANS COMPTABLES CONFIGURABLES PAR JURIDICTION (PCG, IFRS, OHADA, PCM)
 // ============================================================================
 
 export const CHARTS_OF_ACCOUNTS: Record<AccountingFramework, AccountDefinition[]> = {
@@ -165,8 +185,10 @@ export const CHARTS_OF_ACCOUNTS: Record<AccountingFramework, AccountDefinition[]
     { accountCode: '607000', name: 'Achats de marchandises', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
     { accountCode: '624100', name: 'Transports sur ventes et logistique', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
     { accountCode: '627800', name: 'Commissions et frais bancaires Stripe', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
+    { accountCode: '661100', name: 'Intérêts des emprunts et dettes', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
     { accountCode: '707000', name: 'Ventes de marchandises B2B', accountClass: 7, category: 'REVENUE', isReconcilable: false },
     { accountCode: '708500', name: 'Ports et frais accessoires facturés', accountClass: 7, category: 'REVENUE', isReconcilable: false },
+    { accountCode: '763000', name: 'Revenus des créances et pénalités de retard', accountClass: 7, category: 'REVENUE', isReconcilable: false },
   ],
   IFRS: [
     { accountCode: '1000', name: 'Share Capital', accountClass: 1, category: 'EQUITY', isReconcilable: false },
@@ -177,7 +199,9 @@ export const CHARTS_OF_ACCOUNTS: Record<AccountingFramework, AccountDefinition[]
     { accountCode: '4500', name: 'Trade Payables (Suppliers)', accountClass: 4, category: 'LIABILITY', isReconcilable: true },
     { accountCode: '5000', name: 'Cash and Cash Equivalents', accountClass: 5, category: 'ASSET', isReconcilable: true },
     { accountCode: '6000', name: 'Cost of Goods Sold', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
+    { accountCode: '6600', name: 'Finance Costs and Interest', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
     { accountCode: '7000', name: 'Revenue from Contracts with Customers', accountClass: 7, category: 'REVENUE', isReconcilable: false },
+    { accountCode: '7600', name: 'Finance Income & Late Fees', accountClass: 7, category: 'REVENUE', isReconcilable: false },
   ],
   OHADA: [
     { accountCode: '101', name: 'Capital social', accountClass: 1, category: 'EQUITY', isReconcilable: false },
@@ -189,24 +213,437 @@ export const CHARTS_OF_ACCOUNTS: Record<AccountingFramework, AccountDefinition[]
     { accountCode: '443', name: 'État, TVA facturée sur ventes', accountClass: 4, category: 'LIABILITY', isReconcilable: false },
     { accountCode: '521', name: 'Banques locales et internationales', accountClass: 5, category: 'ASSET', isReconcilable: true },
     { accountCode: '601', name: 'Achats de marchandises', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
+    { accountCode: '671', name: 'Intérêts des emprunts', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
     { accountCode: '701', name: 'Ventes de marchandises', accountClass: 7, category: 'REVENUE', isReconcilable: false },
+    { accountCode: '771', name: 'Intérêts et produits assimilés', accountClass: 7, category: 'REVENUE', isReconcilable: false },
+  ],
+  PCM: [
+    { accountCode: '1111', name: 'Capital social', accountClass: 1, category: 'EQUITY', isReconcilable: false },
+    { accountCode: '1191', name: 'Résultat net de l’exercice (solde créditeur)', accountClass: 1, category: 'EQUITY', isReconcilable: false },
+    { accountCode: '1481', name: 'Emprunts auprès des établissements de crédit', accountClass: 1, category: 'LIABILITY', isReconcilable: true },
+    { accountCode: '2332', name: 'Matériel et outillage industriel', accountClass: 2, category: 'ASSET', isReconcilable: false },
+    { accountCode: '3111', name: 'Marchandises', accountClass: 3, category: 'ASSET', isReconcilable: true },
+    { accountCode: '3421', name: 'Clients créances commerciales', accountClass: 3, category: 'ASSET', isReconcilable: true, auxiliaryRequired: true },
+    { accountCode: '3455', name: 'État, TVA récupérable', accountClass: 3, category: 'ASSET', isReconcilable: false },
+    { accountCode: '4411', name: 'Fournisseurs dettes d’exploitation', accountClass: 4, category: 'LIABILITY', isReconcilable: true, auxiliaryRequired: true },
+    { accountCode: '4455', name: 'État, TVA facturée', accountClass: 4, category: 'LIABILITY', isReconcilable: false },
+    { accountCode: '5141', name: 'Banques (comptes en dirhams et devises)', accountClass: 5, category: 'ASSET', isReconcilable: true },
+    { accountCode: '6111', name: 'Achats de marchandises', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
+    { accountCode: '6311', name: 'Intérêts des emprunts et dettes', accountClass: 6, category: 'EXPENSE', isReconcilable: false },
+    { accountCode: '7111', name: 'Ventes de marchandises au Maroc', accountClass: 7, category: 'REVENUE', isReconcilable: false },
+    { accountCode: '7113', name: 'Ventes de marchandises à l’exportation', accountClass: 7, category: 'REVENUE', isReconcilable: false },
+    { accountCode: '7381', name: 'Intérêts et produits financiers assimilés', accountClass: 7, category: 'REVENUE', isReconcilable: false },
   ],
 };
 
 export const STANDARD_JOURNALS: AccountingJournalRecord[] = [
   { code: 'VTE', name: 'Journal des Ventes', description: 'Enregistrement de la facturation clients B2B' },
-  { code: 'ACH', name: 'Journal des Achats', description: 'Enregistrement des factures fournisseurs et frais généraux' },
+  { code: 'ACH', name: 'Journal des Achats', description: 'Enregistrement des factures fournisseurs et charges d’exploitation' },
   { code: 'BNQ', name: 'Journal de Trésorerie / Banque', description: 'Encaissements Stripe, virements bancaires et règlements' },
-  { code: 'OD', name: 'Opérations Diverses', description: 'Écritures de régularisation, TVA et clôture de période' },
+  { code: 'OD', name: 'Opérations Diverses', description: 'Écritures de régularisation, TVA, amortissements et salaires' },
 ];
 
+export const EXTENDED_JOURNALS: AccountingJournalRecord[] = [
+  ...STANDARD_JOURNALS,
+  { code: 'RAN', name: 'Reports À Nouveau', description: 'Reprise des soldes de bilan à l’ouverture de l’exercice' },
+];
+
+export const INITIAL_BENCHMARK_RATES: BenchmarkRateRecord[] = [
+  {
+    id: 'bench-euribor-3m',
+    code: 'EURIBOR_3M',
+    name: 'Euro Interbank Offered Rate 3 Mois',
+    currency: 'EUR',
+    currentRatePct: '3.2500',
+    effectiveDate: '2026-11-01',
+    source: 'European Money Markets Institute (EMMI)',
+    updatedAt: '2026-11-18 09:00',
+    updatedBy: 'Automate Marchés Financiers',
+  },
+  {
+    id: 'bench-euribor-12m',
+    code: 'EURIBOR_12M',
+    name: 'Euro Interbank Offered Rate 12 Mois',
+    currency: 'EUR',
+    currentRatePct: '3.4200',
+    effectiveDate: '2026-11-01',
+    source: 'European Money Markets Institute (EMMI)',
+    updatedAt: '2026-11-18 09:00',
+    updatedBy: 'Automate Marchés Financiers',
+  },
+  {
+    id: 'bench-sofr',
+    code: 'SOFR',
+    name: 'Secured Overnight Financing Rate',
+    currency: 'USD',
+    currentRatePct: '4.6500',
+    effectiveDate: '2026-11-01',
+    source: 'Federal Reserve Bank of New York',
+    updatedAt: '2026-11-18 09:00',
+    updatedBy: 'Automate Marchés Financiers',
+  },
+  {
+    id: 'bench-tmp-bam',
+    code: 'TMP_BAM',
+    name: 'Taux Moyen Pondéré Bank Al-Maghrib',
+    currency: 'MAD',
+    currentRatePct: '2.7500',
+    effectiveDate: '2026-11-01',
+    source: 'Bank Al-Maghrib (Banque Centrale du Maroc)',
+    updatedAt: '2026-11-18 09:00',
+    updatedBy: 'Automate Marchés Financiers',
+  },
+];
+
+export const DEFAULT_FINANCIAL_CONFIG: FinancialEngineConfigRecord = {
+  id: 'fin-cfg-default',
+  defaultBasis: 'ACT/365',
+  defaultRoundingMode: 'ROUND_HALF_UP',
+  defaultRoundingDecimals: 2,
+  defaultRateType: 'FIXED',
+  defaultFixedRatePct: '5.0000',
+  defaultBenchmarkRateCode: 'EURIBOR_3M',
+  defaultSpreadPct: '1.5000',
+  defaultLateInterestSpreadPct: '10.0000',
+  fixedRecoveryFeeAmount: '40.00',
+  fixedRecoveryFeeCurrency: 'EUR',
+  statutoryFramework: 'EU_DIRECTIVE_2011_7',
+  updatedAt: '2026-11-18 08:00',
+  updatedBy: 'usr-admin-01',
+  version: 'ENGINE-FIN-V6.2',
+};
+
 // ============================================================================
-// 2. MOTEUR COMPTABLE DE PARTIE DOUBLE (Débit = Crédit)
+// FONCTIONS UTILITAIRES DE DATE & ARRONDIS
+// ============================================================================
+
+export function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+export function getExactDaysBetween(startDateStr: string, endDateStr: string): number {
+  const start = new Date(startDateStr);
+  const end = new Date(endDateStr);
+  const startUtc = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
+  const endUtc = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+  const diffMs = endUtc - startUtc;
+  return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+}
+
+export function getDecimalRoundingMode(mode?: FinancialRoundingMode): Decimal.Rounding {
+  switch (mode) {
+    case 'ROUND_HALF_EVEN':
+      return Decimal.ROUND_HALF_EVEN;
+    case 'ROUND_UP':
+      return Decimal.ROUND_UP;
+    case 'ROUND_DOWN':
+      return Decimal.ROUND_DOWN;
+    case 'ROUND_HALF_UP':
+    default:
+      return Decimal.ROUND_HALF_UP;
+  }
+}
+
+// ============================================================================
+// 2. MOTEUR FINANCIER & COMPTABLE CENTRALISÉ (PROMPT 14)
 // ============================================================================
 
 export class AccountingEngine {
   /**
-   * Vérifie qu'une écriture comptable est rigoureusement équilibrée via Decimal.js
+   * Moteur central de calcul d'intérêts et d'agios financiers déterministe (Decimal.js)
+   * Formule : Montant × Taux effectif × Nombre de jours / Base annuelle
+   */
+  public static calculateFinancialInterest(params: {
+    principalStr: string;
+    annualRatePctStr?: string;
+    rateType?: FinancialRateType;
+    benchmarkRateCode?: string;
+    benchmarkRatePctStr?: string;
+    spreadPctStr?: string;
+    startDateStr: string;
+    endDateStr: string;
+    basis?: DayCountBasis;
+    roundingMode?: FinancialRoundingMode;
+    roundingDecimals?: number;
+    currency?: string;
+    executedBy?: string;
+    ruleVersion?: string;
+    benchmarksRegistry?: BenchmarkRateRecord[];
+  }): CalculationResultRecord {
+    const principal = new Decimal(params.principalStr || '0');
+    const basis: DayCountBasis = params.basis ?? 'ACT/365';
+    const roundingMode: FinancialRoundingMode = params.roundingMode ?? 'ROUND_HALF_UP';
+    const decMode = getDecimalRoundingMode(roundingMode);
+    const precisionDecimals = params.roundingDecimals ?? 2;
+
+    const rateType: FinancialRateType = params.rateType ?? 'FIXED';
+    let effectiveRatePct: Decimal;
+    let benchmarkRatePctDec: Decimal | undefined;
+    let spreadPctDec: Decimal | undefined;
+
+    if (rateType === 'VARIABLE') {
+      const benchCode = params.benchmarkRateCode || 'EURIBOR_3M';
+      let benchValStr = params.benchmarkRatePctStr;
+      if (!benchValStr) {
+        const reg = params.benchmarksRegistry || INITIAL_BENCHMARK_RATES;
+        const found = reg.find((b) => b.code === benchCode);
+        benchValStr = found ? found.currentRatePct : '3.2500';
+      }
+      benchmarkRatePctDec = new Decimal(benchValStr);
+      spreadPctDec = new Decimal(params.spreadPctStr || '0.0000');
+      effectiveRatePct = benchmarkRatePctDec.plus(spreadPctDec);
+    } else {
+      effectiveRatePct = new Decimal(params.annualRatePctStr || '0.0000');
+    }
+
+    // Calcul du nombre exact de jours
+    const start = new Date(params.startDateStr);
+    const end = new Date(params.endDateStr);
+    const daysCount = getExactDaysBetween(params.startDateStr, params.endDateStr);
+
+    const startYear = start.getFullYear();
+    const endYear = end.getFullYear();
+    const leapDetected = isLeapYear(startYear) || isLeapYear(endYear);
+
+    const rateDecimal = effectiveRatePct.dividedBy(100);
+    let interestAmountDec: Decimal;
+    let annualDivisor = 365;
+
+    if (basis === 'ACT/360') {
+      annualDivisor = 360;
+      interestAmountDec = principal
+        .times(rateDecimal)
+        .times(daysCount)
+        .dividedBy(360)
+        .toDecimalPlaces(precisionDecimals, decMode);
+    } else if (basis === 'ACT/365') {
+      annualDivisor = 365;
+      interestAmountDec = principal
+        .times(rateDecimal)
+        .times(daysCount)
+        .dividedBy(365)
+        .toDecimalPlaces(precisionDecimals, decMode);
+    } else {
+      // ACT/ACT (ICMA / ISDA)
+      if (startYear === endYear) {
+        annualDivisor = isLeapYear(startYear) ? 366 : 365;
+        interestAmountDec = principal
+          .times(rateDecimal)
+          .times(daysCount)
+          .dividedBy(annualDivisor)
+          .toDecimalPlaces(precisionDecimals, decMode);
+      } else {
+        // Période multi-années à cheval
+        const daysInFirstYear = Math.min(daysCount, getExactDaysBetween(params.startDateStr, `${startYear}-12-31`) + 1);
+        const daysInSubsequent = Math.max(0, daysCount - daysInFirstYear);
+
+        const divFirst = isLeapYear(startYear) ? 366 : 365;
+        const divSecond = isLeapYear(endYear) ? 366 : 365;
+
+        const fractionFirst = new Decimal(daysInFirstYear).dividedBy(divFirst);
+        const fractionSecond = new Decimal(daysInSubsequent).dividedBy(divSecond);
+        const totalFraction = fractionFirst.plus(fractionSecond);
+
+        annualDivisor = isLeapYear(startYear) || isLeapYear(endYear) ? 366 : 365;
+        interestAmountDec = principal
+          .times(rateDecimal)
+          .times(totalFraction)
+          .toDecimalPlaces(precisionDecimals, decMode);
+      }
+    }
+
+    const totalAmountDec = principal.plus(interestAmountDec).toDecimalPlaces(precisionDecimals, decMode);
+
+    return {
+      id: `CALC-${Date.now().toString().slice(-6)}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+      ruleVersion: params.ruleVersion ?? 'RULE-FIN-V6.2 (Decimal.js)',
+      principal: principal.toFixed(2),
+      annualRatePct: effectiveRatePct.toFixed(4),
+      startDate: params.startDateStr,
+      endDate: params.endDateStr,
+      daysCount,
+      basis,
+      annualDivisor,
+      isLeapYearDetected: leapDetected,
+      interestAmount: interestAmountDec.toFixed(precisionDecimals),
+      totalAmount: totalAmountDec.toFixed(precisionDecimals),
+      currency: params.currency ?? 'EUR',
+      executedBy: params.executedBy ?? 'Automate Financier Stage 3',
+      executedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+      rateType,
+      benchmarkRateCode: params.benchmarkRateCode,
+      benchmarkRatePct: benchmarkRatePctDec ? benchmarkRatePctDec.toFixed(4) : undefined,
+      spreadPct: spreadPctDec ? spreadPctDec.toFixed(4) : undefined,
+      effectiveRatePct: effectiveRatePct.toFixed(4),
+      roundingMode,
+      roundingDecimals: precisionDecimals,
+      formulaDescription: `${principal.toFixed(2)} × ${effectiveRatePct.toFixed(4)}% × ${daysCount}j / ${annualDivisor}`,
+      calculationExplanation: `Intérêt calculé selon la convention ${basis} (${daysCount} jours, diviseur ${annualDivisor}) avec arrondi ${roundingMode} à ${precisionDecimals} décimales.`,
+      inputParameters: {
+        principal: params.principalStr,
+        rateType,
+        annualRatePct: params.annualRatePctStr,
+        benchmarkRateCode: params.benchmarkRateCode,
+        spreadPct: params.spreadPctStr,
+        startDate: params.startDateStr,
+        endDate: params.endDateStr,
+        basis,
+        roundingMode,
+        precisionDecimals,
+      },
+    };
+  }
+
+  /**
+   * Calcul de la Balance Âgée des Créances (Aging Balance) et des pénalités de retard
+   */
+  public static calculateAgingBalance(params: {
+    invoices: InvoiceRecord[];
+    payments: PaymentRecord[];
+    asOfDateStr?: string;
+    lateInterestRatePct?: string;
+    recoveryFeeAmount?: string;
+    currency?: string;
+  }): AgingBalanceReport {
+    const asOfDateStr = params.asOfDateStr || new Date().toISOString().slice(0, 10);
+    const lateRatePct = params.lateInterestRatePct || '14.5000'; // BCE Ref + 10 points
+    const recoveryFee = new Decimal(params.recoveryFeeAmount || '40.00');
+    const currency = params.currency || 'EUR';
+
+    // Indexation des paiements par facture
+    const paidByInvoice = new Map<string, Decimal>();
+    for (const p of params.payments) {
+      if (p.status === 'SUCCEEDED') {
+        const cur = paidByInvoice.get(p.invoiceNumber) || new Decimal(0);
+        paidByInvoice.set(p.invoiceNumber, cur.plus(new Decimal(p.amount)));
+      }
+    }
+
+    const buckets: AgingBalanceReport['buckets'] = {
+      CURRENT_0_30: {
+        bucketKey: 'CURRENT_0_30',
+        label: 'Non échues / Moins de 30 jours',
+        invoicesCount: 0,
+        totalRemainingDue: '0.00',
+        totalLateInterest: '0.00',
+        totalRecoveryFees: '0.00',
+        invoices: [],
+      },
+      OVERDUE_31_60: {
+        bucketKey: 'OVERDUE_31_60',
+        label: 'Retard 31 à 60 jours',
+        invoicesCount: 0,
+        totalRemainingDue: '0.00',
+        totalLateInterest: '0.00',
+        totalRecoveryFees: '0.00',
+        invoices: [],
+      },
+      OVERDUE_61_90: {
+        bucketKey: 'OVERDUE_61_90',
+        label: 'Retard 61 à 90 jours',
+        invoicesCount: 0,
+        totalRemainingDue: '0.00',
+        totalLateInterest: '0.00',
+        totalRecoveryFees: '0.00',
+        invoices: [],
+      },
+      OVERDUE_OVER_90: {
+        bucketKey: 'OVERDUE_OVER_90',
+        label: 'Retard supérieur à 90 jours (Contentieux)',
+        invoicesCount: 0,
+        totalRemainingDue: '0.00',
+        totalLateInterest: '0.00',
+        totalRecoveryFees: '0.00',
+        invoices: [],
+      },
+    };
+
+    let grandTotalReceivables = new Decimal(0);
+    let grandTotalOverdue = new Decimal(0);
+    let grandTotalLateInterest = new Decimal(0);
+    let grandTotalRecoveryFees = new Decimal(0);
+
+    for (const inv of params.invoices) {
+      if (inv.status === 'CANCELLED') continue;
+
+      const totalInvoiceAmt = new Decimal(inv.totalAmount);
+      const paidAmt = paidByInvoice.get(inv.invoiceNumber) || new Decimal(0);
+      const remainingDue = totalInvoiceAmt.minus(paidAmt);
+
+      if (remainingDue.lte('0.00')) continue; // Facture soldée
+
+      grandTotalReceivables = grandTotalReceivables.plus(remainingDue);
+
+      const dueDateStr = inv.dueAt || inv.issuedAt;
+      const isPastDue = asOfDateStr > dueDateStr;
+      const daysOverdue = isPastDue ? getExactDaysBetween(dueDateStr, asOfDateStr) : 0;
+
+      let lateInterestDec = new Decimal(0);
+      let feeDec = new Decimal(0);
+
+      if (daysOverdue > 0) {
+        grandTotalOverdue = grandTotalOverdue.plus(remainingDue);
+        // Calcul déterministe pénalité de retard ACT/365
+        const calcRes = this.calculateFinancialInterest({
+          principalStr: remainingDue.toFixed(2),
+          annualRatePctStr: lateRatePct,
+          startDateStr: dueDateStr,
+          endDateStr: asOfDateStr,
+          basis: 'ACT/365',
+        });
+        lateInterestDec = new Decimal(calcRes.interestAmount);
+        feeDec = recoveryFee;
+
+        grandTotalLateInterest = grandTotalLateInterest.plus(lateInterestDec);
+        grandTotalRecoveryFees = grandTotalRecoveryFees.plus(feeDec);
+      }
+
+      const invDetail: AgingInvoiceDetail = {
+        invoiceId: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        clientId: inv.clientId,
+        clientName: inv.clientName,
+        dueDate: dueDateStr,
+        daysOverdue,
+        totalAmount: totalInvoiceAmt.toFixed(2),
+        paidAmount: paidAmt.toFixed(2),
+        remainingDue: remainingDue.toFixed(2),
+        lateInterest: lateInterestDec.toFixed(2),
+        recoveryFee: feeDec.toFixed(2),
+      };
+
+      // Affectation dans le bon panier de balance âgée
+      let targetBucket: AgingBucketDetail;
+      if (daysOverdue <= 30) {
+        targetBucket = buckets.CURRENT_0_30;
+      } else if (daysOverdue <= 60) {
+        targetBucket = buckets.OVERDUE_31_60;
+      } else if (daysOverdue <= 90) {
+        targetBucket = buckets.OVERDUE_61_90;
+      } else {
+        targetBucket = buckets.OVERDUE_OVER_90;
+      }
+
+      targetBucket.invoicesCount++;
+      targetBucket.totalRemainingDue = new Decimal(targetBucket.totalRemainingDue).plus(remainingDue).toFixed(2);
+      targetBucket.totalLateInterest = new Decimal(targetBucket.totalLateInterest).plus(lateInterestDec).toFixed(2);
+      targetBucket.totalRecoveryFees = new Decimal(targetBucket.totalRecoveryFees).plus(feeDec).toFixed(2);
+      targetBucket.invoices.push(invDetail);
+    }
+
+    return {
+      asOfDate: asOfDateStr,
+      currency,
+      totalReceivables: grandTotalReceivables.toFixed(2),
+      totalOverdueAmount: grandTotalOverdue.toFixed(2),
+      totalLateInterestAccrued: grandTotalLateInterest.toFixed(2),
+      totalRecoveryFeesAccrued: grandTotalRecoveryFees.toFixed(2),
+      buckets,
+    };
+  }
+
+  /**
+   * Vérifie qu'une écriture comptable est rigoureusement équilibrée via Decimal.js (Débit = Crédit)
    */
   public static validateDoubleEntryBalance(lines: { debit: string; credit: string }[]): {
     totalDebit: string;
@@ -449,7 +886,9 @@ export class AccountingEngine {
       }
     }
 
-    return Array.from(map.values()).filter((a) => a.entries.length > 0 || a.accountCode.startsWith('4') || a.accountCode.startsWith('5') || a.accountCode.startsWith('7'));
+    return Array.from(map.values()).filter(
+      (a) => a.entries.length > 0 || a.accountCode.startsWith('4') || a.accountCode.startsWith('5') || a.accountCode.startsWith('7')
+    );
   }
 
   /**
@@ -515,7 +954,6 @@ export class AccountingEngine {
     for (const bank of bankLines) {
       const bankAmt = new Decimal(bank.amount).abs();
 
-      // Recherche par référence ou montant exact
       const matched = payments.find((p) => {
         const pAmt = new Decimal(p.amount);
         const refMatch =
@@ -529,7 +967,6 @@ export class AccountingEngine {
       if (matched) {
         const pAmt = new Decimal(matched.amount);
         const delta = bankAmt.minus(pAmt).abs();
-
         const isExact = delta.lt('0.05');
 
         results.push({
@@ -543,7 +980,9 @@ export class AccountingEngine {
           discrepancyDelta: delta.toFixed(2),
           reconciledAt: nowIso,
           reconciledBy: 'Automate Rapprochement Stage 3',
-          notes: isExact ? 'Lettrage parfait relevé et journal trésorerie.' : `Écart constaté de ${delta.toFixed(2)} EUR (frais bancaires éventuels).`,
+          notes: isExact
+            ? 'Lettrage parfait relevé et journal trésorerie.'
+            : `Écart constaté de ${delta.toFixed(2)} EUR (frais bancaires éventuels).`,
         });
       } else {
         results.push({
@@ -587,22 +1026,21 @@ export class AccountingEngine {
         totalRevenueDec = totalRevenueDec.plus(soldeCred);
       } else if (row.accountCode.startsWith('6')) {
         totalExpenseDec = totalExpenseDec.plus(soldeDeb);
-      } else if (row.accountCode === '512000' || row.accountCode === '5000' || row.accountCode === '521') {
+      } else if (row.accountCode === '512000' || row.accountCode === '5000' || row.accountCode === '521' || row.accountCode === '5141') {
         cashDec = cashDec.plus(soldeDeb).minus(soldeCred);
-      } else if (row.accountCode === '411000' || row.accountCode === '4000' || row.accountCode === '411') {
+      } else if (row.accountCode === '411000' || row.accountCode === '4000' || row.accountCode === '411' || row.accountCode === '3421') {
         receivablesDec = receivablesDec.plus(soldeDeb).minus(soldeCred);
-      } else if (row.accountCode === '401000' || row.accountCode === '4500' || row.accountCode === '401') {
+      } else if (row.accountCode === '401000' || row.accountCode === '4500' || row.accountCode === '401' || row.accountCode === '4411') {
         payablesDec = payablesDec.plus(soldeCred).minus(soldeDeb);
       }
     }
 
     const netIncomeDec = totalRevenueDec.minus(totalExpenseDec);
-    const operatingProfitDec = netIncomeDec; // Simplifié
+    const operatingProfitDec = netIncomeDec;
 
     const currentAssetsDec = receivablesDec.plus('25000.00'); // Créances + Stocks
     const totalAssetsDec = fixedAssetsDec.plus(currentAssetsDec).plus(cashDec);
 
-    // En comptabilité en partie double, les capitaux propres absorbent l'écart bilanciel
     const operatingDebts = payablesDec.plus('10000.00');
     equityDec = totalAssetsDec.minus(operatingDebts).minus(netIncomeDec);
     const totalLiabilitiesAndEquityDec = equityDec.plus(netIncomeDec).plus(operatingDebts);
@@ -643,8 +1081,7 @@ export class AccountingEngine {
   }
 
   /**
-   * Moteur de calcul financier d'échéancier d'emprunt ou crédit documentaire (Decimal.js)
-   * Précision stricte sans flottant binaire natif
+   * Moteur de calcul d'échéancier d'emprunt ou crédit documentaire (Decimal.js)
    */
   public static calculateAmortizationSchedule(params: {
     principalStr: string;
@@ -662,7 +1099,6 @@ export class AccountingEngine {
     const monthlyRate = annualRate.dividedBy(12);
     const n = params.durationMonths;
 
-    // Formule mensualité constante : M = P * [r / (1 - (1+r)^-n)]
     const onePlusR = new Decimal(1).plus(monthlyRate);
     const onePlusRPowMinusN = new Decimal(1).dividedBy(onePlusR.pow(n));
     const denominator = new Decimal(1).minus(onePlusRPowMinusN);
@@ -726,12 +1162,94 @@ export class AccountingEngine {
   }
 
   /**
+   * Export Fichier des Écritures Comptables (FEC) conforme art. A.47 A-1 du Livre des procédures fiscales
+   */
+  public static exportFecAccountingFile(entries: AccountingEntryRecord[], fiscalYear?: number): string {
+    const targetEntries = fiscalYear
+      ? entries.filter((e) => e.date.startsWith(String(fiscalYear)))
+      : entries;
+
+    const headers = [
+      'JournalCode',
+      'JournalLib',
+      'EcritureNum',
+      'EcritureDate',
+      'CompteNum',
+      'CompteLib',
+      'CompAuxNum',
+      'CompAuxLib',
+      'PieceRef',
+      'PieceDate',
+      'EcritureLib',
+      'Debit',
+      'Credit',
+      'EcritureLet',
+      'DateLet',
+      'ValidDate',
+      'Montantdevise',
+      'Idevise',
+    ];
+
+    const lines: string[] = [headers.join('\t')];
+
+    for (const ent of targetEntries) {
+      const formattedDate = ent.date.replace(/-/g, '');
+      const validDate = (ent.validatedAt || ent.date).slice(0, 10).replace(/-/g, '');
+
+      for (const line of ent.lines) {
+        const row = [
+          ent.journalCode,
+          ent.journalCode === 'VTE'
+            ? 'Journal des Ventes'
+            : ent.journalCode === 'ACH'
+            ? 'Journal des Achats'
+            : ent.journalCode === 'BNQ'
+            ? 'Journal de Banque'
+            : 'Journal des Operations Diverses',
+          ent.entryNumber,
+          formattedDate,
+          line.accountCode,
+          line.accountName,
+          line.auxiliaryCode || '',
+          line.auxiliaryCode ? `Tiers ${line.auxiliaryCode}` : '',
+          ent.pieceReference,
+          formattedDate,
+          line.label,
+          new Decimal(line.debit || '0').toFixed(2).replace('.', ','),
+          new Decimal(line.credit || '0').toFixed(2).replace('.', ','),
+          line.reconciliationKey || '',
+          line.reconciliationKey ? formattedDate : '',
+          validDate,
+          '',
+          '',
+        ];
+        lines.push(row.join('\t'));
+      }
+    }
+
+    return lines.join('\r\n');
+  }
+
+  /**
    * Sécurité Stage 3 : Interdiction de mutation commerciale par le Comptable
    */
   public static enforceAccountantReadOnlyRestriction(role: UserRoleCode): void {
     if (role === 'COMPTABLE') {
       throw new Error(
         'INTERDIT (Sécurité Stage 3 Cahier des Charges) : Le rôle COMPTABLE ne peut modifier aucune donnée commerciale source (produits, stocks, commandes). Il dispose d’un accès complet en lecture aux factures, écritures et calculs financiers.'
+      );
+    }
+  }
+
+  /**
+   * Vérifie si une date d'écriture appartient à une période fiscale ouverte
+   */
+  public static validateFiscalPeriodNotLocked(dateStr: string, periods: FiscalPeriodRecord[]): void {
+    const periodCode = dateStr.slice(0, 7);
+    const p = periods.find((fp) => fp.periodCode === periodCode);
+    if (p && p.status === 'LOCKED') {
+      throw new Error(
+        `Période comptable clôturée et verrouillée (${periodCode}) : aucune nouvelle écriture ou modification n’est autorisée.`
       );
     }
   }

@@ -1,11 +1,19 @@
 // Vibe — TRADELINK V6.0 : Performance, Security & Reliability First.
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import Decimal from 'decimal.js';
 import {
   AuditLogRecord,
   BackupRecord,
   CalculationResultRecord,
   CartItem,
   DayCountBasis,
+  AgingBalanceReport,
+  BenchmarkRateRecord,
+  FinancialConfigAuditRecord,
+  FinancialEngineConfigRecord,
+  FinancialRateType,
+  FinancialRoundingMode,
+  FiscalPeriodRecord,
   FloatingButtonItem,
   ImportJobRecord,
   IncidentRecord,
@@ -50,6 +58,11 @@ import {
   DocumentPartyInfo,
   DocumentTransportDetails,
 } from '../types';
+import {
+  AccountingEngine,
+  DEFAULT_FINANCIAL_CONFIG,
+  INITIAL_BENCHMARK_RATES,
+} from '../services/accountingEngine';
 import {
   BillingDocumentEngine,
 } from '../services/billingDocumentEngine';
@@ -1978,8 +1991,26 @@ interface AppContextValue {
     annualRatePctStr: string,
     startDateStr: string,
     endDateStr: string,
-    basis: DayCountBasis
+    basis?: DayCountBasis,
+    options?: {
+      rateType?: FinancialRateType;
+      benchmarkRateCode?: string;
+      benchmarkRatePctStr?: string;
+      spreadPctStr?: string;
+      roundingMode?: FinancialRoundingMode;
+      roundingDecimals?: number;
+      currency?: string;
+    }
   ) => CalculationResultRecord;
+  financialConfig: FinancialEngineConfigRecord;
+  financialConfigAudits: FinancialConfigAuditRecord[];
+  updateFinancialConfig: (updates: Partial<FinancialEngineConfigRecord>, reason?: string) => void;
+  benchmarkRates: BenchmarkRateRecord[];
+  updateBenchmarkRate: (code: string, newRatePct: string) => void;
+  getAgingBalanceReport: (asOfDate?: string) => AgingBalanceReport;
+  exportFecFile: (fiscalYear?: number) => { fecContent: string; filename: string };
+  fiscalPeriods: FiscalPeriodRecord[];
+  lockFiscalPeriod: (periodCode: string) => void;
   rooms: RoomLiveRecord[];
   createRoomLive: (
     titleOrParams:
@@ -2201,6 +2232,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       basis: 'ACT/ACT',
       executedBy: 'Claire Dubois (Année bissextile 2024 - 366j)',
     }),
+  ]);
+  const [financialConfig, setFinancialConfig] = useState<FinancialEngineConfigRecord>(() => structuredClone(DEFAULT_FINANCIAL_CONFIG));
+  const [financialConfigAudits, setFinancialConfigAudits] = useState<FinancialConfigAuditRecord[]>([]);
+  const [benchmarkRates, setBenchmarkRates] = useState<BenchmarkRateRecord[]>(() => structuredClone(INITIAL_BENCHMARK_RATES));
+  const [fiscalPeriods, setFiscalPeriods] = useState<FiscalPeriodRecord[]>([
+    { id: 'fp-2026-01', fiscalYear: 2026, periodCode: '2026-01', startDate: '2026-01-01', endDate: '2026-01-31', status: 'LOCKED', closedAt: '2026-02-05 18:00:00', closedBy: 'admin@tradelink.com' },
+    { id: 'fp-2026-02', fiscalYear: 2026, periodCode: '2026-02', startDate: '2026-02-01', endDate: '2026-02-28', status: 'LOCKED', closedAt: '2026-03-05 18:00:00', closedBy: 'admin@tradelink.com' },
+    { id: 'fp-2026-03', fiscalYear: 2026, periodCode: '2026-03', startDate: '2026-03-01', endDate: '2026-03-31', status: 'OPEN' },
+    { id: 'fp-2026-04', fiscalYear: 2026, periodCode: '2026-04', startDate: '2026-04-01', endDate: '2026-04-30', status: 'OPEN' },
+    { id: 'fp-2026-05', fiscalYear: 2026, periodCode: '2026-05', startDate: '2026-05-01', endDate: '2026-05-31', status: 'OPEN' },
+    { id: 'fp-2026-06', fiscalYear: 2026, periodCode: '2026-06', startDate: '2026-06-01', endDate: '2026-06-30', status: 'OPEN' },
+    { id: 'fp-2026-07', fiscalYear: 2026, periodCode: '2026-07', startDate: '2026-07-01', endDate: '2026-07-31', status: 'OPEN' },
+    { id: 'fp-2026-08', fiscalYear: 2026, periodCode: '2026-08', startDate: '2026-08-01', endDate: '2026-08-31', status: 'OPEN' },
+    { id: 'fp-2026-09', fiscalYear: 2026, periodCode: '2026-09', startDate: '2026-09-01', endDate: '2026-09-30', status: 'OPEN' },
+    { id: 'fp-2026-10', fiscalYear: 2026, periodCode: '2026-10', startDate: '2026-10-01', endDate: '2026-10-31', status: 'OPEN' },
+    { id: 'fp-2026-11', fiscalYear: 2026, periodCode: '2026-11', startDate: '2026-11-01', endDate: '2026-11-30', status: 'OPEN' },
+    { id: 'fp-2026-12', fiscalYear: 2026, periodCode: '2026-12', startDate: '2026-12-01', endDate: '2026-12-31', status: 'OPEN' },
   ]);
   const [rooms, setRooms] = useState<RoomLiveRecord[]>(INITIAL_ROOMS);
   const [importJobs, setImportJobs] = useState<ImportJobRecord[]>(INITIAL_IMPORT_JOBS);
@@ -4215,15 +4263,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     annualRatePctStr: string,
     startDateStr: string,
     endDateStr: string,
-    basis: DayCountBasis
+    basis?: DayCountBasis,
+    options?: {
+      rateType?: FinancialRateType;
+      benchmarkRateCode?: string;
+      benchmarkRatePctStr?: string;
+      spreadPctStr?: string;
+      roundingMode?: FinancialRoundingMode;
+      roundingDecimals?: number;
+      currency?: string;
+    }
   ): CalculationResultRecord => {
-    const res = calculateFinancialInterest({
+    const res = AccountingEngine.calculateFinancialInterest({
       principalStr,
       annualRatePctStr,
+      rateType: options?.rateType ?? 'FIXED',
+      benchmarkRateCode: options?.benchmarkRateCode,
+      benchmarkRatePctStr: options?.benchmarkRatePctStr,
+      spreadPctStr: options?.spreadPctStr,
       startDateStr,
       endDateStr,
-      basis,
+      basis: basis ?? financialConfig.defaultBasis,
+      roundingMode: options?.roundingMode ?? financialConfig.defaultRoundingMode,
+      roundingDecimals: options?.roundingDecimals ?? financialConfig.defaultRoundingDecimals,
+      currency: options?.currency ?? 'EUR',
       executedBy: `${currentUser.firstName} ${currentUser.lastName} (${currentUser.role})`,
+      ruleVersion: financialConfig.version,
+      benchmarksRegistry: benchmarkRates,
     });
     setCalcHistory((prev) => [res, ...prev]);
     addAuditLog(
@@ -4231,10 +4297,117 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       'CalculationPeriod',
       res.id,
       'SUCCESS',
-      `Calcul Decimal.js (${basis}) : ${res.principal} EUR @ ${res.annualRatePct}% sur ${res.daysCount}j = ${res.interestAmount} EUR`
+      `Calcul Decimal.js (${res.basis}, ${res.roundingMode}) : ${res.principal} ${res.currency} @ ${res.annualRatePct}% sur ${res.daysCount}j = ${res.interestAmount} ${res.currency}`
     );
-    notifyToast(`Calcul financier déterministe (${basis}) enregistré : +${res.interestAmount} EUR`, 'success');
+    notifyToast(`Calcul financier déterministe (${res.basis}) enregistré : +${res.interestAmount} ${res.currency}`, 'success');
     return res;
+  };
+
+  const updateFinancialConfig = (updates: Partial<FinancialEngineConfigRecord>, reason?: string) => {
+    if (currentUser.role !== 'ADMIN') {
+      notifyToast('Seul un administrateur peut modifier la configuration du moteur financier.', 'error');
+      return;
+    }
+    const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const newAudits: FinancialConfigAuditRecord[] = [];
+    const keys = Object.keys(updates) as (keyof FinancialEngineConfigRecord)[];
+    for (const k of keys) {
+      if (k === 'id' || k === 'updatedAt' || k === 'updatedBy' || k === 'version') continue;
+      const oldVal = String(financialConfig[k] ?? '');
+      const newVal = String(updates[k] ?? '');
+      if (oldVal !== newVal) {
+        newAudits.push({
+          id: `audit-fincfg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          paramKey: k,
+          oldValue: oldVal,
+          newValue: newVal,
+          modifiedBy: currentUser.email,
+          modifiedAt: nowIso,
+          reason: reason || 'Mise à jour des paramètres financiers',
+        });
+      }
+    }
+    setFinancialConfig((prev) => ({
+      ...prev,
+      ...updates,
+      updatedAt: nowIso,
+      updatedBy: currentUser.email,
+    }));
+    if (newAudits.length > 0) {
+      setFinancialConfigAudits((prev) => [...newAudits, ...prev]);
+    }
+    addAuditLog(
+      'FINANCIAL_CONFIG_UPDATED',
+      'FinancialEngineConfig',
+      'DEFAULT',
+      'SUCCESS',
+      `Configuration financière mise à jour : ${newAudits.length} modification(s) enregistrée(s).`
+    );
+    notifyToast('Configuration financière mise à jour avec succès.', 'success');
+  };
+
+  const updateBenchmarkRate = (code: string, newRatePct: string) => {
+    if (currentUser.role !== 'ADMIN') {
+      notifyToast('Seul un administrateur peut modifier les taux de référence de marché.', 'error');
+      return;
+    }
+    const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    setBenchmarkRates((prev) =>
+      prev.map((b) => (b.code === code ? { ...b, currentRatePct: newRatePct, updatedAt: nowIso, updatedBy: currentUser.email } : b))
+    );
+    addAuditLog(
+      'BENCHMARK_RATE_UPDATED',
+      'BenchmarkRate',
+      code,
+      'SUCCESS',
+      `Taux de référence ${code} actualisé à ${newRatePct}%.`
+    );
+    notifyToast(`Taux de référence ${code} mis à jour : ${newRatePct}%.`, 'success');
+  };
+
+  const getAgingBalanceReport = (asOfDate?: string): AgingBalanceReport => {
+    return AccountingEngine.calculateAgingBalance({
+      invoices,
+      payments,
+      asOfDateStr: asOfDate,
+      lateInterestRatePct: new Decimal(financialConfig.defaultFixedRatePct).plus(financialConfig.defaultLateInterestSpreadPct).toFixed(4),
+      recoveryFeeAmount: financialConfig.fixedRecoveryFeeAmount,
+      currency: financialConfig.fixedRecoveryFeeCurrency,
+    });
+  };
+
+  const exportFecFile = (fiscalYear?: number): { fecContent: string; filename: string } => {
+    const year = fiscalYear || 2026;
+    const baseEntries = [
+      ...invoices.map((inv) => AccountingEngine.createSalesInvoiceEntry(inv, 'Export FEC Engine')),
+      ...payments.map((p) => AccountingEngine.createPaymentCashEntry(p, '1.40', '0.25', 'Export FEC Engine')),
+    ];
+    const fecContent = AccountingEngine.exportFecAccountingFile(baseEntries, year);
+    const filename = `FEC_${year}_TRADELINK_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.txt`;
+    return { fecContent, filename };
+  };
+
+  const lockFiscalPeriod = (periodCode: string) => {
+    if (currentUser.role !== 'ADMIN') {
+      notifyToast('Seul un administrateur peut verrouiller une période comptable.', 'error');
+      return;
+    }
+    const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    setFiscalPeriods((prev) =>
+      prev.map((fp) =>
+        fp.periodCode === periodCode
+          ? { ...fp, status: 'LOCKED', closedAt: nowIso, closedBy: currentUser.email }
+          : fp
+      )
+    );
+    addAuditLog(
+      'FISCAL_PERIOD_LOCKED',
+      'FiscalPeriod',
+      periodCode,
+      'SUCCESS',
+      `Période fiscale ${periodCode} verrouillée.`
+    );
+    notifyToast(`Période fiscale ${periodCode} verrouillée avec succès.`, 'success');
   };
 
   const createRoomLive = (
@@ -5461,6 +5634,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateKycProfile,
         calcHistory,
         runFinancialCalculation,
+        financialConfig,
+        financialConfigAudits,
+        updateFinancialConfig,
+        benchmarkRates,
+        updateBenchmarkRate,
+        getAgingBalanceReport,
+        exportFecFile,
+        fiscalPeriods,
+        lockFiscalPeriod,
         rooms,
         createRoomLive,
         importJobs,

@@ -73,6 +73,8 @@ import {
 } from '../components/ui/DesignSystem';
 import {
   DayCountBasis,
+  FinancialRateType,
+  FinancialRoundingMode,
   IncidentRecord,
   InvoiceRecord,
   OcrDocumentDetail,
@@ -1572,7 +1574,21 @@ export const AccountingWorkspacePage: React.FC<{
     | 'calcul'
     | 'parametres';
 }> = ({ section }) => {
-  const { locale, invoices, calcHistory, runFinancialCalculation, notifyToast, payments } = useApp();
+  const {
+    locale,
+    invoices,
+    calcHistory,
+    runFinancialCalculation,
+    notifyToast,
+    payments,
+    benchmarkRates,
+    updateBenchmarkRate,
+    getAgingBalanceReport,
+    exportFecFile,
+    fiscalPeriods,
+    lockFiscalPeriod,
+    currentUser,
+  } = useApp();
 
   // Configuration du référentiel comptable
   const [framework, setFramework] = useState<AccountingFramework>('PCG');
@@ -1580,9 +1596,15 @@ export const AccountingWorkspacePage: React.FC<{
   // Moteur d'intérêts ACT/365, ACT/360, ACT/ACT
   const [principal, setPrincipal] = useState('150000.00');
   const [rate, setRate] = useState('5.25');
+  const [rateType, setRateType] = useState<FinancialRateType>('FIXED');
+  const [benchmarkRateCode, setBenchmarkRateCode] = useState('EURIBOR_3M');
+  const [spreadPctStr, setSpreadPctStr] = useState('1.5000');
+  const [roundingMode, setRoundingMode] = useState<FinancialRoundingMode>('ROUND_HALF_UP');
+  const [roundingDecimals, setRoundingDecimals] = useState(2);
   const [startDate, setStartDate] = useState('2026-01-01');
   const [endDate, setEndDate] = useState('2026-09-30');
   const [basis, setBasis] = useState<DayCountBasis>('ACT/365');
+  const [asOfDateStr, setAsOfDateStr] = useState('2026-11-18');
 
   // Moteur d'amortissement de prêt
   const [loanPrincipal, setLoanPrincipal] = useState('250000.00');
@@ -1606,7 +1628,7 @@ export const AccountingWorkspacePage: React.FC<{
   // Filtres et onglets
   const [selectedJournal, setSelectedJournal] = useState<'ALL' | 'VTE' | 'ACH' | 'BNQ' | 'OD'>('ALL');
   const [selectedLedgerTab, setSelectedLedgerTab] = useState<'ledger' | 'balance' | 'subledger' | 'reconciliation'>('ledger');
-  const [selectedCalcTab, setSelectedCalcTab] = useState<'interest' | 'amortization'>('interest');
+  const [selectedCalcTab, setSelectedCalcTab] = useState<'interest' | 'amortization' | 'aging' | 'fec'>('interest');
   const [invoiceSearch, setInvoiceSearch] = useState('');
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'ALL' | 'PAID' | 'PENDING'>('ALL');
 
@@ -3158,7 +3180,7 @@ export const AccountingWorkspacePage: React.FC<{
           subtitle="Calcul rigoureux sans flottant binaire : Conventions ACT/365, ACT/360, ACT/ACT bissextile (366j) & Tableau d'Amortissement de Prêt"
         >
           {/* SÉLECTEUR DE SOUS-MODULE */}
-          <div className="flex items-center gap-2 mb-6 border-b border-slate-200 dark:border-teal-800 pb-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2 mb-6 border-b border-slate-200 dark:border-teal-800 pb-3 text-xs">
             <button
               type="button"
               onClick={() => setSelectedCalcTab('interest')}
@@ -3183,6 +3205,30 @@ export const AccountingWorkspacePage: React.FC<{
               <TrendingUp className="w-3.5 h-3.5" />
               2. Amortissement d'Emprunt & Lignes de Crédit
             </button>
+            <button
+              type="button"
+              onClick={() => setSelectedCalcTab('aging')}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold transition-all ${
+                selectedCalcTab === 'aging'
+                  ? 'bg-[#E85D22] text-white shadow-sm'
+                  : 'bg-slate-100 dark:bg-teal-900/40 text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              3. Balance Âgée & Recouvrement (0-30j, 31-60j, 61-90j, &gt;90j)
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedCalcTab('fec')}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold transition-all ${
+                selectedCalcTab === 'fec'
+                  ? 'bg-[#E85D22] text-white shadow-sm'
+                  : 'bg-slate-100 dark:bg-teal-900/40 text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              <Download className="w-3.5 h-3.5" />
+              4. Export FEC Fiscal (Art. A.47 A-1)
+            </button>
           </div>
 
           {/* SOUS-MODULE 1 : INTÉRÊTS & CONVENTIONS ACT */}
@@ -3191,7 +3237,14 @@ export const AccountingWorkspacePage: React.FC<{
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  runFinancialCalculation(principal, rate, startDate, endDate, basis);
+                  runFinancialCalculation(principal, rate, startDate, endDate, basis, {
+                    rateType,
+                    benchmarkRateCode,
+                    spreadPctStr,
+                    roundingMode,
+                    roundingDecimals,
+                    currency: 'EUR',
+                  });
                 }}
                 className="lg:col-span-5 p-5 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-4"
               >
@@ -3201,12 +3254,77 @@ export const AccountingWorkspacePage: React.FC<{
                   onChange={(e) => setPrincipal(e.target.value)}
                   required
                 />
-                <Input
-                  label="Taux Annuel (%)"
-                  value={rate}
-                  onChange={(e) => setRate(e.target.value)}
-                  required
-                />
+
+                {/* SÉLECTEUR TAUX FIXE VS VARIABLE */}
+                <div>
+                  <label className="text-xs font-semibold block mb-1.5">Type de Taux d'Intérêt :</label>
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <button
+                      type="button"
+                      onClick={() => setRateType('FIXED')}
+                      className={`py-1.5 px-3 rounded-xl text-xs font-bold border transition-all ${
+                        rateType === 'FIXED'
+                          ? 'bg-[#E85D22] text-white border-[#E85D22]'
+                          : 'bg-white dark:bg-[#0B2D31] border-slate-300 dark:border-teal-800'
+                      }`}
+                    >
+                      Taux Fixe
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRateType('VARIABLE')}
+                      className={`py-1.5 px-3 rounded-xl text-xs font-bold border transition-all ${
+                        rateType === 'VARIABLE'
+                          ? 'bg-[#E85D22] text-white border-[#E85D22]'
+                          : 'bg-white dark:bg-[#0B2D31] border-slate-300 dark:border-teal-800'
+                      }`}
+                    >
+                      Taux Variable (Benchmark + Spread)
+                    </button>
+                  </div>
+
+                  {rateType === 'FIXED' ? (
+                    <Input
+                      label="Taux Fixe Annuel (%)"
+                      value={rate}
+                      onChange={(e) => setRate(e.target.value)}
+                      required
+                    />
+                  ) : (
+                    <div className="space-y-3 p-3 rounded-xl bg-orange-50/50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-800/40">
+                      <div>
+                        <label className="text-xs font-semibold block mb-1">Taux Monétaire de Référence :</label>
+                        <select
+                          value={benchmarkRateCode}
+                          onChange={(e) => setBenchmarkRateCode(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0B2D31] border border-slate-300 dark:border-teal-800 text-xs font-semibold"
+                        >
+                          {benchmarkRates.map((b) => (
+                            <option key={b.code} value={b.code}>
+                              {b.code} ({b.name}) — {b.currentRatePct}%
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <Input
+                        label="Spread de Marge Additionnelle (%)"
+                        value={spreadPctStr}
+                        onChange={(e) => setSpreadPctStr(e.target.value)}
+                        required
+                      />
+                      <div className="text-[11px] text-slate-500 font-semibold flex justify-between">
+                        <span>Taux Effectif Combiné :</span>
+                        <strong className="text-[#E85D22]">
+                          {(
+                            parseFloat(benchmarkRates.find((b) => b.code === benchmarkRateCode)?.currentRatePct || '0') +
+                            parseFloat(spreadPctStr || '0')
+                          ).toFixed(4)} %
+                        </strong>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-2 gap-3">
                   <Input
                     label="Date de début"
@@ -3222,6 +3340,35 @@ export const AccountingWorkspacePage: React.FC<{
                     onChange={(e) => setEndDate(e.target.value)}
                     required
                   />
+                </div>
+
+                {/* SÉLECTEUR RÈGLE D'ARRONDI & DÉCIMALES */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-semibold block mb-1.5">Règle d'Arrondi :</label>
+                    <select
+                      value={roundingMode}
+                      onChange={(e) => setRoundingMode(e.target.value as FinancialRoundingMode)}
+                      className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0B2D31] border border-slate-300 dark:border-teal-800 text-xs font-semibold"
+                    >
+                      <option value="ROUND_HALF_UP">HALF_UP (Commercial standard)</option>
+                      <option value="ROUND_HALF_EVEN">HALF_EVEN (Bancaire IEEE 754)</option>
+                      <option value="ROUND_UP">ROUND_UP (Plafond supérieur)</option>
+                      <option value="ROUND_DOWN">ROUND_DOWN (Plancher / Troncature)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold block mb-1.5">Décimales :</label>
+                    <select
+                      value={roundingDecimals}
+                      onChange={(e) => setRoundingDecimals(parseInt(e.target.value, 10))}
+                      className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0B2D31] border border-slate-300 dark:border-teal-800 text-xs font-semibold"
+                    >
+                      <option value="2">2 décimales (0.01 € standard)</option>
+                      <option value="4">4 décimales (Précision obligataire)</option>
+                      <option value="6">6 décimales (Calculs institutionnels)</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div>
@@ -3277,6 +3424,10 @@ export const AccountingWorkspacePage: React.FC<{
                         {c.isLeapYearDetected && (
                           <Badge variant="info">Année Bissextile Détectée (366j)</Badge>
                         )}
+                        {c.rateType === 'VARIABLE' && (
+                          <Badge variant="warning">{c.benchmarkRateCode || 'VARIABLE'}</Badge>
+                        )}
+                        <Badge variant="neutral">{c.roundingMode || 'ROUND_HALF_UP'}</Badge>
                       </div>
                       <span className="text-slate-400 font-mono">{c.ruleVersion}</span>
                     </div>
@@ -3285,6 +3436,9 @@ export const AccountingWorkspacePage: React.FC<{
                       <strong>{c.annualRatePct}%</strong> × <strong>{c.daysCount} jours</strong> /{' '}
                       <strong>{c.annualDivisor}</strong>
                     </p>
+                    {c.calculationExplanation && (
+                      <p className="text-[11px] text-slate-400 font-mono">{c.calculationExplanation}</p>
+                    )}
                     <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-teal-800/60">
                       <span className="text-emerald-700 dark:text-emerald-300 font-bold">
                         Intérêts calculés : +{formatCurrency(c.interestAmount, c.currency, locale)}
@@ -3400,6 +3554,230 @@ export const AccountingWorkspacePage: React.FC<{
               </div>
             </div>
           )}
+
+          {/* SOUS-MODULE 3 : BALANCE ÂGÉE DES CRÉANCES & PÉNALITÉS (PROMPT 14) */}
+          {selectedCalcTab === 'aging' && (() => {
+            const agingReport = getAgingBalanceReport(asOfDateStr);
+            return (
+              <div className="space-y-6">
+                <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800">
+                  <div className="flex items-center gap-3">
+                    <label className="text-xs font-bold text-slate-500 uppercase">Date d'arrêté d'arriéré :</label>
+                    <input
+                      type="date"
+                      value={asOfDateStr}
+                      onChange={(e) => setAsOfDateStr(e.target.value)}
+                      className="px-3 py-1.5 rounded-xl bg-white dark:bg-[#0B2D31] border border-slate-300 dark:border-teal-800 text-xs font-bold"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="orange">Directive 2011/7/UE &amp; Art. L441-10 C.Com</Badge>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        const fec = exportFecFile(2026);
+                        downloadDataExport(fec.fecContent, fec.filename, 'text/plain;charset=utf-8');
+                        notifyToast(`Fichier FEC généré avec succès : ${fec.filename}`, 'success');
+                      }}
+                    >
+                      <Download className="w-3.5 h-3.5 mr-1" />
+                      Export FEC Fiscal
+                    </Button>
+                  </div>
+                </div>
+
+                {/* KPI SUMMARY CARDS */}
+                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="p-4 rounded-2xl bg-white dark:bg-[#082225] border border-slate-200 dark:border-teal-800 shadow-sm">
+                    <span className="text-[11px] font-bold uppercase text-slate-400">Total En-cours Créances</span>
+                    <p className="text-xl font-extrabold text-slate-900 dark:text-white mt-1">
+                      {formatCurrency(agingReport.totalReceivables, agingReport.currency, locale)}
+                    </p>
+                    <span className="text-[10px] text-slate-400">Toutes factures non soldées</span>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-white dark:bg-[#082225] border border-amber-200 dark:border-amber-800/40 shadow-sm">
+                    <span className="text-[11px] font-bold uppercase text-amber-600 dark:text-amber-400">Créances Échues (Arriérés)</span>
+                    <p className="text-xl font-extrabold text-amber-600 dark:text-amber-400 mt-1">
+                      {formatCurrency(agingReport.totalOverdueAmount, agingReport.currency, locale)}
+                    </p>
+                    <span className="text-[10px] text-slate-400">Dépassement d'échéance contractuelle</span>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-white dark:bg-[#082225] border border-red-200 dark:border-red-800/40 shadow-sm">
+                    <span className="text-[11px] font-bold uppercase text-red-600 dark:text-red-400">Pénalités Retard (BCE + 10%)</span>
+                    <p className="text-xl font-extrabold text-red-600 dark:text-red-400 mt-1">
+                      +{formatCurrency(agingReport.totalLateInterestAccrued, agingReport.currency, locale)}
+                    </p>
+                    <span className="text-[10px] text-slate-400">Calcul ACT/365 exact Decimal.js</span>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-white dark:bg-[#082225] border border-blue-200 dark:border-blue-800/40 shadow-sm">
+                    <span className="text-[11px] font-bold uppercase text-blue-600 dark:text-blue-400">Frais de Recouvrement Légaux</span>
+                    <p className="text-xl font-extrabold text-blue-600 dark:text-blue-400 mt-1">
+                      +{formatCurrency(agingReport.totalRecoveryFeesAccrued, agingReport.currency, locale)}
+                    </p>
+                    <span className="text-[10px] text-slate-400">Indemnité forfaitaire 40,00 € / facture</span>
+                  </div>
+                </div>
+
+                {/* 4 TRANCHES D'ARRIÉRÉ */}
+                <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {(Object.keys(agingReport.buckets) as (keyof typeof agingReport.buckets)[]).map((key) => {
+                    const b = agingReport.buckets[key];
+                    const isContentieux = key === 'OVERDUE_OVER_90';
+                    const isOverdue = key !== 'CURRENT_0_30';
+                    return (
+                      <div
+                        key={key}
+                        className={`p-4 rounded-2xl border ${
+                          isContentieux
+                            ? 'bg-red-50/40 dark:bg-red-950/20 border-red-300 dark:border-red-800'
+                            : isOverdue
+                            ? 'bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800'
+                            : 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-extrabold uppercase">{b.label}</span>
+                          <Badge variant={isContentieux ? 'danger' : isOverdue ? 'warning' : 'success'}>
+                            {b.invoicesCount} facture(s)
+                          </Badge>
+                        </div>
+                        <div className="space-y-1 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Reste dû :</span>
+                            <strong className="font-mono">{formatCurrency(b.totalRemainingDue, agingReport.currency, locale)}</strong>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Intérêts retard :</span>
+                            <span className="font-mono text-red-600 dark:text-red-400 font-bold">+{b.totalLateInterest} €</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Frais 40 € :</span>
+                            <span className="font-mono text-blue-600 dark:text-blue-400 font-bold">+{b.totalRecoveryFees} €</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* TABLE DES FACTURES EN ARRIÉRÉ */}
+                <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-teal-800">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-50 dark:bg-[#0B2D31] text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-teal-800">
+                      <tr>
+                        <th className="py-2.5 px-3">Numéro</th>
+                        <th className="py-2.5 px-3">Client Débiteur</th>
+                        <th className="py-2.5 px-3">Échéance</th>
+                        <th className="py-2.5 px-3">Retard</th>
+                        <th className="py-2.5 px-3 text-right">Reste Dû</th>
+                        <th className="py-2.5 px-3 text-right">Pénalité BCE+10%</th>
+                        <th className="py-2.5 px-3 text-right">Indemnité 40€</th>
+                        <th className="py-2.5 px-3 text-right">Total Réclamable</th>
+                        <th className="py-2.5 px-3 text-center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 dark:divide-teal-800">
+                      {Object.values(agingReport.buckets).flatMap((b) => b.invoices).length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="py-8 text-center text-slate-400">
+                            Aucune créance en retard à la date d'arrêté du {asOfDateStr}.
+                          </td>
+                        </tr>
+                      ) : (
+                        Object.values(agingReport.buckets).flatMap((b) => b.invoices).map((inv) => (
+                          <tr key={inv.invoiceId} className="hover:bg-slate-50/50 dark:hover:bg-teal-900/20">
+                            <td className="py-2.5 px-3 font-mono font-bold text-[#E85D22]">{inv.invoiceNumber}</td>
+                            <td className="py-2.5 px-3 font-semibold">{inv.clientName}</td>
+                            <td className="py-2.5 px-3 font-mono">{inv.dueDate}</td>
+                            <td className="py-2.5 px-3">
+                              {inv.daysOverdue > 0 ? (
+                                <Badge variant={inv.daysOverdue > 90 ? 'danger' : 'warning'}>
+                                  +{inv.daysOverdue} jours
+                                </Badge>
+                              ) : (
+                                <Badge variant="success">À échoir</Badge>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono font-bold">
+                              {formatCurrency(inv.remainingDue, agingReport.currency, locale)}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono text-red-600 font-bold">
+                              +{formatCurrency(inv.lateInterest, agingReport.currency, locale)}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono text-blue-600 font-bold">
+                              +{formatCurrency(inv.recoveryFee, agingReport.currency, locale)}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono font-extrabold text-slate-900 dark:text-white">
+                              {formatCurrency(
+                                (
+                                  parseFloat(inv.remainingDue || '0') +
+                                  parseFloat(inv.lateInterest || '0') +
+                                  parseFloat(inv.recoveryFee || '0')
+                                ).toFixed(2),
+                                agingReport.currency,
+                                locale
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-center">
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => notifyToast(`Lettre de mise en demeure et décompte d'intérêts générés pour ${inv.invoiceNumber}`, 'success')}
+                              >
+                                Relance
+                              </Button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* SOUS-MODULE 4 : EXPORT FEC FISCAL ART A.47 A-1 (PROMPT 14) */}
+          {selectedCalcTab === 'fec' && (() => {
+            const fec = exportFecFile(2026);
+            return (
+              <div className="space-y-6">
+                <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="font-extrabold text-base text-slate-900 dark:text-white">
+                        Fichier des Écritures Comptables (FEC) — Exercice 2026
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Export obligatoire en cas de vérification de comptabilité informatisée (Art. A.47 A-1 du Livre des Procédures Fiscales). Structure tabulée normalisée à 18 colonnes légales.
+                      </p>
+                    </div>
+                    <Button
+                      variant="primary"
+                      onClick={() => {
+                        downloadDataExport(fec.fecContent, fec.filename, 'text/plain;charset=utf-8');
+                        notifyToast(`Téléchargement du FEC lancé : ${fec.filename}`, 'success');
+                      }}
+                    >
+                      <Download className="w-4 h-4 mr-1" />
+                      Télécharger le Fichier FEC (.txt)
+                    </Button>
+                  </div>
+
+                  <div className="bg-slate-950 text-emerald-400 p-4 rounded-xl font-mono text-xs overflow-x-auto max-h-72 border border-slate-800">
+                    <pre className="whitespace-pre">{fec.fecContent.slice(0, 3000)}...</pre>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Colonnes obligatoires : JournalCode | JournalLib | EcritureNum | EcritureDate | CompteNum | CompteLib | CompAuxNum | CompAuxLib | PieceRef | PieceDate | EcritureLib | Debit | Credit | EcritureLet | DateLet | ValidDate | Montantdevise | Idevise.
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
         </Card>
       )}
 
@@ -3413,8 +3791,8 @@ export const AccountingWorkspacePage: React.FC<{
             subtitle="Configuration des plans de comptes par juridiction (PCG France/UE, IFRS International, OHADA Afrique)"
           >
             <div className="space-y-6">
-              <div className="grid sm:grid-cols-3 gap-4">
-                {(['PCG', 'IFRS', 'OHADA'] as const).map((fw) => (
+              <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {(['PCG', 'IFRS', 'OHADA', 'PCM'] as const).map((fw) => (
                   <button
                     key={fw}
                     type="button"
@@ -3437,7 +3815,9 @@ export const AccountingWorkspacePage: React.FC<{
                         ? 'Plan Comptable Général Français (Classes 1 à 7) pour opérations UE.'
                         : fw === 'IFRS'
                         ? 'International Financial Reporting Standards pour consolidations mondiales.'
-                        : 'Système Comptable OHADA (17 États membres Ouest et Centre Afrique).'}
+                        : fw === 'OHADA'
+                        ? 'Système Comptable OHADA (17 États membres Ouest et Centre Afrique).'
+                        : 'Plan Comptable Marocain (Dahir n° 1-92-138) pour opérations Maroc et Maghreb.'}
                     </p>
                   </button>
                 ))}
@@ -3537,6 +3917,115 @@ export const AccountingWorkspacePage: React.FC<{
                     <td className="py-2.5 px-3 text-slate-500">Article 262-I du Code Général des Impôts (Exportation directe)</td>
                     <td className="py-2.5 px-3"><Badge variant="orange">DAU Douane + EUR.1 + CMR Signé</Badge></td>
                   </tr>
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* RÉFÉRENTIEL DES TAUX MONÉTAIRES DE MARCHÉ (PROMPT 14) */}
+          <Card
+            title="Taux Monétaires de Référence Interbancaires (BCE, SOFR, ESTER, TMP BAM)"
+            subtitle="Référentiel des taux variables pour le calcul automatisé des intérêts financiers et des pénalités de retard"
+          >
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-teal-800">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 dark:bg-[#0B2D31] text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-teal-800">
+                  <tr>
+                    <th className="py-2.5 px-3">Code Référence</th>
+                    <th className="py-2.5 px-3">Intitulé</th>
+                    <th className="py-2.5 px-3">Devise</th>
+                    <th className="py-2.5 px-3 text-right">Taux Actuel (%)</th>
+                    <th className="py-2.5 px-3">Dernière Actualisation</th>
+                    <th className="py-2.5 px-3">Source / Auteur</th>
+                    {currentUser.role === 'ADMIN' && <th className="py-2.5 px-3 text-center">Action Admin</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-teal-800">
+                  {benchmarkRates.map((b) => (
+                    <tr key={b.code} className="hover:bg-slate-50 dark:hover:bg-teal-900/20">
+                      <td className="py-2.5 px-3 font-mono font-bold text-[#E85D22]">{b.code}</td>
+                      <td className="py-2.5 px-3 font-semibold">{b.name}</td>
+                      <td className="py-2.5 px-3 font-mono"><Badge variant="info">{b.currency}</Badge></td>
+                      <td className="py-2.5 px-3 text-right font-mono font-extrabold text-slate-900 dark:text-white">
+                        {b.currentRatePct} %
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-slate-500">{b.updatedAt}</td>
+                      <td className="py-2.5 px-3 text-slate-500">{b.updatedBy}</td>
+                      {currentUser.role === 'ADMIN' && (
+                        <td className="py-2.5 px-3 text-center">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => {
+                              const input = prompt(`Nouveau taux (%) pour ${b.code} :`, b.currentRatePct);
+                              if (input && !isNaN(parseFloat(input))) {
+                                updateBenchmarkRate(b.code, parseFloat(input).toFixed(4));
+                              }
+                            }}
+                          >
+                            Modifier Taux
+                          </Button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* PÉRIODES COMPTABLES & VERROUILLAGE DE CLÔTURE (PROMPT 14) */}
+          <Card
+            title="Périodes Comptables & Verrouillage de Clôture Définitive"
+            subtitle="Protection de l'intégrité comptable : toute période clôturée et verrouillée interdit strictement l'imputation de nouvelles écritures"
+          >
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-teal-800">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 dark:bg-[#0B2D31] text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-teal-800">
+                  <tr>
+                    <th className="py-2.5 px-3">Période</th>
+                    <th className="py-2.5 px-3">Exercice</th>
+                    <th className="py-2.5 px-3">Dates Début / Fin</th>
+                    <th className="py-2.5 px-3 text-center">Statut</th>
+                    <th className="py-2.5 px-3">Date de Verrouillage</th>
+                    <th className="py-2.5 px-3">Clôturé par</th>
+                    {currentUser.role === 'ADMIN' && <th className="py-2.5 px-3 text-center">Action Admin</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-teal-800">
+                  {fiscalPeriods.map((fp) => (
+                    <tr key={fp.periodCode} className="hover:bg-slate-50 dark:hover:bg-teal-900/20">
+                      <td className="py-2.5 px-3 font-mono font-bold text-[#E85D22]">{fp.periodCode}</td>
+                      <td className="py-2.5 px-3 font-bold">{fp.fiscalYear}</td>
+                      <td className="py-2.5 px-3 font-mono">{fp.startDate} → {fp.endDate}</td>
+                      <td className="py-2.5 px-3 text-center">
+                        <Badge variant={fp.status === 'LOCKED' ? 'danger' : 'success'}>
+                          {fp.status === 'LOCKED' ? 'VERROUILLÉE' : 'OUVERTE'}
+                        </Badge>
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-slate-500">{fp.closedAt || '—'}</td>
+                      <td className="py-2.5 px-3 text-slate-500">{fp.closedBy || '—'}</td>
+                      {currentUser.role === 'ADMIN' && (
+                        <td className="py-2.5 px-3 text-center">
+                          {fp.status === 'OPEN' ? (
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              onClick={() => {
+                                if (confirm(`Confirmer le verrouillage définitif de la période ${fp.periodCode} ? Aucune écriture ne pourra plus y être enregistrée.`)) {
+                                  lockFiscalPeriod(fp.periodCode);
+                                }
+                              }}
+                            >
+                              Verrouiller
+                            </Button>
+                          ) : (
+                            <span className="text-[11px] text-slate-400 font-bold">Verrouillée</span>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

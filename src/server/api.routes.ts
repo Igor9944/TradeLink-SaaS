@@ -59,7 +59,17 @@ export const TRADELINK_API_INVENTORY: ApiEndpointSpec[] = [
 
   // 9.12 & 9.17 Moteur de Calcul & Comptabilité
   { group: 'Calc', method: 'POST', path: '/api/v1/calc/simple', rolesAllowed: ['COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'Calc', method: 'POST', path: '/api/v1/accounting/calculate-interest', rolesAllowed: ['COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'Calc', method: 'GET', path: '/api/v1/accounting/calculation-history', rolesAllowed: ['COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'Calc', method: 'GET', path: '/api/v1/accounting/financial-config', rolesAllowed: ['COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'Calc', method: 'PUT', path: '/api/v1/accounting/financial-config', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'Calc', method: 'GET', path: '/api/v1/accounting/benchmark-rates', rolesAllowed: ['COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'Calc', method: 'PUT', path: '/api/v1/accounting/benchmark-rates/:code', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: true },
   { group: 'Compta', method: 'GET', path: '/api/v1/compta/statements', rolesAllowed: ['COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'Compta', method: 'GET', path: '/api/v1/accounting/aging-balance', rolesAllowed: ['COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'Compta', method: 'GET', path: '/api/v1/accounting/export/fec', rolesAllowed: ['COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'Compta', method: 'GET', path: '/api/v1/accounting/fiscal-periods', rolesAllowed: ['COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'Compta', method: 'PUT', path: '/api/v1/accounting/fiscal-periods/:code/lock', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: true },
 
   // 9.13, 9.14, 9.15 Administration Avancée, Sandbox, KMS & Double Validation
   { group: 'AdminImport', method: 'POST', path: '/api/v1/admin/import/upload', rolesAllowed: ['ADMIN'], ownershipCheck: false, idempotent: true, audited: true },

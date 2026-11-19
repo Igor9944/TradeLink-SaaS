@@ -51,6 +51,10 @@ import {
   PaymentReceiptRecord,
   CommercialDocumentRecord,
   DocumentSearchFilters,
+  BenchmarkRateRecord,
+  FinancialEngineConfigRecord,
+  FinancialConfigAuditRecord,
+  FiscalPeriodRecord,
 } from '../../types';
 import { defaultCatalogEngine } from '../../services/catalogEngine';
 import { defaultStockEngine } from '../../services/stockEngine';
@@ -62,7 +66,11 @@ import {
   TransportDocumentRecord,
   VehicleRecord,
 } from '../../services/logisticsEngine';
-import { AccountingEntryRecord } from '../../services/accountingEngine';
+import {
+  AccountingEntryRecord,
+  DEFAULT_FINANCIAL_CONFIG,
+  INITIAL_BENCHMARK_RATES,
+} from '../../services/accountingEngine';
 import { KYC_JURISDICTION_REGISTRY } from '../../services/kycEngine';
 
 export interface SoftDeletableEntity {
@@ -99,6 +107,10 @@ export interface DatabaseStateSnapshot {
   ocrDocuments?: OcrDocumentDetail[];
   ocrQueueJobs?: OcrQueueJob[];
   commercialDocuments?: CommercialDocumentRecord[];
+  financialConfig?: FinancialEngineConfigRecord;
+  financialConfigAudits?: FinancialConfigAuditRecord[];
+  benchmarkRates?: BenchmarkRateRecord[];
+  fiscalPeriods?: FiscalPeriodRecord[];
 }
 
 export class TradeLinkRepositoryStore {
@@ -157,6 +169,33 @@ export class TradeLinkRepositoryStore {
       ocrDocuments: initialState.ocrDocuments ?? [],
       ocrQueueJobs: initialState.ocrQueueJobs ?? [],
       commercialDocuments: initialState.commercialDocuments ?? [],
+      financialConfig: initialState.financialConfig ?? structuredClone(DEFAULT_FINANCIAL_CONFIG),
+      financialConfigAudits: initialState.financialConfigAudits ?? [],
+      benchmarkRates:
+        initialState.benchmarkRates && initialState.benchmarkRates.length > 0
+          ? initialState.benchmarkRates
+          : structuredClone(INITIAL_BENCHMARK_RATES),
+      fiscalPeriods:
+        initialState.fiscalPeriods && initialState.fiscalPeriods.length > 0
+          ? initialState.fiscalPeriods
+          : [
+              {
+                id: 'fp-2026-11',
+                fiscalYear: 2026,
+                periodCode: '2026-11',
+                startDate: '2026-11-01',
+                endDate: '2026-11-30',
+                status: 'OPEN',
+              },
+              {
+                id: 'fp-2026-12',
+                fiscalYear: 2026,
+                periodCode: '2026-12',
+                startDate: '2026-12-01',
+                endDate: '2026-12-31',
+                status: 'OPEN',
+              },
+            ],
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
 
@@ -1237,5 +1276,126 @@ export class TradeLinkRepositoryStore {
       list = list.filter((i) => i.status === filters.status);
     }
     return list.map((i) => structuredClone(i));
+  }
+
+  // ============================================================================
+  // REPOSITORIES MOTEUR FINANCIER & CONFIGURATION TRAÇABLE (PROMPT 14)
+  // ============================================================================
+
+  public getFinancialConfig(): FinancialEngineConfigRecord {
+    return structuredClone(this.state.financialConfig);
+  }
+
+  public updateFinancialConfig(
+    patch: Partial<FinancialEngineConfigRecord>,
+    modifiedBy: string,
+    reason: string
+  ): { updated: FinancialEngineConfigRecord; audits: FinancialConfigAuditRecord[] } {
+    const current = this.state.financialConfig;
+    const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const audits: FinancialConfigAuditRecord[] = [];
+
+    const keys = Object.keys(patch) as (keyof FinancialEngineConfigRecord)[];
+    for (const k of keys) {
+      if (k === 'id' || k === 'updatedAt' || k === 'updatedBy' || k === 'version') continue;
+      const oldVal = String(current[k] ?? '');
+      const newVal = String(patch[k] ?? '');
+      if (oldVal !== newVal) {
+        const audit: FinancialConfigAuditRecord = {
+          id: `audit-cfg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          paramKey: String(k),
+          oldValue: oldVal,
+          newValue: newVal,
+          modifiedBy,
+          modifiedAt: nowIso,
+          reason: reason || 'Mise à jour des paramètres financiers applicables',
+        };
+        audits.push(audit);
+        this.state.financialConfigAudits.unshift(audit);
+      }
+    }
+
+    this.state.financialConfig = {
+      ...current,
+      ...patch,
+      updatedAt: nowIso,
+      updatedBy: modifiedBy,
+    };
+
+    return {
+      updated: structuredClone(this.state.financialConfig),
+      audits,
+    };
+  }
+
+  public listFinancialConfigAudits(): FinancialConfigAuditRecord[] {
+    return (this.state.financialConfigAudits || []).map((a) => structuredClone(a));
+  }
+
+  public listBenchmarkRates(): BenchmarkRateRecord[] {
+    return (this.state.benchmarkRates || []).map((b) => structuredClone(b));
+  }
+
+  public updateBenchmarkRate(
+    code: string,
+    newRatePct: string,
+    modifiedBy: string
+  ): BenchmarkRateRecord {
+    const idx = (this.state.benchmarkRates || []).findIndex((b) => b.code === code);
+    if (idx === -1) {
+      throw new Error(`Taux de référence monétaire introuvable pour le code ${code}.`);
+    }
+
+    const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    this.state.benchmarkRates[idx].currentRatePct = newRatePct;
+    this.state.benchmarkRates[idx].updatedAt = nowIso;
+    this.state.benchmarkRates[idx].updatedBy = modifiedBy;
+
+    return structuredClone(this.state.benchmarkRates[idx]);
+  }
+
+  public saveCalculationResult(calc: CalculationResultRecord): CalculationResultRecord {
+    if (!this.state.calcHistory) this.state.calcHistory = [];
+    const idx = this.state.calcHistory.findIndex((c) => c.id === calc.id);
+    if (idx !== -1) {
+      this.state.calcHistory[idx] = structuredClone(calc);
+    } else {
+      this.state.calcHistory.unshift(structuredClone(calc));
+    }
+    return structuredClone(calc);
+  }
+
+  public listCalculationHistory(limit = 100): CalculationResultRecord[] {
+    return (this.state.calcHistory || []).slice(0, limit).map((c) => structuredClone(c));
+  }
+
+  public listFiscalPeriods(): FiscalPeriodRecord[] {
+    return (this.state.fiscalPeriods || []).map((fp) => structuredClone(fp));
+  }
+
+  public lockFiscalPeriod(periodCode: string, closedBy: string): FiscalPeriodRecord {
+    if (!this.state.fiscalPeriods) this.state.fiscalPeriods = [];
+    const idx = this.state.fiscalPeriods.findIndex((p) => p.periodCode === periodCode);
+    const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+    if (idx !== -1) {
+      this.state.fiscalPeriods[idx].status = 'LOCKED';
+      this.state.fiscalPeriods[idx].closedAt = nowIso;
+      this.state.fiscalPeriods[idx].closedBy = closedBy;
+      return structuredClone(this.state.fiscalPeriods[idx]);
+    } else {
+      const newP: FiscalPeriodRecord = {
+        id: `fp-${periodCode}`,
+        fiscalYear: parseInt(periodCode.slice(0, 4), 10) || 2026,
+        periodCode,
+        startDate: `${periodCode}-01`,
+        endDate: `${periodCode}-28`,
+        status: 'LOCKED',
+        closedAt: nowIso,
+        closedBy,
+      };
+      this.state.fiscalPeriods.unshift(newP);
+      return structuredClone(newP);
+    }
   }
 }

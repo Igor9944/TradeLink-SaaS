@@ -936,6 +936,54 @@ export interface ShipmentRecord {
 
 export type DayCountBasis = 'ACT/365' | 'ACT/360' | 'ACT/ACT';
 
+export type FinancialRoundingMode =
+  | 'ROUND_HALF_UP'
+  | 'ROUND_HALF_EVEN'
+  | 'ROUND_UP'
+  | 'ROUND_DOWN';
+
+export type FinancialRateType = 'FIXED' | 'VARIABLE';
+
+export interface BenchmarkRateRecord {
+  id: string;
+  code: string; // ex: 'EURIBOR_1M', 'EURIBOR_3M', 'EURIBOR_6M', 'EURIBOR_12M', 'SOFR', 'ESTER', 'TMP_BAM'
+  name: string;
+  currency: string;
+  currentRatePct: string; // ex: "3.2500"
+  effectiveDate: string;
+  source: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface FinancialEngineConfigRecord {
+  id: string;
+  defaultBasis: DayCountBasis;
+  defaultRoundingMode: FinancialRoundingMode;
+  defaultRoundingDecimals: number;
+  defaultRateType: FinancialRateType;
+  defaultFixedRatePct: string;
+  defaultBenchmarkRateCode?: string;
+  defaultSpreadPct?: string;
+  defaultLateInterestSpreadPct: string; // ex: "10.0000" (taux BCE ref + 10 points selon directive 2011/7/UE)
+  fixedRecoveryFeeAmount: string; // ex: "40.00" EUR forfaitaire
+  fixedRecoveryFeeCurrency: string;
+  statutoryFramework: 'EU_DIRECTIVE_2011_7' | 'US_UCC' | 'OHADA_AUVE' | 'MAROC_LOI_49_15';
+  updatedAt: string;
+  updatedBy: string;
+  version: string;
+}
+
+export interface FinancialConfigAuditRecord {
+  id: string;
+  paramKey: string;
+  oldValue: string;
+  newValue: string;
+  modifiedBy: string;
+  modifiedAt: string;
+  reason: string;
+}
+
 export interface CalculationResultRecord {
   id: string;
   ruleVersion: string;
@@ -952,6 +1000,62 @@ export interface CalculationResultRecord {
   currency: string;
   executedBy: string;
   executedAt: string;
+  // Enrichissements Moteur Financier Traçable V6.0 (Prompt 14)
+  rateType?: FinancialRateType;
+  benchmarkRateCode?: string;
+  benchmarkRatePct?: string;
+  spreadPct?: string;
+  effectiveRatePct?: string;
+  roundingMode?: FinancialRoundingMode;
+  roundingDecimals?: number;
+  formulaDescription?: string;
+  calculationExplanation?: string;
+  inputParameters?: Record<string, any>;
+}
+
+export interface AgingInvoiceDetail {
+  invoiceId: string;
+  invoiceNumber: string;
+  clientId: string;
+  clientName: string;
+  dueDate: string;
+  daysOverdue: number;
+  totalAmount: string;
+  paidAmount: string;
+  remainingDue: string;
+  lateInterest: string;
+  recoveryFee: string;
+}
+
+export interface AgingBucketDetail {
+  bucketKey: 'CURRENT_0_30' | 'OVERDUE_31_60' | 'OVERDUE_61_90' | 'OVERDUE_OVER_90';
+  label: string;
+  invoicesCount: number;
+  totalRemainingDue: string;
+  totalLateInterest: string;
+  totalRecoveryFees: string;
+  invoices: AgingInvoiceDetail[];
+}
+
+export interface AgingBalanceReport {
+  asOfDate: string;
+  currency: string;
+  totalReceivables: string;
+  totalOverdueAmount: string;
+  totalLateInterestAccrued: string;
+  totalRecoveryFeesAccrued: string;
+  buckets: Record<'CURRENT_0_30' | 'OVERDUE_31_60' | 'OVERDUE_61_90' | 'OVERDUE_OVER_90', AgingBucketDetail>;
+}
+
+export interface FiscalPeriodRecord {
+  id: string;
+  fiscalYear: number;
+  periodCode: string; // ex: "2026-11"
+  startDate: string;
+  endDate: string;
+  status: 'OPEN' | 'SOFT_CLOSED' | 'LOCKED';
+  closedAt?: string;
+  closedBy?: string;
 }
 
 export interface RoomLiveRecord {
