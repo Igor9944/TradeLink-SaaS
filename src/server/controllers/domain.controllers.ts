@@ -710,6 +710,174 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, result);
     }
 
+    // ========================================================================
+    // PROMPT 10 : GESTION DES STOCKS, DISPONIBILITÉS & INVENTAIRES (/api/v1/stocks/*)
+    // ========================================================================
+
+    // 1. Vue d'ensemble consolidée des stocks
+    if (method === 'GET' && path === '/api/v1/stocks/overview') {
+      const supplierId = ctx.query?.supplierId;
+      const overview = this.services.getStockOverviewService(ctx.user, supplierId);
+      return this.ok(ctx, overview);
+    }
+
+    // 2. Historique des mouvements de stock
+    if (method === 'GET' && path === '/api/v1/stocks/movements') {
+      const filter = {
+        productId: ctx.query?.productId,
+        supplierId: ctx.query?.supplierId,
+        movementType: ctx.query?.movementType as any,
+        search: ctx.query?.search,
+        startDate: ctx.query?.startDate,
+        endDate: ctx.query?.endDate,
+      };
+      const movements = this.services.listStockMovementsService(ctx.user, filter);
+      return this.ok(ctx, movements);
+    }
+
+    // 3. Entrée de stock (INBOUND_RECEIPT)
+    if (method === 'POST' && path === '/api/v1/stocks/inbound') {
+      const user = requireAuthenticatedSession(ctx);
+      const movement = this.services.recordInboundStockService(
+        user,
+        ctx.body as any,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, movement, 201);
+    }
+
+    // 4. Ajustement de stock (ajustement, perte, casse, régularisation)
+    if (method === 'POST' && path === '/api/v1/stocks/adjust') {
+      const user = requireAuthenticatedSession(ctx);
+      const movement = this.services.adjustStockService(
+        user,
+        ctx.body as any,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, movement, 200);
+    }
+
+    // 5. Réservation de stock (commande engagée, anti-surréservation)
+    if (method === 'POST' && path === '/api/v1/stocks/reserve') {
+      const user = requireAuthenticatedSession(ctx);
+      const reservations = this.services.reserveStockForOrderService(
+        user,
+        ctx.body as any,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, reservations, 201);
+    }
+
+    // 6. Libération de réservation (annulation commande / modification)
+    if (method === 'POST' && path === '/api/v1/stocks/release') {
+      const user = requireAuthenticatedSession(ctx);
+      const movements = this.services.releaseStockReservationService(
+        user,
+        ctx.body as any,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, movements, 200);
+    }
+
+    // 7. Confirmation sortie expédition (FULFILLMENT)
+    if (method === 'POST' && path === '/api/v1/stocks/fulfill') {
+      const user = requireAuthenticatedSession(ctx);
+      const movements = this.services.fulfillStockReservationService(
+        user,
+        ctx.body as any,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, movements, 200);
+    }
+
+    // 8. Balayage TTL automatique des réservations expirées
+    if (method === 'POST' && path === '/api/v1/stocks/reservations/sweep-expired') {
+      const user = requireAuthenticatedSession(ctx);
+      const result = this.services.sweepExpiredStockReservationsService(user, ctx.correlationId);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 9. Liste des réservations de stock
+    if (method === 'GET' && path === '/api/v1/stocks/reservations') {
+      const filter = {
+        orderId: ctx.query?.orderId,
+        clientId: ctx.query?.clientId,
+        productId: ctx.query?.productId,
+        status: ctx.query?.status as any,
+      };
+      const reservations = this.services.listStockReservationsService(ctx.user, filter);
+      return this.ok(ctx, reservations);
+    }
+
+    // 10. Sessions d'inventaires physiques
+    if (method === 'POST' && path === '/api/v1/stocks/inventory') {
+      const user = requireAuthenticatedSession(ctx);
+      const session = this.services.createInventorySessionService(
+        user,
+        ctx.body as any,
+        ctx.correlationId
+      );
+      return this.ok(ctx, session, 201);
+    }
+
+    if (method === 'GET' && path === '/api/v1/stocks/inventory') {
+      const sessions = this.services.listInventorySessionsService(ctx.user, ctx.query?.supplierId);
+      return this.ok(ctx, sessions);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/stocks/inventory/') && path.endsWith('/count')) {
+      const user = requireAuthenticatedSession(ctx);
+      const sessionId = path.replace('/api/v1/stocks/inventory/', '').replace('/count', '');
+      const updated = this.services.updateInventoryCountService(user, sessionId, (ctx.body as any).counts);
+      return this.ok(ctx, updated);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/stocks/inventory/') && path.endsWith('/reconcile')) {
+      const user = requireAuthenticatedSession(ctx);
+      const sessionId = path.replace('/api/v1/stocks/inventory/', '').replace('/reconcile', '');
+      const result = this.services.reconcileInventorySessionService(
+        user,
+        sessionId,
+        (ctx.body as any)?.notes,
+        ctx.correlationId
+      );
+      return this.ok(ctx, result);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/stocks/inventory/')) {
+      const sessionId = path.replace('/api/v1/stocks/inventory/', '');
+      const session = this.services.getInventorySessionDetailService(ctx.user, sessionId);
+      return this.ok(ctx, session);
+    }
+
+    // 11. Alertes de stock faible & ruptures
+    if (method === 'GET' && path === '/api/v1/stocks/alerts') {
+      const alerts = this.services.listStockAlertsService(
+        ctx.user,
+        ctx.query?.supplierId,
+        ctx.query?.resolved === 'true' ? false : true
+      );
+      return this.ok(ctx, alerts);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/stocks/alerts/') && path.endsWith('/resolve')) {
+      const user = requireAuthenticatedSession(ctx);
+      const alertId = path.replace('/api/v1/stocks/alerts/', '').replace('/resolve', '');
+      const resolved = this.services.resolveStockAlertService(user, alertId);
+      return this.ok(ctx, resolved);
+    }
+
+    // 12. Rapport financier de valorisation & rotation des stocks
+    if (method === 'GET' && path === '/api/v1/stocks/reports/valuation') {
+      const report = this.services.getStockValuationReportService(ctx.user, ctx.query?.supplierId);
+      return this.ok(ctx, report);
+    }
+
     // 4. Commandes Transactionnelles, Ownership & Réservation de Stock
     if (method === 'GET' && path === '/api/v1/orders') {
       const user = requireAuthenticatedSession(ctx);

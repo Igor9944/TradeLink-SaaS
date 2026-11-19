@@ -310,7 +310,10 @@ export interface ProductItem {
   unit: string;
   stockAvailable: number;
   stockReserved: number;
+  stockOrdered?: number;
+  stockShipped?: number;
   minStockAlert: number;
+  warehouseLocation?: string;
   minOrderQuantity?: number; // MOQ (Minimum Order Quantity)
   icon3d: Icon3DName;
   photos?: string[];
@@ -337,6 +340,129 @@ export interface ProductItem {
 export interface CartItem {
   product: ProductItem;
   quantity: number;
+}
+
+// ============================================================================
+// TYPES GESTION DES STOCKS, DISPONIBILITÉS ET RÉSERVATIONS (PROMPT 10)
+// ============================================================================
+
+export type StockMovementType =
+  | 'INBOUND_RECEIPT'      // Entrée de stock / Réception fournisseur / Bon de livraison
+  | 'OUTBOUND_SHIPMENT'    // Sortie définitive lors de l'expédition
+  | 'ORDER_RESERVATION'    // Réservation serveur lors de l'engagement de commande
+  | 'RESERVATION_RELEASE'  // Libération de réservation (annulation / expiration TTL)
+  | 'INVENTORY_ADJUSTMENT' // Ajustement suite à inventaire ou écart physique
+  | 'SCRAP_OR_LOSS'        // Sortie pour casse, dépréciation, perte
+  | 'CUSTOMER_RETURN';     // Réintégration suite à retour marchandise
+
+export interface StockMovementRecord {
+  id: string;
+  movementNumber: string;
+  productId: string;
+  sku: string;
+  movementType: StockMovementType;
+  quantityChange: number;
+  resultingAvailable: number;
+  resultingReserved: number;
+  resultingOrdered?: number;
+  resultingShipped?: number;
+  reason: string;
+  referenceDocument?: string; // N° Commande, Facture, Bon de livraison, Fiche d'inventaire
+  orderId?: string;
+  orderNumber?: string;
+  batchNumber?: string;
+  inventorySessionId?: string;
+  performedByUserId: string;
+  performedByUserName: string;
+  performedByUserRole?: UserRoleCode;
+  timestamp: string;
+  minStockAlertTriggered: boolean;
+}
+
+export interface StockReservationRecord {
+  id: string;
+  reservationNumber: string;
+  orderId: string;
+  orderNumber?: string;
+  clientId: string;
+  clientName?: string;
+  productId: string;
+  sku: string;
+  quantity: number;
+  reservedAt: string;
+  expiresAt: string;
+  status: 'ACTIVE' | 'FULFILLED' | 'CANCELLED' | 'EXPIRED';
+  releasedAt?: string;
+  fulfilledAt?: string;
+  notes?: string;
+}
+
+export interface PhysicalInventoryLine {
+  productId: string;
+  sku: string;
+  productName: string;
+  theoreticalAvailable: number;
+  physicalCounted: number;
+  varianceQuantity: number;
+  unitPrice: string;
+  varianceValueEur: string;
+  reconciled: boolean;
+  notes?: string;
+}
+
+export interface PhysicalInventorySession {
+  id: string;
+  sessionNumber: string;
+  supplierId: string;
+  supplierName: string;
+  title: string;
+  status: 'DRAFT' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+  startedAt: string;
+  completedAt?: string;
+  conductedByUserId: string;
+  conductedByUserName: string;
+  lines: PhysicalInventoryLine[];
+  totalTheoreticalQty: number;
+  totalPhysicalQty: number;
+  totalVarianceQty: number;
+  totalVarianceValueEur: string;
+  notes?: string;
+}
+
+export interface StockAlertRecord {
+  id: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  supplierId: string;
+  stockAvailable: number;
+  minStockAlert: number;
+  severity: 'WARNING_LOW' | 'CRITICAL_OUT';
+  triggeredAt: string;
+  resolved: boolean;
+  resolvedAt?: string;
+}
+
+export interface StockValuationReport {
+  supplierId?: string;
+  totalReferencesCount: number;
+  inStockCount: number;
+  lowStockCount: number;
+  outOfStockCount: number;
+  totalAvailableUnits: number;
+  totalReservedUnits: number;
+  totalOrderedUnits: number;
+  totalShippedUnits: number;
+  totalAvailableValueEur: string;
+  totalReservedValueEur: string;
+  turnoverRatioAnnualEstimate: string;
+  topMovingProducts: {
+    productId: string;
+    sku: string;
+    name: string;
+    totalMoved: number;
+    totalShipped: number;
+  }[];
 }
 
 export type OrderStatus =

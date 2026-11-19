@@ -86,6 +86,13 @@ export const SupplierWorkspacePage: React.FC<{
     addProduct,
     updateProductDetails,
     updateProductStock,
+    stockMovements,
+    inventorySessions,
+    recordInboundStock,
+    adjustStockManual,
+    createInventorySession,
+    updateInventoryCount,
+    reconcileInventorySession,
     deleteProduct,
     importProductsBulk,
     orders,
@@ -198,6 +205,21 @@ export const SupplierWorkspacePage: React.FC<{
   const [stockDelta, setStockDelta] = useState<number>(5);
   const [stockAdjustReason, setStockAdjustReason] = useState('Réapprovisionnement lot usine Hambourg');
 
+  // Sous-onglets et Modals Stock (PROMPT 10)
+  const [stockSubTab, setStockSubTab] = useState<'levels' | 'movements' | 'inventory'>('levels');
+  const [inboundModalOpen, setInboundModalOpen] = useState(false);
+  const [inboundProductId, setInboundProductId] = useState<string>('');
+  const [inboundQty, setInboundQty] = useState<number>(20);
+  const [inboundReason, setInboundReason] = useState<string>('Réception bon de livraison fournisseur usine');
+  const [inboundBL, setInboundBL] = useState<string>('BL-2026-');
+  const [inboundBatch, setInboundBatch] = useState<string>('LOT-2026-');
+
+  const [createInventoryModalOpen, setCreateInventoryModalOpen] = useState(false);
+  const [newInventoryTitle, setNewInventoryTitle] = useState('Inventaire Physique Mensuel Entrepôt');
+  const [newInventoryNotes, setNewInventoryNotes] = useState('Comptage contradictoire');
+  const [activeInventorySessionId, setActiveInventorySessionId] = useState<string | null>(null);
+  const [inventoryCountsInput, setInventoryCountsInput] = useState<Record<string, number>>({});
+
   // Modal de suppression / archivage
   const [productToDelete, setProductToDelete] = useState<ProductItem | null>(null);
 
@@ -261,6 +283,10 @@ export const SupplierWorkspacePage: React.FC<{
     const acceptedOrders = myOrders.filter((o) => ['ACCEPTED', 'PREPARING'].includes(o.status)).length;
     const shippedOrders = myOrders.filter((o) => ['SHIPPED', 'DELIVERED'].includes(o.status)).length;
     const lowStockCount = myProducts.filter((p) => p.stockAvailable <= p.minStockAlert).length;
+    const outOfStockCount = myProducts.filter((p) => p.stockAvailable === 0).length;
+    const totalStockAvailable = myProducts.reduce((acc, p) => acc + p.stockAvailable, 0);
+    const totalStockReserved = myProducts.reduce((acc, p) => acc + p.stockReserved, 0);
+    const totalStockValuation = myProducts.reduce((acc, p) => acc + p.stockAvailable * parseFloat(p.unitPrice), 0);
     const activeProducts = myProducts.filter((p) => p.isPublished).length;
     return {
       totalCa,
@@ -268,10 +294,25 @@ export const SupplierWorkspacePage: React.FC<{
       acceptedOrders,
       shippedOrders,
       lowStockCount,
+      outOfStockCount,
+      totalStockAvailable,
+      totalStockReserved,
+      totalStockValuation,
       activeProducts,
       totalOrders: myOrders.length,
     };
   }, [myOrders, myProducts]);
+
+  const myStockMovements = useMemo(() => {
+    const myProdIds = new Set(myProducts.map((p) => p.id));
+    return stockMovements.filter((m) => myProdIds.has(m.productId));
+  }, [stockMovements, myProducts]);
+
+  const myInventorySessions = useMemo(() => {
+    return inventorySessions.filter(
+      (s) => s.supplierId === currentUser.id || currentUser.role === 'ADMIN'
+    );
+  }, [inventorySessions, currentUser]);
 
   // Clients uniques ayant commandé
   const uniqueClients = useMemo(() => {
@@ -349,7 +390,7 @@ export const SupplierWorkspacePage: React.FC<{
 
   const handleApplyStockAdjustment = () => {
     if (!stockAdjustProductId) return;
-    updateProductStock(stockAdjustProductId, stockDelta, stockAdjustReason);
+    adjustStockManual(stockAdjustProductId, stockDelta, stockAdjustReason);
     setStockAdjustProductId(null);
   };
 
@@ -1030,102 +1071,533 @@ export const SupplierWorkspacePage: React.FC<{
       {/* 3. GESTION DES STOCKS & MOUVEMENTS (/fournisseur/stocks)              */}
       {/* ===================================================================== */}
       {section === 'stocks' && (
-        <Card
-          title="Gestion des Niveaux de Stocks, Mouvements & Alertes de Seuil (Page 45)"
-          subtitle="Suivi temps réel du stock disponible, réservé par les commandes et alertes de rupture."
-          action={
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                downloadDataExport('stocks-fournisseur-export.json', JSON.stringify(myProducts, null, 2), 'application/json');
-                notifyToast('Export des stocks téléchargé.', 'success');
-              }}
-            >
-              <Download className="w-4 h-4" /> Export Stocks JSON
-            </Button>
-          }
-        >
-          <div className="space-y-4">
-            <DataTable
-              caption="Stocks détaillés par référence et gestion des mouvements"
-              keyExtractor={(p) => p.id}
-              data={myProducts}
-              columns={[
-                {
-                  key: 'prod',
-                  header: 'Produit',
-                  isRowHeader: true,
-                  render: (p) => (
-                    <div className="flex items-center gap-3">
-                      <Icon3D name={p.icon3d} size="sm" withGlow />
-                      <div>
-                        <strong className="text-slate-900 dark:text-white">{p.name[locale]}</strong>
-                        <p className="text-xs text-slate-400 font-mono">{p.sku}</p>
-                      </div>
-                    </div>
-                  ),
-                },
-                {
-                  key: 'avail',
-                  header: 'Disponible',
-                  render: (p) => (
-                    <span className={`font-extrabold text-sm ${p.stockAvailable <= p.minStockAlert ? 'text-rose-600' : 'text-slate-900 dark:text-white'}`}>
-                      {p.stockAvailable} unités
-                    </span>
-                  ),
-                },
-                {
-                  key: 'reserved',
-                  header: 'Réservé (Commandes)',
-                  render: (p) => (
-                    <Badge variant="info">{p.stockReserved} unités</Badge>
-                  ),
-                },
-                {
-                  key: 'alert',
-                  header: 'Seuil d’Alerte Min',
-                  render: (p) => (
-                    <span className="text-xs font-mono">{p.minStockAlert} unités</span>
-                  ),
-                },
-                {
-                  key: 'actions',
-                  header: 'Ajustements Rapides',
-                  render: (p) => (
-                    <div className="flex gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => updateProductStock(p.id, 10, 'Réapprovisionnement usine lot régulier')}
-                      >
-                        +10
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => updateProductStock(p.id, -2, 'Sortie échantillon commercial ou rebut')}
-                      >
-                        -2
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => {
-                          setStockAdjustProductId(p.id);
-                          setStockDelta(5);
-                          setStockAdjustReason('Ajustement inventaire contradictoire');
-                        }}
-                      >
-                        Ajuster...
-                      </Button>
-                    </div>
-                  ),
-                },
-              ]}
-            />
+        <div className="space-y-6">
+          {/* Cartes KPI Synthétiques */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-slate-500 font-medium">Stock Disponible Total</p>
+                  <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">
+                    {stats.totalStockAvailable} <span className="text-xs font-normal text-slate-400">unités</span>
+                  </p>
+                </div>
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 rounded-2xl text-emerald-600">
+                  <Warehouse className="w-6 h-6" />
+                </div>
+              </div>
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-slate-500 font-medium">Stock Réservé (Commandes)</p>
+                  <p className="text-2xl font-black text-sky-600 mt-1">
+                    {stats.totalStockReserved} <span className="text-xs font-normal text-slate-400">unités</span>
+                  </p>
+                </div>
+                <div className="p-3 bg-sky-50 dark:bg-sky-950/40 rounded-2xl text-sky-600">
+                  <Boxes className="w-6 h-6" />
+                </div>
+              </div>
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-slate-500 font-medium">Valorisation Financière (EUR)</p>
+                  <p className="text-2xl font-black text-[#E85D22] mt-1">
+                    {formatCurrency(stats.totalStockValuation.toFixed(2), 'EUR')}
+                  </p>
+                </div>
+                <div className="p-3 bg-orange-50 dark:bg-orange-950/40 rounded-2xl text-[#E85D22]">
+                  <DollarSign className="w-6 h-6" />
+                </div>
+              </div>
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-slate-500 font-medium">Alertes Seuil & Ruptures</p>
+                  <p className={`text-2xl font-black mt-1 ${stats.lowStockCount > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                    {stats.lowStockCount} <span className="text-xs font-normal text-slate-400">dont {stats.outOfStockCount} rupture(s)</span>
+                  </p>
+                </div>
+                <div className={`p-3 rounded-2xl ${stats.lowStockCount > 0 ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-600' : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600'}`}>
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+              </div>
+            </Card>
           </div>
-        </Card>
+
+          <Card
+            title="Gestion des Stocks, Mouvements & Inventaires (PROMPT 10)"
+            subtitle="Multi-quantités exactes (Dispo, Réservé, Commandé, Expédié), traçabilité des mouvements et sessions d'inventaire."
+            action={
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => {
+                    setInboundProductId(myProducts[0]?.id || '');
+                    setInboundModalOpen(true);
+                  }}
+                >
+                  <Plus className="w-4 h-4" /> Entrée de Stock (BL)
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setCreateInventoryModalOpen(true)}
+                >
+                  <Boxes className="w-4 h-4" /> Nouvel Inventaire
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    downloadDataExport('stocks-fournisseur-export.json', JSON.stringify(myProducts, null, 2), 'application/json');
+                    notifyToast('Export des stocks téléchargé.', 'success');
+                  }}
+                >
+                  <Download className="w-4 h-4" /> Export JSON
+                </Button>
+              </div>
+            }
+          >
+            {/* Barre de sous-onglets */}
+            <div className="flex border-b border-slate-200 dark:border-teal-800 mb-6 gap-2">
+              <button
+                type="button"
+                onClick={() => setStockSubTab('levels')}
+                className={`pb-3 px-4 text-xs font-bold transition-colors border-b-2 ${
+                  stockSubTab === 'levels'
+                    ? 'border-[#E85D22] text-[#E85D22]'
+                    : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                📦 Niveaux de Stock & Disponibilités ({myProducts.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStockSubTab('movements')}
+                className={`pb-3 px-4 text-xs font-bold transition-colors border-b-2 ${
+                  stockSubTab === 'movements'
+                    ? 'border-[#E85D22] text-[#E85D22]'
+                    : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                📜 Historique des Mouvements ({myStockMovements.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStockSubTab('inventory')}
+                className={`pb-3 px-4 text-xs font-bold transition-colors border-b-2 ${
+                  stockSubTab === 'inventory'
+                    ? 'border-[#E85D22] text-[#E85D22]'
+                    : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                📋 Sessions d'Inventaires Physiques ({myInventorySessions.length})
+              </button>
+            </div>
+
+            {/* CONTENU SOUS-ONGLET 1 : NIVEAUX DE STOCKS */}
+            {stockSubTab === 'levels' && (
+              <div className="space-y-4">
+                <DataTable
+                  caption="Stocks détaillés par référence et disponibilité temps réel"
+                  keyExtractor={(p) => p.id}
+                  data={myProducts}
+                  columns={[
+                    {
+                      key: 'prod',
+                      header: 'Produit / Référence SKU',
+                      isRowHeader: true,
+                      render: (p) => (
+                        <div className="flex items-center gap-3">
+                          <Icon3D name={p.icon3d} size="sm" withGlow />
+                          <div>
+                            <strong className="text-slate-900 dark:text-white block">{p.name[locale]}</strong>
+                            <span className="text-[11px] text-slate-400 font-mono">{p.sku}</span>
+                          </div>
+                        </div>
+                      ),
+                    },
+                    {
+                      key: 'status',
+                      header: 'Statut',
+                      render: (p) => {
+                        if (p.stockAvailable === 0) {
+                          return <Badge variant="danger">RUPTURE TOTALE</Badge>;
+                        }
+                        if (p.stockAvailable <= p.minStockAlert) {
+                          return <Badge variant="warning">STOCK FAIBLE</Badge>;
+                        }
+                        return <Badge variant="success">DISPONIBLE</Badge>;
+                      },
+                    },
+                    {
+                      key: 'avail',
+                      header: 'Disponible',
+                      render: (p) => (
+                        <span className={`font-black text-sm ${p.stockAvailable === 0 ? 'text-rose-600' : p.stockAvailable <= p.minStockAlert ? 'text-amber-500' : 'text-slate-900 dark:text-white'}`}>
+                          {p.stockAvailable} <span className="text-xs font-normal text-slate-400">{p.unit}</span>
+                        </span>
+                      ),
+                    },
+                    {
+                      key: 'reserved',
+                      header: 'Réservé (Cmds)',
+                      render: (p) => (
+                        <Badge variant="info">{p.stockReserved} {p.unit}</Badge>
+                      ),
+                    },
+                    {
+                      key: 'ordered',
+                      header: 'Commandé Total',
+                      render: (p) => (
+                        <span className="text-xs font-mono">{p.stockOrdered || p.stockReserved} {p.unit}</span>
+                      ),
+                    },
+                    {
+                      key: 'shipped',
+                      header: 'Expédié Total',
+                      render: (p) => (
+                        <span className="text-xs font-mono">{p.stockShipped || 0} {p.unit}</span>
+                      ),
+                    },
+                    {
+                      key: 'alert',
+                      header: 'Seuil Min',
+                      render: (p) => (
+                        <span className="text-xs font-mono">{p.minStockAlert} {p.unit}</span>
+                      ),
+                    },
+                    {
+                      key: 'actions',
+                      header: 'Actions de Stock',
+                      render: (p) => (
+                        <div className="flex gap-1.5 flex-wrap">
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => {
+                              setInboundProductId(p.id);
+                              setInboundQty(10);
+                              setInboundModalOpen(true);
+                            }}
+                            title="Enregistrer une entrée de livraison BL"
+                          >
+                            + BL
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => updateProductStock(p.id, 10, 'Réapprovisionnement usine lot régulier')}
+                          >
+                            +10
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => updateProductStock(p.id, -2, 'Sortie échantillon commercial ou rebut')}
+                          >
+                            -2
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => {
+                              setStockAdjustProductId(p.id);
+                              setStockDelta(5);
+                              setStockAdjustReason('Ajustement inventaire contradictoire');
+                            }}
+                          >
+                            Ajuster...
+                          </Button>
+                        </div>
+                      ),
+                    },
+                  ]}
+                />
+              </div>
+            )}
+
+            {/* CONTENU SOUS-ONGLET 2 : HISTORIQUE DES MOUVEMENTS */}
+            {stockSubTab === 'movements' && (
+              <div className="space-y-4">
+                {myStockMovements.length === 0 ? (
+                  <div className="text-center py-12 text-slate-400">
+                    <p className="text-sm">Aucun mouvement de stock enregistré pour vos produits.</p>
+                  </div>
+                ) : (
+                  <DataTable
+                    caption="Registre immuable des mouvements de stock et traçabilité"
+                    keyExtractor={(m) => m.id}
+                    data={myStockMovements}
+                    columns={[
+                      {
+                        key: 'date',
+                        header: 'Date & Heure',
+                        render: (m) => (
+                          <span className="text-xs font-mono text-slate-500">
+                            {new Date(m.timestamp).toLocaleDateString('fr-FR')} {new Date(m.timestamp).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'num',
+                        header: 'N° Mouvement',
+                        render: (m) => <span className="font-mono text-xs font-bold text-slate-700 dark:text-slate-300">{m.movementNumber}</span>,
+                      },
+                      {
+                        key: 'type',
+                        header: 'Type',
+                        render: (m) => {
+                          const badgeVariants: Record<string, 'success' | 'danger' | 'info' | 'warning' | 'neutral'> = {
+                            INBOUND_RECEIPT: 'success',
+                            OUTBOUND_SHIPMENT: 'neutral',
+                            ORDER_RESERVATION: 'info',
+                            RESERVATION_RELEASE: 'warning',
+                            INVENTORY_ADJUSTMENT: 'neutral',
+                            SCRAP_OR_LOSS: 'danger',
+                            CUSTOMER_RETURN: 'success',
+                          };
+                          return (
+                            <Badge variant={badgeVariants[m.movementType] || 'neutral'}>
+                              {m.movementType}
+                            </Badge>
+                          );
+                        },
+                      },
+                      {
+                        key: 'sku',
+                        header: 'Article (SKU)',
+                        render: (m) => <span className="font-mono text-xs font-bold">{m.sku}</span>,
+                      },
+                      {
+                        key: 'change',
+                        header: 'Variation',
+                        render: (m) => (
+                          <span className={`font-black text-xs ${m.quantityChange > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                            {m.quantityChange > 0 ? `+${m.quantityChange}` : m.quantityChange}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'dispo',
+                        header: 'Dispo Résultant',
+                        render: (m) => <span className="font-bold text-xs">{m.resultingAvailable}</span>,
+                      },
+                      {
+                        key: 'reason',
+                        header: 'Motif & Document',
+                        render: (m) => (
+                          <div>
+                            <p className="text-xs text-slate-800 dark:text-slate-200">{m.reason}</p>
+                            {m.referenceDocument && (
+                              <p className="text-[10px] text-slate-400 font-mono">Réf: {m.referenceDocument}</p>
+                            )}
+                          </div>
+                        ),
+                      },
+                      {
+                        key: 'actor',
+                        header: 'Responsable',
+                        render: (m) => (
+                          <span className="text-xs text-slate-500">
+                            {m.performedByUserName} ({m.performedByUserRole || 'USER'})
+                          </span>
+                        ),
+                      },
+                    ]}
+                  />
+                )}
+              </div>
+            )}
+
+            {/* CONTENU SOUS-ONGLET 3 : SESSIONS D'INVENTAIRES PHYSIQUES */}
+            {stockSubTab === 'inventory' && (
+              <div className="space-y-6">
+                {myInventorySessions.length === 0 ? (
+                  <div className="text-center py-12 text-slate-400">
+                    <p className="text-sm">Aucune session d'inventaire physique enregistrée.</p>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      className="mt-3"
+                      onClick={() => setCreateInventoryModalOpen(true)}
+                    >
+                      Démarrer un Premier Inventaire
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {myInventorySessions.map((sess) => {
+                      const isSelected = activeInventorySessionId === sess.id;
+                      return (
+                        <div
+                          key={sess.id}
+                          className="p-5 rounded-2xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 space-y-4"
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-bold text-xs text-[#E85D22]">{sess.sessionNumber}</span>
+                                <Badge variant={sess.status === 'COMPLETED' ? 'success' : 'warning'}>
+                                  {sess.status === 'COMPLETED' ? 'CLÔTURÉ & RAPPROCHÉ' : 'EN COURS DE COMPTAGE'}
+                                </Badge>
+                              </div>
+                              <h4 className="text-sm font-bold text-slate-900 dark:text-white mt-1">{sess.title}</h4>
+                              <p className="text-xs text-slate-400">
+                                Démarré le {new Date(sess.startedAt).toLocaleDateString('fr-FR')} par {sess.conductedByUserName}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-4 text-xs font-mono">
+                              <div>
+                                <span className="text-slate-400 block text-[10px]">Écart Quantité :</span>
+                                <span className={`font-bold ${sess.totalVarianceQty > 0 ? 'text-emerald-600' : sess.totalVarianceQty < 0 ? 'text-rose-600' : 'text-slate-600'}`}>
+                                  {sess.totalVarianceQty > 0 ? `+${sess.totalVarianceQty}` : sess.totalVarianceQty}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block text-[10px]">Variance Valeur :</span>
+                                <span className="font-bold text-[#E85D22]">{sess.totalVarianceValueEur} EUR</span>
+                              </div>
+                              <Button
+                                size="sm"
+                                variant={isSelected ? 'secondary' : 'primary'}
+                                onClick={() => setActiveInventorySessionId(isSelected ? null : sess.id)}
+                              >
+                                {isSelected ? 'Masquer Détails' : 'Consulter / Saisir'}
+                              </Button>
+                            </div>
+                          </div>
+
+                          {/* DÉTAIL / COMPTAGE INTERACTIF DE LA SESSION */}
+                          {isSelected && (
+                            <div className="pt-4 border-t border-slate-200 dark:border-teal-800 space-y-4">
+                              <DataTable
+                                caption="Lignes d'inventaire et comptage contradictoire"
+                                keyExtractor={(l) => l.productId}
+                                data={sess.lines}
+                                columns={[
+                                  {
+                                    key: 'sku',
+                                    header: 'Article (SKU)',
+                                    render: (l) => (
+                                      <div>
+                                        <strong className="text-xs text-slate-900 dark:text-white block">{l.productName}</strong>
+                                        <span className="text-[11px] font-mono text-slate-400">{l.sku}</span>
+                                      </div>
+                                    ),
+                                  },
+                                  {
+                                    key: 'theo',
+                                    header: 'Théorique Dispo',
+                                    render: (l) => <span className="font-mono text-xs font-bold">{l.theoreticalAvailable}</span>,
+                                  },
+                                  {
+                                    key: 'counted',
+                                    header: 'Compté Réel Physique',
+                                    render: (l) => {
+                                      if (sess.status === 'COMPLETED') {
+                                        return <span className="font-mono text-xs font-bold text-emerald-600">{l.physicalCounted}</span>;
+                                      }
+                                      return (
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          value={inventoryCountsInput[l.productId] !== undefined ? inventoryCountsInput[l.productId] : l.physicalCounted}
+                                          onChange={(e) => {
+                                            const val = Math.max(0, Number(e.target.value));
+                                            setInventoryCountsInput((prev) => ({ ...prev, [l.productId]: val }));
+                                          }}
+                                          className="w-24 px-2 py-1 rounded-lg border border-slate-300 dark:border-teal-700 bg-white dark:bg-[#0B2D31] text-xs font-mono font-bold"
+                                        />
+                                      );
+                                    },
+                                  },
+                                  {
+                                    key: 'varQty',
+                                    header: 'Écart Qty',
+                                    render: (l) => {
+                                      const counted = inventoryCountsInput[l.productId] !== undefined ? inventoryCountsInput[l.productId] : l.physicalCounted;
+                                      const variance = counted - l.theoreticalAvailable;
+                                      return (
+                                        <span className={`font-mono text-xs font-bold ${variance > 0 ? 'text-emerald-600' : variance < 0 ? 'text-rose-600' : 'text-slate-500'}`}>
+                                          {variance > 0 ? `+${variance}` : variance}
+                                        </span>
+                                      );
+                                    },
+                                  },
+                                  {
+                                    key: 'varVal',
+                                    header: 'Écart Valeur (EUR)',
+                                    render: (l) => {
+                                      const counted = inventoryCountsInput[l.productId] !== undefined ? inventoryCountsInput[l.productId] : l.physicalCounted;
+                                      const variance = counted - l.theoreticalAvailable;
+                                      const valEur = (variance * parseFloat(l.unitPrice)).toFixed(2);
+                                      return <span className="font-mono text-xs">{valEur} €</span>;
+                                    },
+                                  },
+                                  {
+                                    key: 'status',
+                                    header: 'Statut Rapprochement',
+                                    render: (l) => (
+                                      <Badge variant={l.reconciled || sess.status === 'COMPLETED' ? 'success' : 'warning'}>
+                                        {l.reconciled || sess.status === 'COMPLETED' ? 'Rapproché' : 'En attente'}
+                                      </Badge>
+                                    ),
+                                  },
+                                ]}
+                              />
+
+                              {sess.status === 'IN_PROGRESS' && (
+                                <div className="flex justify-end gap-2 pt-2">
+                                  <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    onClick={() => {
+                                      const counts = sess.lines.map((l) => ({
+                                        productId: l.productId,
+                                        physicalCounted: inventoryCountsInput[l.productId] !== undefined ? inventoryCountsInput[l.productId] : l.physicalCounted,
+                                      }));
+                                      updateInventoryCount(sess.id, counts);
+                                    }}
+                                  >
+                                    Sauvegarder le Comptage
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="primary"
+                                    onClick={() => {
+                                      const counts = sess.lines.map((l) => ({
+                                        productId: l.productId,
+                                        physicalCounted: inventoryCountsInput[l.productId] !== undefined ? inventoryCountsInput[l.productId] : l.physicalCounted,
+                                      }));
+                                      updateInventoryCount(sess.id, counts);
+                                      reconcileInventorySession(sess.id, 'Rapprochement validé par le responsable d’entrepôt');
+                                    }}
+                                  >
+                                    Valider et Rapprocher l'Inventaire
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        </div>
       )}
 
       {/* ===================================================================== */}
@@ -1977,6 +2449,154 @@ export const SupplierWorkspacePage: React.FC<{
               </Button>
               <Button variant="primary" onClick={handleApplyStockAdjustment}>
                 Valider l'Ajustement
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* MODAL : NOUVELLE ENTRÉE DE STOCK (BON DE LIVRAISON BL)                */}
+      {/* ===================================================================== */}
+      {inboundModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-lg p-6 rounded-3xl bg-white dark:bg-[#0B2D31] border border-slate-200 dark:border-teal-800 shadow-2xl space-y-4 text-xs">
+            <h3 className="text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+              <Warehouse className="w-5 h-5 text-emerald-600" />
+              Nouvelle Entrée de Stock (Réception BL)
+            </h3>
+            <p className="text-slate-500">
+              Enregistre une entrée physique de marchandise avec traçabilité complète et numéro de bon de livraison.
+            </p>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Produit concerné :</label>
+              <select
+                value={inboundProductId}
+                onChange={(e) => setInboundProductId(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs font-medium"
+              >
+                {myProducts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.sku} — {p.name[locale]} (Dispo: {p.stockAvailable} {p.unit})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold mb-1">Quantité réceptionnée :</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={inboundQty}
+                  onChange={(e) => setInboundQty(Math.max(1, Number(e.target.value)))}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1">N° Bon de Livraison (BL) :</label>
+                <input
+                  type="text"
+                  value={inboundBL}
+                  onChange={(e) => setInboundBL(e.target.value)}
+                  placeholder="BL-2026-XXXX"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold mb-1">Numéro de Lot :</label>
+                <input
+                  type="text"
+                  value={inboundBatch}
+                  onChange={(e) => setInboundBatch(e.target.value)}
+                  placeholder="LOT-2026-XX"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1">Motif de réception :</label>
+                <input
+                  type="text"
+                  value={inboundReason}
+                  onChange={(e) => setInboundReason(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3">
+              <Button variant="secondary" onClick={() => setInboundModalOpen(false)}>
+                Annuler
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  if (!inboundProductId || inboundQty <= 0) return;
+                  recordInboundStock(inboundProductId, inboundQty, inboundReason, inboundBL, inboundBatch);
+                  setInboundModalOpen(false);
+                }}
+              >
+                Enregistrer l'Entrée
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* MODAL : CRÉATION D'UNE SESSION D'INVENTAIRE PHYSIQUE                  */}
+      {/* ===================================================================== */}
+      {createInventoryModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-md p-6 rounded-3xl bg-white dark:bg-[#0B2D31] border border-slate-200 dark:border-teal-800 shadow-2xl space-y-4 text-xs">
+            <h3 className="text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+              <Boxes className="w-5 h-5 text-[#E85D22]" />
+              Nouvelle Session d'Inventaire Physique
+            </h3>
+            <p className="text-slate-500">
+              Génère une feuille d'inventaire incluant automatiquement vos {myProducts.length} articles pour le comptage contradictoire en entrepôt.
+            </p>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Titre de la session :</label>
+              <input
+                type="text"
+                value={newInventoryTitle}
+                onChange={(e) => setNewInventoryTitle(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Notes / Conditions de comptage :</label>
+              <textarea
+                rows={2}
+                value={newInventoryNotes}
+                onChange={(e) => setNewInventoryNotes(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 text-xs"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3">
+              <Button variant="secondary" onClick={() => setCreateInventoryModalOpen(false)}>
+                Annuler
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  createInventorySession(newInventoryTitle, newInventoryNotes);
+                  setCreateInventoryModalOpen(false);
+                  setStockSubTab('inventory');
+                }}
+              >
+                Créer l'Inventaire
               </Button>
             </div>
           </div>

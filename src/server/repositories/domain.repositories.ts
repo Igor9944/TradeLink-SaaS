@@ -39,10 +39,15 @@ import {
   ConversationRecord,
   ConversationMessageRecord,
   ProductCategoryRecord,
+  StockMovementRecord,
+  StockReservationRecord,
+  PhysicalInventorySession,
+  StockAlertRecord,
+  StockValuationReport,
 } from '../../types';
 import { defaultCatalogEngine } from '../../services/catalogEngine';
+import { defaultStockEngine } from '../../services/stockEngine';
 import { PaginationAndFilterParams } from '../validators/schema.validator';
-import { StockMovementRecord } from '../../services/commercialEngine';
 import {
   INITIAL_CARRIER_VEHICLES,
   LogisticsMissionRecord,
@@ -845,5 +850,41 @@ export class TradeLinkRepositoryStore {
 
   public listCatalogFavorites(userId: string): ProductItem[] {
     return defaultCatalogEngine.listFavorites(userId);
+  }
+
+  // ============================================================================
+  // GESTION DES STOCKS & DISPONIBILITÉS (PROMPT 10)
+  // ============================================================================
+
+  public listStockMovements(filter?: Parameters<typeof defaultStockEngine.listMovements>[0]): StockMovementRecord[] {
+    return defaultStockEngine.listMovements(filter);
+  }
+
+  public listStockReservations(filter?: Parameters<typeof defaultStockEngine.listReservations>[0]): StockReservationRecord[] {
+    return defaultStockEngine.listReservations(filter);
+  }
+
+  public getStockReservationById(id: string): StockReservationRecord | null {
+    return defaultStockEngine.getReservationById(id);
+  }
+
+  public listInventorySessions(supplierId?: string): PhysicalInventorySession[] {
+    return defaultStockEngine.listInventorySessions(supplierId);
+  }
+
+  public getInventorySessionById(id: string): PhysicalInventorySession | null {
+    return defaultStockEngine.getInventorySessionById(id);
+  }
+
+  public getStockAlerts(supplierId?: string, onlyUnresolved = true): StockAlertRecord[] {
+    return defaultStockEngine.getAlerts(supplierId, onlyUnresolved);
+  }
+
+  public getStockOverview(supplierId?: string) {
+    return defaultStockEngine.getOverview(supplierId);
+  }
+
+  public getStockValuationReport(supplierId?: string): StockValuationReport {
+    return defaultStockEngine.getValuationReport(supplierId);
   }
 }

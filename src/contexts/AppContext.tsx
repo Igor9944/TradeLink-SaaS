@@ -33,6 +33,11 @@ import {
   MessageAttachment,
   Icon3DName,
   ProductCategoryRecord,
+  StockMovementRecord,
+  StockReservationRecord,
+  PhysicalInventorySession,
+  StockAlertRecord,
+  StockMovementType,
 } from '../types';
 import { INITIAL_CATALOG_CATEGORIES } from '../services/catalogEngine';
 import i18n from '../i18n/config';
@@ -812,6 +817,121 @@ const INITIAL_ORDERS: OrderRecord[] = [
   },
 ];
 
+const INITIAL_STOCK_MOVEMENTS: StockMovementRecord[] = [
+  {
+    id: 'stkm-init-01',
+    movementNumber: 'MOV-2026-001091',
+    productId: 'prod-01',
+    sku: 'TL-COLD-400X',
+    movementType: 'INBOUND_RECEIPT',
+    quantityChange: 50,
+    resultingAvailable: 42,
+    resultingReserved: 6,
+    resultingOrdered: 9,
+    resultingShipped: 3,
+    reason: 'Réception usine Francfort BL-2026-9812',
+    referenceDocument: 'BL-2026-9812',
+    batchNumber: 'LOT-COLD-2026-01',
+    performedByUserId: 'usr-supp-01',
+    performedByUserName: 'EuroTech Industrial & ColdChain GmbH',
+    performedByUserRole: 'FOURNISSEUR',
+    timestamp: '2026-11-14T09:00:00Z',
+    minStockAlertTriggered: false,
+  },
+  {
+    id: 'stkm-init-02',
+    movementNumber: 'MOV-2026-001092',
+    productId: 'prod-01',
+    sku: 'TL-COLD-400X',
+    movementType: 'ORDER_RESERVATION',
+    quantityChange: -6,
+    resultingAvailable: 42,
+    resultingReserved: 6,
+    resultingOrdered: 9,
+    resultingShipped: 3,
+    reason: 'Réservation commande CMD-2026-8842',
+    referenceDocument: 'CMD-2026-8842',
+    orderId: 'ord-2026-8842',
+    orderNumber: 'CMD-2026-8842',
+    performedByUserId: 'usr-client-01',
+    performedByUserName: 'Atlas Import & Distribution S.A.',
+    performedByUserRole: 'CLIENT',
+    timestamp: '2026-11-15T10:30:00Z',
+    minStockAlertTriggered: false,
+  },
+  {
+    id: 'stkm-init-03',
+    movementNumber: 'MOV-2026-001093',
+    productId: 'prod-01',
+    sku: 'TL-COLD-400X',
+    movementType: 'OUTBOUND_SHIPMENT',
+    quantityChange: -3,
+    resultingAvailable: 42,
+    resultingReserved: 6,
+    resultingOrdered: 9,
+    resultingShipped: 3,
+    reason: 'Expédition prise en charge par transporteur MedFreight',
+    referenceDocument: 'CMD-2026-8841',
+    orderId: 'ord-2026-8841',
+    orderNumber: 'CMD-2026-8841',
+    performedByUserId: 'usr-supp-01',
+    performedByUserName: 'EuroTech Industrial & ColdChain GmbH',
+    performedByUserRole: 'FOURNISSEUR',
+    timestamp: '2026-11-16T14:15:00Z',
+    minStockAlertTriggered: false,
+  },
+];
+
+const INITIAL_STOCK_RESERVATIONS: StockReservationRecord[] = [
+  {
+    id: 'res-init-01',
+    reservationNumber: 'RES-2026-009101',
+    orderId: 'ord-2026-8842',
+    orderNumber: 'CMD-2026-8842',
+    clientId: 'usr-client-01',
+    clientName: 'Atlas Import & Distribution S.A.',
+    productId: 'prod-01',
+    sku: 'TL-COLD-400X',
+    quantity: 6,
+    reservedAt: '2026-11-15T10:30:00Z',
+    expiresAt: '2026-11-20T10:30:00Z',
+    status: 'ACTIVE',
+  },
+];
+
+const INITIAL_INVENTORY_SESSIONS: PhysicalInventorySession[] = [
+  {
+    id: 'inv-sess-init-01',
+    sessionNumber: 'INV-2026-1042',
+    supplierId: 'usr-supp-01',
+    supplierName: 'EuroTech Industrial & ColdChain GmbH',
+    title: 'Inventaire Physique Mensuel Entrepôt Munich',
+    status: 'COMPLETED',
+    startedAt: '2026-11-10T08:00:00Z',
+    completedAt: '2026-11-10T17:30:00Z',
+    conductedByUserId: 'usr-supp-01',
+    conductedByUserName: 'EuroTech Industrial & ColdChain GmbH',
+    lines: [
+      {
+        productId: 'prod-01',
+        sku: 'TL-COLD-400X',
+        productName: 'Conteneur Isotherme Actif Pharma -25°C à +8°C (IoT)',
+        theoreticalAvailable: 40,
+        physicalCounted: 42,
+        varianceQuantity: 2,
+        unitPrice: '4850.00',
+        varianceValueEur: '9700.00',
+        reconciled: true,
+      },
+    ],
+    totalTheoreticalQty: 40,
+    totalPhysicalQty: 42,
+    totalVarianceQty: 2,
+    totalVarianceValueEur: '9700.00',
+    notes: 'Rapprochement validé suite à recomptage contradictoire.',
+  },
+];
+
 const INITIAL_QUOTES: QuoteRecord[] = [
   {
     id: 'quo-2026-301',
@@ -1307,6 +1427,15 @@ interface AppContextValue {
   addProduct: (p: Omit<ProductItem, 'id'>) => void;
   updateProductDetails: (productId: string, sku: string, unitPrice: string, nameFr: string, nameAr: string) => void;
   updateProductStock: (productId: string, delta: number, reason: string) => void;
+  stockMovements: StockMovementRecord[];
+  stockReservations: StockReservationRecord[];
+  inventorySessions: PhysicalInventorySession[];
+  stockAlerts: StockAlertRecord[];
+  recordInboundStock: (productId: string, quantity: number, reason: string, referenceDocument?: string, batchNumber?: string) => void;
+  adjustStockManual: (productId: string, delta: number, reason: string, movementType?: StockMovementType) => void;
+  createInventorySession: (title: string, notes?: string) => PhysicalInventorySession | null;
+  updateInventoryCount: (sessionId: string, counts: { productId: string; physicalCounted: number; notes?: string }[]) => void;
+  reconcileInventorySession: (sessionId: string, notes?: string) => void;
   archiveProduct: (productId: string) => void;
   deleteProduct: (productId: string) => { ok: boolean; message: string };
   importProductsBulk: (items: Omit<ProductItem, 'id'>[]) => number;
@@ -1537,6 +1666,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ]);
   const [cartDrawerOpen, setCartDrawerOpen] = useState(false);
   const [orders, setOrders] = useState<OrderRecord[]>(INITIAL_ORDERS);
+  const [stockMovements, setStockMovements] = useState<StockMovementRecord[]>(INITIAL_STOCK_MOVEMENTS);
+  const [stockReservations, setStockReservations] = useState<StockReservationRecord[]>(INITIAL_STOCK_RESERVATIONS);
+  const [inventorySessions, setInventorySessions] = useState<PhysicalInventorySession[]>(INITIAL_INVENTORY_SESSIONS);
+  const [stockAlerts] = useState<StockAlertRecord[]>([]);
   const [quotes, setQuotes] = useState<QuoteRecord[]>(INITIAL_QUOTES);
   const [invoices, setInvoices] = useState<InvoiceRecord[]>(INITIAL_INVOICES);
   const [payments, setPayments] = useState<PaymentRecord[]>(INITIAL_PAYMENTS);
@@ -2020,6 +2153,264 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notifyToast(`Stock mis à jour (${delta > 0 ? '+' : ''}${delta}) — Motif : ${reason}`, 'success');
   };
 
+  const recordInboundStock = (
+    productId: string,
+    quantity: number,
+    reason: string,
+    referenceDocument?: string,
+    batchNumber?: string
+  ) => {
+    if (currentUser.role === 'COMPTABLE') {
+      notifyToast('Action refusée : Le Comptable est en lecture seule (Stage 3) sur les stocks.', 'error');
+      return;
+    }
+    if (quantity <= 0) {
+      notifyToast('Quantité invalide : la valeur doit être supérieure à zéro.', 'error');
+      return;
+    }
+    const target = products.find((p) => p.id === productId);
+    if (!target) return;
+
+    const newAvailable = target.stockAvailable + quantity;
+    setProducts((prev) =>
+      prev.map((p) => (p.id === productId ? { ...p, stockAvailable: newAvailable } : p))
+    );
+
+    const movId = `stkm-${Date.now()}`;
+    const movNumber = `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+    const newMovement: StockMovementRecord = {
+      id: movId,
+      movementNumber: movNumber,
+      productId: target.id,
+      sku: target.sku,
+      movementType: 'INBOUND_RECEIPT',
+      quantityChange: quantity,
+      resultingAvailable: newAvailable,
+      resultingReserved: target.stockReserved,
+      resultingOrdered: target.stockOrdered || 0,
+      resultingShipped: target.stockShipped || 0,
+      reason,
+      referenceDocument,
+      batchNumber,
+      performedByUserId: currentUser.id,
+      performedByUserName: `${currentUser.firstName} ${currentUser.lastName}`,
+      performedByUserRole: currentUser.role,
+      timestamp: new Date().toISOString(),
+      minStockAlertTriggered: false,
+    };
+
+    setStockMovements((prev) => [newMovement, ...prev]);
+    addAuditLog('STOCK_INBOUND_RECORDED', 'Product', productId, 'SUCCESS', `Entrée de stock (+${quantity}) : ${reason}`);
+    notifyToast(`Entrée de stock de ${quantity} unités enregistrée avec succès.`, 'success');
+  };
+
+  const adjustStockManual = (
+    productId: string,
+    delta: number,
+    reason: string,
+    movementType: StockMovementType = 'INVENTORY_ADJUSTMENT'
+  ) => {
+    if (currentUser.role === 'COMPTABLE') {
+      notifyToast('Action refusée : Le Comptable est en lecture seule (Stage 3) sur les stocks.', 'error');
+      return;
+    }
+    const target = products.find((p) => p.id === productId);
+    if (!target) return;
+
+    const newAvailable = target.stockAvailable + delta;
+    if (newAvailable < 0) {
+      notifyToast('Erreur : le stock disponible résultant ne peut pas être négatif.', 'error');
+      return;
+    }
+
+    setProducts((prev) =>
+      prev.map((p) => (p.id === productId ? { ...p, stockAvailable: newAvailable } : p))
+    );
+
+    const movId = `stkm-${Date.now()}`;
+    const newMovement: StockMovementRecord = {
+      id: movId,
+      movementNumber: `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+      productId: target.id,
+      sku: target.sku,
+      movementType,
+      quantityChange: delta,
+      resultingAvailable: newAvailable,
+      resultingReserved: target.stockReserved,
+      resultingOrdered: target.stockOrdered || 0,
+      resultingShipped: target.stockShipped || 0,
+      reason,
+      performedByUserId: currentUser.id,
+      performedByUserName: `${currentUser.firstName} ${currentUser.lastName}`,
+      performedByUserRole: currentUser.role,
+      timestamp: new Date().toISOString(),
+      minStockAlertTriggered: newAvailable <= target.minStockAlert,
+    };
+
+    setStockMovements((prev) => [newMovement, ...prev]);
+    addAuditLog('STOCK_ADJUSTMENT', 'Product', productId, 'SUCCESS', `Ajustement de stock (${delta > 0 ? '+' : ''}${delta}) : ${reason}`);
+    notifyToast(`Ajustement appliqué (${delta > 0 ? '+' : ''}${delta}) : ${reason}`, 'success');
+  };
+
+  const createInventorySession = (title: string, notes?: string): PhysicalInventorySession | null => {
+    if (currentUser.role === 'COMPTABLE') {
+      notifyToast('Action refusée : Le Comptable est en lecture seule (Stage 3).', 'error');
+      return null;
+    }
+    const myProds = products.filter((p) => currentUser.role === 'ADMIN' || p.supplierId === currentUser.id);
+    if (myProds.length === 0) {
+      notifyToast('Aucun produit à inventorier.', 'warning');
+      return null;
+    }
+
+    let totalTheoretical = 0;
+    const lines = myProds.map((p) => {
+      totalTheoretical += p.stockAvailable;
+      return {
+        productId: p.id,
+        sku: p.sku,
+        productName: p.name[locale] || p.name.fr,
+        theoreticalAvailable: p.stockAvailable,
+        physicalCounted: p.stockAvailable,
+        varianceQuantity: 0,
+        unitPrice: p.unitPrice,
+        varianceValueEur: '0.00',
+        reconciled: false,
+      };
+    });
+
+    const sessionId = `inv-sess-${Date.now()}`;
+    const session: PhysicalInventorySession = {
+      id: sessionId,
+      sessionNumber: `INV-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+      supplierId: currentUser.id,
+      supplierName: currentUser.companyName,
+      title: title || `Session Inventaire ${new Date().toLocaleDateString('fr-FR')}`,
+      status: 'IN_PROGRESS',
+      startedAt: new Date().toISOString(),
+      conductedByUserId: currentUser.id,
+      conductedByUserName: `${currentUser.firstName} ${currentUser.lastName}`,
+      lines,
+      totalTheoreticalQty: totalTheoretical,
+      totalPhysicalQty: totalTheoretical,
+      totalVarianceQty: 0,
+      totalVarianceValueEur: '0.00',
+      notes,
+    };
+
+    setInventorySessions((prev) => [session, ...prev]);
+    addAuditLog('INVENTORY_SESSION_CREATED', 'Inventory', sessionId, 'SUCCESS', `Session inventaire ${session.sessionNumber} démarrée.`);
+    notifyToast(`Session d'inventaire ${session.sessionNumber} créée avec succès.`, 'success');
+    return session;
+  };
+
+  const updateInventoryCount = (
+    sessionId: string,
+    counts: { productId: string; physicalCounted: number; notes?: string }[]
+  ) => {
+    if (currentUser.role === 'COMPTABLE') {
+      notifyToast('Action refusée : Le Comptable est en lecture seule (Stage 3).', 'error');
+      return;
+    }
+    setInventorySessions((prev) =>
+      prev.map((sess) => {
+        if (sess.id !== sessionId) return sess;
+        const countsMap = new Map(counts.map((c) => [c.productId, c]));
+        let totalPhys = 0;
+        let totalVar = 0;
+        let totalVarVal = 0;
+
+        const updatedLines = sess.lines.map((l) => {
+          const input = countsMap.get(l.productId);
+          const counted = input ? Math.max(0, input.physicalCounted) : l.physicalCounted;
+          const variance = counted - l.theoreticalAvailable;
+          const varVal = variance * parseFloat(l.unitPrice);
+          totalPhys += counted;
+          totalVar += variance;
+          totalVarVal += varVal;
+          return {
+            ...l,
+            physicalCounted: counted,
+            varianceQuantity: variance,
+            varianceValueEur: varVal.toFixed(2),
+            notes: input?.notes ?? l.notes,
+          };
+        });
+
+        return {
+          ...sess,
+          lines: updatedLines,
+          totalPhysicalQty: totalPhys,
+          totalVarianceQty: totalVar,
+          totalVarianceValueEur: totalVarVal.toFixed(2),
+        };
+      })
+    );
+    notifyToast('Comptage physique mis à jour.', 'info');
+  };
+
+  const reconcileInventorySession = (sessionId: string, notes?: string) => {
+    if (currentUser.role === 'COMPTABLE') {
+      notifyToast('Action refusée : Le Comptable est en lecture seule (Stage 3).', 'error');
+      return;
+    }
+    const sess = inventorySessions.find((s) => s.id === sessionId);
+    if (!sess || sess.status !== 'IN_PROGRESS') return;
+
+    const adjustments: StockMovementRecord[] = [];
+    const now = new Date().toISOString();
+
+    sess.lines.forEach((l) => {
+      if (l.varianceQuantity !== 0) {
+        setProducts((prev) =>
+          prev.map((p) => (p.id === l.productId ? { ...p, stockAvailable: l.physicalCounted } : p))
+        );
+
+        adjustments.push({
+          id: `stkm-inv-${Date.now()}-${l.productId}`,
+          movementNumber: `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+          productId: l.productId,
+          sku: l.sku,
+          movementType: 'INVENTORY_ADJUSTMENT',
+          quantityChange: l.varianceQuantity,
+          resultingAvailable: l.physicalCounted,
+          resultingReserved: 0,
+          resultingOrdered: 0,
+          resultingShipped: 0,
+          reason: `Rapprochement inventaire ${sess.sessionNumber}`,
+          referenceDocument: sess.sessionNumber,
+          inventorySessionId: sess.id,
+          performedByUserId: currentUser.id,
+          performedByUserName: `${currentUser.firstName} ${currentUser.lastName}`,
+          performedByUserRole: currentUser.role,
+          timestamp: now,
+          minStockAlertTriggered: false,
+        });
+      }
+    });
+
+    if (adjustments.length > 0) {
+      setStockMovements((prev) => [...adjustments, ...prev]);
+    }
+
+    setInventorySessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? {
+              ...s,
+              status: 'COMPLETED',
+              completedAt: now,
+              notes: notes || s.notes,
+              lines: s.lines.map((l) => ({ ...l, reconciled: true })),
+            }
+          : s
+      )
+    );
+
+    addAuditLog('INVENTORY_SESSION_RECONCILED', 'Inventory', sessionId, 'SUCCESS', `Inventaire ${sess.sessionNumber} rapproché (${adjustments.length} ajustements).`);
+    notifyToast(`Session d'inventaire ${sess.sessionNumber} rapprochée et clôturée.`, 'success');
+  };
+
   const archiveProduct = (productId: string) => {
     setProducts((prev) =>
       prev.map((p) => (p.id === productId ? { ...p, isPublished: false } : p))
@@ -2288,6 +2679,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const createOrderFromCart = (shippingAddress: string, paymentMethod: string): OrderRecord | null => {
     if (cart.length === 0) return null;
+
+    // 1. Contrôle Anti-Overselling côté client
+    for (const c of cart) {
+      const prod = products.find((p) => p.id === c.product.id);
+      if (!prod || prod.stockAvailable < c.quantity) {
+        notifyToast(`Stock insuffisant pour ${c.product.sku} : disponible ${prod?.stockAvailable || 0}`, 'error');
+        return null;
+      }
+    }
+
     const subtotalNum = cart.reduce(
       (acc, item) => acc + parseFloat(item.product.unitPrice) * item.quantity,
       0
@@ -2296,9 +2697,77 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const shippingNum = 650;
     const totalNum = subtotalNum + taxNum + shippingNum;
     const orderNumber = `CMD-2026-${Math.floor(9000 + Math.random() * 900)}`;
+    const newOrderId = `ord-${Date.now()}`;
+    const nowIso = new Date().toISOString();
+
+    // 2. Décrémentation et réservation automatique
+    const newReservations: StockReservationRecord[] = [];
+    const newMovements: StockMovementRecord[] = [];
+
+    setProducts((prev) =>
+      prev.map((p) => {
+        const cartItem = cart.find((c) => c.product.id === p.id);
+        if (cartItem) {
+          const newAvail = p.stockAvailable - cartItem.quantity;
+          const newRes = p.stockReserved + cartItem.quantity;
+          const newOrd = (p.stockOrdered || 0) + cartItem.quantity;
+
+          newReservations.push({
+            id: `res-${Date.now()}-${p.id}`,
+            reservationNumber: `RES-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+            orderId: newOrderId,
+            orderNumber,
+            clientId: currentUser.id,
+            clientName: currentUser.companyName,
+            productId: p.id,
+            sku: p.sku,
+            quantity: cartItem.quantity,
+            reservedAt: nowIso,
+            expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+            status: 'ACTIVE',
+          });
+
+          newMovements.push({
+            id: `stkm-res-${Date.now()}-${p.id}`,
+            movementNumber: `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+            productId: p.id,
+            sku: p.sku,
+            movementType: 'ORDER_RESERVATION',
+            quantityChange: -cartItem.quantity,
+            resultingAvailable: newAvail,
+            resultingReserved: newRes,
+            resultingOrdered: newOrd,
+            resultingShipped: p.stockShipped || 0,
+            reason: `Réservation pour commande ${orderNumber}`,
+            referenceDocument: orderNumber,
+            orderNumber,
+            performedByUserId: currentUser.id,
+            performedByUserName: `${currentUser.firstName} ${currentUser.lastName}`,
+            performedByUserRole: currentUser.role,
+            timestamp: nowIso,
+            minStockAlertTriggered: newAvail <= p.minStockAlert,
+          });
+
+          return {
+            ...p,
+            stockAvailable: newAvail,
+            stockReserved: newRes,
+            stockOrdered: newOrd,
+          };
+        }
+        return p;
+      })
+    );
+
+    if (newReservations.length > 0) {
+      setStockReservations((prev) => [...newReservations, ...prev]);
+    }
+    if (newMovements.length > 0) {
+      setStockMovements((prev) => [...newMovements, ...prev]);
+    }
 
     const newOrder: OrderRecord = {
-      id: `ord-${Date.now()}`,
+      id: newOrderId,
       orderNumber,
       clientId: currentUser.id,
       clientName: currentUser.companyName,
@@ -2340,6 +2809,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateOrderStatus = (orderId: string, newStatus: OrderStatus) => {
+    // Gestion des stocks selon statut commande
+    if (newStatus === 'SHIPPED') {
+      const order = orders.find((o) => o.id === orderId);
+      if (order) {
+        setProducts((prev) =>
+          prev.map((p) => {
+            const item = order.items.find((it) => it.productId === p.id);
+            if (item) {
+              return {
+                ...p,
+                stockReserved: Math.max(0, p.stockReserved - item.quantity),
+                stockShipped: (p.stockShipped || 0) + item.quantity,
+              };
+            }
+            return p;
+          })
+        );
+        setStockReservations((prev) =>
+          prev.map((r) => (r.orderId === orderId ? { ...r, status: 'FULFILLED', fulfilledAt: new Date().toISOString() } : r))
+        );
+      }
+    } else if (newStatus === 'CANCELLED') {
+      const order = orders.find((o) => o.id === orderId);
+      if (order) {
+        setProducts((prev) =>
+          prev.map((p) => {
+            const item = order.items.find((it) => it.productId === p.id);
+            if (item) {
+              return {
+                ...p,
+                stockAvailable: p.stockAvailable + item.quantity,
+                stockReserved: Math.max(0, p.stockReserved - item.quantity),
+                stockOrdered: Math.max(0, (p.stockOrdered || 0) - item.quantity),
+              };
+            }
+            return p;
+          })
+        );
+        setStockReservations((prev) =>
+          prev.map((r) => (r.orderId === orderId ? { ...r, status: 'CANCELLED', releasedAt: new Date().toISOString() } : r))
+        );
+      }
+    }
     setOrders((prev) =>
       prev.map((o) =>
         o.id === orderId
@@ -4023,6 +4535,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addProduct,
         updateProductDetails,
         updateProductStock,
+        stockMovements,
+        stockReservations,
+        inventorySessions,
+        stockAlerts,
+        recordInboundStock,
+        adjustStockManual,
+        createInventorySession,
+        updateInventoryCount,
+        reconcileInventorySession,
         archiveProduct,
         deleteProduct,
         importProductsBulk,

@@ -95,7 +95,17 @@ import {
   MessageAttachment,
   ProductCategoryRecord,
   Locale,
+  StockMovementRecord,
+  StockReservationRecord,
+  PhysicalInventorySession,
+  StockAlertRecord,
+  StockValuationReport,
+  StockMovementType,
 } from '../../types';
+import {
+  defaultStockEngine,
+  StockError,
+} from '../../services/stockEngine';
 import {
   defaultCatalogEngine,
   CatalogFilterCriteria,
@@ -129,7 +139,7 @@ import {
   ProductCategory,
   QuoteCreateInput,
   QuoteRespondInput,
-  StockMovementRecord,
+  StockMovementRecord as LegacyCommercialStockMovementRecord,
   StripeCheckoutSessionSimulated,
   StripeWebhookPayloadSimulated,
 } from '../../services/commercialEngine';
@@ -3231,7 +3241,7 @@ export class TradeLinkDomainServices {
   public recordStockMovementTransactional(params: {
     actor: NonNullable<ServerRequestContext['user']>;
     productId: string;
-    movementType: StockMovementRecord['movementType'];
+    movementType: LegacyCommercialStockMovementRecord['movementType'];
     quantity: number;
     reason: string;
     referenceDocument?: string;
@@ -3264,7 +3274,7 @@ export class TradeLinkDomainServices {
         tx.products[idx] = updatedProduct;
       }
 
-      tx.stockMovements.unshift(movementRecord);
+      tx.stockMovements.unshift(movementRecord as any);
 
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
@@ -5684,6 +5694,655 @@ export class TradeLinkDomainServices {
     }
     return defaultCatalogEngine.getCatalogStatistics();
   }
+
+  // ============================================================================
+  // GESTION DES STOCKS, DISPONIBILITÉS & INVENTAIRES (PROMPT 10)
+  // ============================================================================
+
+  public getStockOverviewService(
+    actor?: ServerRequestContext['user'],
+    supplierId?: string
+  ) {
+    if (actor?.role === 'FOURNISSEUR') {
+      return defaultStockEngine.getOverview(actor.id);
+    }
+    if (actor?.role === 'CLIENT') {
+      const overview = defaultStockEngine.getOverview(supplierId);
+      return {
+        totalReferences: overview.totalReferences,
+        totalAvailable: overview.totalAvailable,
+        products: overview.products.map((p) => ({
+          id: p.id,
+          sku: p.sku,
+          name: p.name,
+          category: p.category,
+          unitPrice: p.unitPrice,
+          currency: p.currency,
+          stockAvailable: p.stockAvailable,
+          stockStatus: p.stockStatus,
+          minOrderQuantity: p.minOrderQuantity,
+        })),
+      };
+    }
+    return defaultStockEngine.getOverview(supplierId);
+  }
+
+  public listStockMovementsService(
+    actor?: ServerRequestContext['user'],
+    filter?: {
+      productId?: string;
+      supplierId?: string;
+      movementType?: StockMovementType;
+      search?: string;
+      startDate?: string;
+      endDate?: string;
+    }
+  ): StockMovementRecord[] {
+    if (actor?.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_STOCK_MOVEMENTS', 'Les clients n’ont pas accès aux mouvements internes de stock.');
+    }
+    const effectiveFilter = { ...(filter || {}) };
+    if (actor?.role === 'FOURNISSEUR') {
+      effectiveFilter.supplierId = actor.id;
+    }
+    return defaultStockEngine.listMovements(effectiveFilter);
+  }
+
+  public recordInboundStockService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      productId: string;
+      quantity: number;
+      reason: string;
+      referenceDocument?: string;
+      batchNumber?: string;
+    },
+    correlationId = 'cid-stock',
+    ipAddress = '127.0.0.1'
+  ): StockMovementRecord {
+    if (actor.role === 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN_COMPTABLE_READ_ONLY', "Le profil Comptable dispose d'un accès strictement en lecture seule.");
+    }
+    if (actor.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_STOCK_MUTATION', 'Les clients ne peuvent pas enregistrer d’entrées de stock.');
+    }
+
+    try {
+      const movement = defaultStockEngine.recordInbound({
+        ...payload,
+        actor: {
+          id: actor.id,
+          name: actor.companyName || actor.email,
+          role: actor.role,
+          companyName: actor.companyName,
+        },
+      });
+
+      this.repo.executeTransaction((tx) => {
+        if (!tx.stockMovements) tx.stockMovements = [];
+        tx.stockMovements.unshift(movement);
+
+        const prod = tx.products.find((p) => p.id === payload.productId);
+        if (prod) {
+          prod.stockAvailable = movement.resultingAvailable;
+          prod.updatedAt = new Date().toISOString();
+        }
+
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'STOCK_INBOUND_RECORDED',
+          targetType: 'PRODUCT',
+          targetId: payload.productId,
+          correlationId,
+          ipAddress,
+          result: 'SUCCESS',
+          details: `Entrée de stock : +${payload.quantity} unités pour ${movement.sku} (Motif : ${payload.reason}).`,
+        });
+      });
+
+      return movement;
+    } catch (err: any) {
+      if (err instanceof StockError) {
+        throw new AppError(err.statusCode, err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  public adjustStockService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      productId: string;
+      newStockAvailable?: number;
+      deltaAvailable?: number;
+      reason: string;
+      movementType?: StockMovementType;
+      referenceDocument?: string;
+      batchNumber?: string;
+    },
+    correlationId = 'cid-stock',
+    ipAddress = '127.0.0.1'
+  ): StockMovementRecord {
+    if (actor.role === 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN_COMPTABLE_READ_ONLY', "Le profil Comptable dispose d'un accès strictement en lecture seule.");
+    }
+    if (actor.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_STOCK_MUTATION', 'Les clients ne peuvent pas ajuster les stocks.');
+    }
+
+    try {
+      const movement = defaultStockEngine.adjustStock({
+        ...payload,
+        actor: {
+          id: actor.id,
+          name: actor.companyName || actor.email,
+          role: actor.role,
+          companyName: actor.companyName,
+        },
+      });
+
+      this.repo.executeTransaction((tx) => {
+        if (!tx.stockMovements) tx.stockMovements = [];
+        tx.stockMovements.unshift(movement);
+
+        const prod = tx.products.find((p) => p.id === payload.productId);
+        if (prod) {
+          prod.stockAvailable = movement.resultingAvailable;
+          prod.updatedAt = new Date().toISOString();
+        }
+
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'STOCK_ADJUSTMENT_PERFORMED',
+          targetType: 'PRODUCT',
+          targetId: payload.productId,
+          correlationId,
+          ipAddress,
+          result: 'SUCCESS',
+          details: `Ajustement stock ${movement.sku} : ${movement.quantityChange > 0 ? '+' : ''}${movement.quantityChange} (Nouveau dispo: ${movement.resultingAvailable}, Motif: ${payload.reason}).`,
+        });
+      });
+
+      return movement;
+    } catch (err: any) {
+      if (err instanceof StockError) {
+        throw new AppError(err.statusCode, err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  public reserveStockForOrderService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      orderId: string;
+      orderNumber?: string;
+      clientId?: string;
+      clientName?: string;
+      items: { productId: string; quantity: number }[];
+      ttlMinutes?: number;
+      notes?: string;
+    },
+    correlationId = 'cid-stock',
+    ipAddress = '127.0.0.1'
+  ): StockReservationRecord[] {
+    if (actor.role === 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN_COMPTABLE_READ_ONLY', "Le profil Comptable dispose d'un accès strictement en lecture seule.");
+    }
+
+    const clientId = payload.clientId || (actor.role === 'CLIENT' ? actor.id : 'client-order');
+    const clientName = payload.clientName || actor.companyName || actor.email;
+
+    try {
+      const reservations = defaultStockEngine.reserveStockForOrder({
+        ...payload,
+        clientId,
+        clientName,
+        actor: {
+          id: actor.id,
+          name: actor.companyName || actor.email,
+          role: actor.role,
+          companyName: actor.companyName,
+        },
+      });
+
+      this.repo.executeTransaction((tx) => {
+        for (const item of payload.items) {
+          const prod = tx.products.find((p) => p.id === item.productId);
+          if (prod) {
+            prod.stockAvailable -= item.quantity;
+            prod.stockReserved += item.quantity;
+            prod.stockOrdered = (prod.stockOrdered || 0) + item.quantity;
+            prod.updatedAt = new Date().toISOString();
+          }
+        }
+
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'STOCK_RESERVATION_CREATED',
+          targetType: 'ORDER',
+          targetId: payload.orderId,
+          correlationId,
+          ipAddress,
+          result: 'SUCCESS',
+          details: `Réservation de stock effectuée pour commande ${payload.orderNumber || payload.orderId} (${reservations.length} articles engagés).`,
+        });
+      });
+
+      return reservations;
+    } catch (err: any) {
+      if (err instanceof StockError) {
+        throw new AppError(err.statusCode, err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  public releaseStockReservationService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      reservationId?: string;
+      orderId?: string;
+      reason?: string;
+    },
+    correlationId = 'cid-stock',
+    ipAddress = '127.0.0.1'
+  ): StockMovementRecord[] {
+    if (actor.role === 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN_COMPTABLE_READ_ONLY', "Le profil Comptable dispose d'un accès strictement en lecture seule.");
+    }
+
+    try {
+      const movements = defaultStockEngine.releaseReservation({
+        ...payload,
+        actor: {
+          id: actor.id,
+          name: actor.companyName || actor.email,
+          role: actor.role,
+          companyName: actor.companyName,
+        },
+      });
+
+      this.repo.executeTransaction((tx) => {
+        if (!tx.stockMovements) tx.stockMovements = [];
+        for (const mov of movements) {
+          tx.stockMovements.unshift(mov);
+          const prod = tx.products.find((p) => p.id === mov.productId);
+          if (prod) {
+            prod.stockAvailable = mov.resultingAvailable;
+            prod.stockReserved = mov.resultingReserved;
+            prod.stockOrdered = mov.resultingOrdered;
+            prod.updatedAt = new Date().toISOString();
+          }
+        }
+
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'STOCK_RESERVATION_RELEASED',
+          targetType: 'ORDER',
+          targetId: payload.orderId || payload.reservationId || 'target-release',
+          correlationId,
+          ipAddress,
+          result: 'SUCCESS',
+          details: `Libération de réservation de stock : ${movements.length} lignes restituées.`,
+        });
+      });
+
+      return movements;
+    } catch (err: any) {
+      if (err instanceof StockError) {
+        throw new AppError(err.statusCode, err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  public fulfillStockReservationService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      reservationId?: string;
+      orderId?: string;
+      referenceDocument?: string;
+      reason?: string;
+    },
+    correlationId = 'cid-stock',
+    ipAddress = '127.0.0.1'
+  ): StockMovementRecord[] {
+    if (actor.role === 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN_COMPTABLE_READ_ONLY', "Le profil Comptable dispose d'un accès strictement en lecture seule.");
+    }
+
+    try {
+      const movements = defaultStockEngine.fulfillReservation({
+        ...payload,
+        actor: {
+          id: actor.id,
+          name: actor.companyName || actor.email,
+          role: actor.role,
+          companyName: actor.companyName,
+        },
+      });
+
+      this.repo.executeTransaction((tx) => {
+        if (!tx.stockMovements) tx.stockMovements = [];
+        for (const mov of movements) {
+          tx.stockMovements.unshift(mov);
+          const prod = tx.products.find((p) => p.id === mov.productId);
+          if (prod) {
+            prod.stockReserved = mov.resultingReserved;
+            prod.stockShipped = mov.resultingShipped;
+            prod.updatedAt = new Date().toISOString();
+          }
+        }
+
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'STOCK_RESERVATION_FULFILLED',
+          targetType: 'ORDER',
+          targetId: payload.orderId || payload.reservationId || 'target-fulfill',
+          correlationId,
+          ipAddress,
+          result: 'SUCCESS',
+          details: `Confirmation sortie définitive expédition : ${movements.length} lignes déstockées.`,
+        });
+      });
+
+      return movements;
+    } catch (err: any) {
+      if (err instanceof StockError) {
+        throw new AppError(err.statusCode, err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  public sweepExpiredStockReservationsService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    correlationId = 'cid-stock',
+    ipAddress = '127.0.0.1'
+  ) {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_ADMIN_ONLY', 'Seul un Administrateur peut déclencher manuellement le balayage TTL des réservations.');
+    }
+
+    const result = defaultStockEngine.expirePendingReservations();
+
+    if (result.expiredCount > 0) {
+      this.repo.executeTransaction((tx) => {
+        if (!tx.stockMovements) tx.stockMovements = [];
+        for (const mov of result.releasedMovements) {
+          tx.stockMovements.unshift(mov);
+          const prod = tx.products.find((p) => p.id === mov.productId);
+          if (prod) {
+            prod.stockAvailable = mov.resultingAvailable;
+            prod.stockReserved = mov.resultingReserved;
+            prod.stockOrdered = mov.resultingOrdered;
+            prod.updatedAt = new Date().toISOString();
+          }
+        }
+
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'STOCK_RESERVATIONS_TTL_SWEEP',
+          targetType: 'STOCK',
+          targetId: 'all-expired',
+          correlationId,
+          ipAddress,
+          result: 'SUCCESS',
+          details: `Balayage TTL des réservations de stock : ${result.expiredCount} réservations échues libérées.`,
+        });
+      });
+    }
+
+    return result;
+  }
+
+  public listStockReservationsService(
+    actor?: ServerRequestContext['user'],
+    filter?: {
+      orderId?: string;
+      clientId?: string;
+      productId?: string;
+      status?: 'ACTIVE' | 'FULFILLED' | 'CANCELLED' | 'EXPIRED';
+    }
+  ): StockReservationRecord[] {
+    const effectiveFilter = { ...(filter || {}) };
+    if (actor?.role === 'CLIENT') {
+      effectiveFilter.clientId = actor.id;
+    }
+    return defaultStockEngine.listReservations(effectiveFilter);
+  }
+
+  public createInventorySessionService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      supplierId?: string;
+      supplierName?: string;
+      title: string;
+      productIds?: string[];
+      notes?: string;
+    },
+    correlationId = 'cid-stock',
+    ipAddress = '127.0.0.1'
+  ): PhysicalInventorySession {
+    if (actor.role === 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN_COMPTABLE_READ_ONLY', "Le profil Comptable dispose d'un accès strictement en lecture seule.");
+    }
+    if (actor.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_INVENTORY', 'Les clients n’ont pas accès aux inventaires de stock.');
+    }
+
+    const supplierId = actor.role === 'FOURNISSEUR' ? actor.id : (payload.supplierId || actor.id);
+    const supplierName = actor.role === 'FOURNISSEUR' ? (actor.companyName || actor.email) : (payload.supplierName || 'Fournisseur Certifié');
+
+    try {
+      const session = defaultStockEngine.createInventorySession({
+        supplierId,
+        supplierName,
+        title: payload.title,
+        conductedBy: {
+          id: actor.id,
+          name: actor.companyName || actor.email,
+          role: actor.role,
+          companyName: actor.companyName,
+        },
+        productIds: payload.productIds,
+        notes: payload.notes,
+      });
+
+      this.repo.executeTransaction((tx) => {
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'PHYSICAL_INVENTORY_SESSION_CREATED',
+          targetType: 'INVENTORY',
+          targetId: session.id,
+          correlationId,
+          ipAddress,
+          result: 'SUCCESS',
+          details: `Session d’inventaire physique ${session.sessionNumber} créée avec ${session.lines.length} articles à recenser.`,
+        });
+      });
+
+      return session;
+    } catch (err: any) {
+      if (err instanceof StockError) {
+        throw new AppError(err.statusCode, err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  public updateInventoryCountService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    sessionId: string,
+    counts: { productId: string; physicalCounted: number; notes?: string }[]
+  ): PhysicalInventorySession {
+    if (actor.role === 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN_COMPTABLE_READ_ONLY', "Le profil Comptable dispose d'un accès strictement en lecture seule.");
+    }
+
+    try {
+      return defaultStockEngine.updateInventoryCount(sessionId, counts, {
+        id: actor.id,
+        name: actor.companyName || actor.email,
+        role: actor.role,
+        companyName: actor.companyName,
+      });
+    } catch (err: any) {
+      if (err instanceof StockError) {
+        throw new AppError(err.statusCode, err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  public reconcileInventorySessionService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    sessionId: string,
+    completionNotes?: string,
+    correlationId = 'cid-stock',
+    ipAddress = '127.0.0.1'
+  ): { session: PhysicalInventorySession; adjustmentsMade: StockMovementRecord[] } {
+    if (actor.role === 'COMPTABLE') {
+      throw new AppError(403, 'FORBIDDEN_COMPTABLE_READ_ONLY', "Le profil Comptable dispose d'un accès strictement en lecture seule.");
+    }
+
+    try {
+      const result = defaultStockEngine.reconcileInventorySession(
+        sessionId,
+        {
+          id: actor.id,
+          name: actor.companyName || actor.email,
+          role: actor.role,
+          companyName: actor.companyName,
+        },
+        completionNotes
+      );
+
+      this.repo.executeTransaction((tx) => {
+        if (!tx.stockMovements) tx.stockMovements = [];
+        for (const mov of result.adjustmentsMade) {
+          tx.stockMovements.unshift(mov);
+          const prod = tx.products.find((p) => p.id === mov.productId);
+          if (prod) {
+            prod.stockAvailable = mov.resultingAvailable;
+            prod.updatedAt = new Date().toISOString();
+          }
+        }
+
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'PHYSICAL_INVENTORY_SESSION_RECONCILED',
+          targetType: 'INVENTORY',
+          targetId: sessionId,
+          correlationId,
+          ipAddress,
+          result: 'SUCCESS',
+          details: `Clôture et réconciliation inventaire ${result.session.sessionNumber} : ${result.adjustmentsMade.length} ajustements de stock appliqués.`,
+        });
+      });
+
+      return result;
+    } catch (err: any) {
+      if (err instanceof StockError) {
+        throw new AppError(err.statusCode, err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  public listInventorySessionsService(
+    actor?: ServerRequestContext['user'],
+    supplierId?: string
+  ): PhysicalInventorySession[] {
+    if (actor?.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_INVENTORY', 'Les clients n’ont pas accès aux inventaires.');
+    }
+    const effectiveSupplierId = actor?.role === 'FOURNISSEUR' ? actor.id : supplierId;
+    return defaultStockEngine.listInventorySessions(effectiveSupplierId);
+  }
+
+  public getInventorySessionDetailService(
+    actor: ServerRequestContext['user'],
+    sessionId: string
+  ): PhysicalInventorySession {
+    if (actor?.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_INVENTORY', 'Les clients n’ont pas accès aux inventaires.');
+    }
+    const session = defaultStockEngine.getInventorySessionById(sessionId);
+    if (!session) {
+      throw new AppError(404, 'INVENTORY_SESSION_NOT_FOUND', `Session d’inventaire "${sessionId}" introuvable.`);
+    }
+    if (actor?.role === 'FOURNISSEUR' && session.supplierId !== actor.id) {
+      throw new AppError(403, 'FORBIDDEN_IDOR_INVENTORY', 'Accès interdit à cet inventaire.');
+    }
+    return session;
+  }
+
+  public listStockAlertsService(
+    actor?: ServerRequestContext['user'],
+    supplierId?: string,
+    onlyUnresolved = true
+  ): StockAlertRecord[] {
+    if (actor?.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_ALERTS', 'Les clients n’ont pas accès aux alertes internes de stock.');
+    }
+    const effectiveSupplierId = actor?.role === 'FOURNISSEUR' ? actor.id : supplierId;
+    return defaultStockEngine.getAlerts(effectiveSupplierId, onlyUnresolved);
+  }
+
+  public resolveStockAlertService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    alertId: string
+  ): StockAlertRecord {
+    if (actor.role === 'COMPTABLE' || actor.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_ALERT_MUTATION', 'Accès non autorisé.');
+    }
+    try {
+      return defaultStockEngine.resolveAlertManual(alertId);
+    } catch (err: any) {
+      if (err instanceof StockError) {
+        throw new AppError(err.statusCode, err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  public getStockValuationReportService(
+    actor?: ServerRequestContext['user'],
+    supplierId?: string
+  ): StockValuationReport {
+    if (actor?.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_VALUATION', 'Les clients n’ont pas accès à la valorisation financière des stocks.');
+    }
+    const effectiveSupplierId = actor?.role === 'FOURNISSEUR' ? actor.id : supplierId;
+    return defaultStockEngine.getValuationReport(effectiveSupplierId);
+  }
 }
+
 
 

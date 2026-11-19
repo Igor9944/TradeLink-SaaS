@@ -610,6 +610,50 @@ export class CentralCatalogEngine {
     return structuredClone(existing);
   }
 
+  public updateProductStockQuantities(
+    id: string,
+    quantities: {
+      stockAvailable?: number;
+      stockReserved?: number;
+      stockOrdered?: number;
+      stockShipped?: number;
+    }
+  ): ProductItem {
+    const existing = this.products.get(id);
+    if (!existing) {
+      const err = new Error('PRODUCT_NOT_FOUND');
+      (err as any).statusCode = 404;
+      throw err;
+    }
+
+    if (quantities.stockAvailable !== undefined) {
+      if (quantities.stockAvailable < 0) {
+        const err = new Error('INVALID_NEGATIVE_STOCK');
+        (err as any).statusCode = 400;
+        throw err;
+      }
+      existing.stockAvailable = quantities.stockAvailable;
+    }
+    if (quantities.stockReserved !== undefined) {
+      if (quantities.stockReserved < 0) {
+        const err = new Error('INVALID_NEGATIVE_STOCK_RESERVED');
+        (err as any).statusCode = 400;
+        throw err;
+      }
+      existing.stockReserved = quantities.stockReserved;
+    }
+    if (quantities.stockOrdered !== undefined) {
+      existing.stockOrdered = Math.max(0, quantities.stockOrdered);
+    }
+    if (quantities.stockShipped !== undefined) {
+      existing.stockShipped = Math.max(0, quantities.stockShipped);
+    }
+
+    existing.updatedAt = new Date().toISOString();
+    this.products.set(id, existing);
+    return structuredClone(existing);
+  }
+
   public archiveProduct(id: string, actorId: string, actorRole: string): ProductItem {
     return this.updateProduct(id, actorId, actorRole, {
       status: 'ARCHIVED',
