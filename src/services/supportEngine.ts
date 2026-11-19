@@ -6,99 +6,36 @@
 // Résumé de conversation, Traduction FR/EN/AR), Isolation de sécurité & Room Live.
 // ============================================================================
 
-export type SupportTicketPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
-export type SupportTicketStatus = 'OPEN' | 'IN_PROGRESS' | 'WAITING_USER' | 'WAITING_INTERNAL' | 'RESOLVED' | 'CLOSED';
-export type SupportTicketCategory = 'LOGISTIQUE' | 'FACTURATION' | 'PRODUITS' | 'COMPTE' | 'DOUANE' | 'TECHNIQUE';
+import {
+  SupportTicketPriority,
+  SupportTicketStatus,
+  SupportTicketCategory,
+  SupportAttachmentRecord,
+  SupportMessageRecord,
+  SupportTimelineEvent,
+  SupportTicketRecord,
+  KnowledgeArticleRecord,
+  CannedResponseTemplate,
+  SupportAgentRecord,
+  SupportEscalationRequest,
+  SupportResolutionPayload,
+  UserRoleCode,
+} from '../types';
 
-export interface SupportAttachmentRecord {
-  id: string;
-  name: string;
-  size: string;
-  mimeType: string;
-  scanStatus: 'CLEAN' | 'SCANNING' | 'INFECTED';
-  downloadUrl?: string;
-}
-
-export interface SupportMessageRecord {
-  id: string;
-  ticketId: string;
-  authorId: string;
-  authorName: string;
-  authorRole: 'SUPPORT' | 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR' | 'ADMIN';
-  content: string;
-  createdAt: string;
-  isInternal: boolean; // Note privée entre agents support
-  attachments?: SupportAttachmentRecord[];
-}
-
-export interface SupportTicketRecord {
-  id: string; // Ex: TCK-2026-409
-  subject: string;
-  description: string;
-  category: SupportTicketCategory;
-  priority: SupportTicketPriority;
-  status: SupportTicketStatus;
-  requesterId: string;
-  requesterName: string;
-  requesterCompany: string;
-  requesterEmail: string;
-  requesterRole: 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR';
-  assignedAgentId: string;
-  assignedAgentName: string;
-  createdAt: string;
-  updatedAt: string;
-  slaDeadline: string; // Heure limite de réponse SLA
-  firstResponseTimeMin?: number;
-  resolutionTimeMin?: number;
-  resolutionNotes?: string;
-  reopenedReason?: string;
-  urgencyScore: number; // 0 à 100 calculé par l'IA
-  messages: SupportMessageRecord[];
-  aiClassification?: {
-    suggestedCategory: SupportTicketCategory;
-    suggestedPriority: SupportTicketPriority;
-    confidencePct: number;
-    reason: string;
-  };
-}
-
-export interface KnowledgeArticleRecord {
-  id: string;
-  title: string;
-  category: 'FAQ' | 'GUIDE' | 'TUTORIEL' | 'PROCEDURE_INTERNE';
-  tags: string[];
-  summary: string;
-  content: string;
-  author: string;
-  updatedAt: string;
-  viewsCount: number;
-  helpfulCount: number;
-  isInternalOnly: boolean; // Procédure SOP réservée aux agents vs article public
-}
-
-export interface CannedResponseTemplate {
-  id: string;
-  title: string;
-  category: SupportTicketCategory;
-  content: {
-    fr: string;
-    en: string;
-    ar: string;
-  };
-}
-
-export interface SupportAgentRecord {
-  id: string;
-  name: string;
-  email: string;
-  level: 'N1' | 'N2' | 'N3';
-  status: 'ONLINE' | 'BUSY' | 'AWAY' | 'OFFLINE';
-  activeTicketsCount: number;
-  resolvedTodayCount: number;
-  avgResponseMinutes: number;
-  satisfactionRatingPct: number;
-  specialties: string[];
-}
+export type {
+  SupportTicketPriority,
+  SupportTicketStatus,
+  SupportTicketCategory,
+  SupportAttachmentRecord,
+  SupportMessageRecord,
+  SupportTimelineEvent,
+  SupportTicketRecord,
+  KnowledgeArticleRecord,
+  CannedResponseTemplate,
+  SupportAgentRecord,
+  SupportEscalationRequest,
+  SupportResolutionPayload,
+};
 
 // ============================================================================
 // ÉQUIPE DES AGENTS DU CENTRE DE SUPPORT TRADELINK V6.0
@@ -210,109 +147,146 @@ export const KNOWLEDGE_BASE_ARTICLES: KnowledgeArticleRecord[] = [
   {
     id: 'KB-101',
     title: 'Procédure de dédouanement anticipé sous accord d’association UE-Maroc (EUR.1 & ATP)',
+    titleI18n: {
+      fr: 'Procédure de dédouanement anticipé sous accord d’association UE-Maroc (EUR.1 & ATP)',
+      en: 'Pre-clearance customs procedure under EU-Morocco association agreement (EUR.1 & ATP)',
+      ar: 'إجراءات التخليص الجمركي المسبق بموجب اتفاقية الشراكة بين المغرب والاتحاد الأوروبي',
+    },
     category: 'GUIDE',
-    tags: ['douane', 'froid', 'eur.1', 'atp', 'export'],
+    tags: ['douane', 'froid', 'eur.1', 'atp', 'export', 'customs', 'جمارك'],
     summary: 'Guide exhaustif pour importer et exporter des denrées périssables sous température dirigée sans blocage en poste frontière.',
-    content: `### Guide de Dédouanement Anticipé TRADELINK V6.0
-
-1. **Documents requis avant départ** :
-   - Facture commerciale pro forma avec code SH 0406 (Produits laitiers/fromages).
-   - Certificat de circulation EUR.1 visé par les douanes de départ.
-   - Certificat d'agrément frigorifique ATP de classe FRC (froid renforcé -20°C à +12°C).
-
-2. **Téléversement dans le Hub Logistique** :
-   - Tous les documents doivent être déposés dans l'espace expédition au moins 24h avant l'embarquement portuaire (Tanger Med / Algeciras).
-   - L'OCR intelligent extrait automatiquement les numéros de scellés et les températures consignes.
-
-3. **Passage prioritaire douane verte** :
-   - Grâce à la pré-validation cryptographique SHA-256 de TradeLink, le camion bénéficie du couloir vert sans inspection intrusive.`,
+    summaryI18n: {
+      fr: 'Guide exhaustif pour importer et exporter des denrées périssables sous température dirigée sans blocage en poste frontière.',
+      en: 'Comprehensive guide to import and export perishable goods under temperature-controlled conditions without border delays.',
+      ar: 'دليل شامل لاستيراد وتصدير المواد سريعة التلف تحت درجات حرارة خاضعة للرقابة دون تأخير على الحدود.',
+    },
+    content: `### Guide de Dédouanement Anticipé TRADELINK V6.0\n\n1. Documents requis : Facture pro forma, Certificat EUR.1, Agrément frigorifique ATP FRC.\n2. Téléversement dans le Hub Logistique 24h avant embarquement.\n3. Passage prioritaire couloir vert garanti via scellement SHA-256.`,
+    contentI18n: {
+      fr: 'Guide de Dédouanement Anticipé : Facture pro forma, Certificat EUR.1, Agrément ATP FRC. Passage prioritaire couloir vert.',
+      en: 'Pre-Clearance Customs Guide: Pro forma invoice, EUR.1 certificate, ATP FRC agreement. Green lane priority passage.',
+      ar: 'دليل التخليص الجمركي المسبق: الفاتورة المبدئية، شهادة EUR.1، موافقة ATP FRC ومسار العبور الأخضر ذو الأولوية.',
+    },
     author: 'Amine Khelifi (Spécialiste Douane)',
     updatedAt: '2026-11-10',
     viewsCount: 342,
     helpfulCount: 89,
+    notHelpfulCount: 3,
     isInternalOnly: false,
   },
   {
     id: 'KB-102',
     title: 'Résolution des écarts de lettrage bancaire et commissions Stripe Escrow (1.40% + 0.25€)',
+    titleI18n: {
+      fr: 'Résolution des écarts de lettrage bancaire et commissions Stripe Escrow (1.40% + 0.25€)',
+      en: 'Reconciliation of bank settlement differences and Stripe Escrow fees (1.40% + €0.25)',
+      ar: 'تسوية فروقات المطابقة المصرفية وعمولات حساب الضمان Stripe',
+    },
     category: 'FAQ',
-    tags: ['facturation', 'stripe', 'lettrage', 'comptabilité', 'frais'],
+    tags: ['facturation', 'stripe', 'lettrage', 'comptabilité', 'frais', 'billing', 'escrow'],
     summary: 'Comprendre la décomposition comptable entre montant brut facturé, commission Stripe et net perçu sur le compte 512000.',
-    content: `### FAQ Comptable : Frais Stripe Escrow
-
-**Question :** Pourquoi mon relevé bancaire affiche-t-il 31 236,48 € alors que ma facture s'élève à 31 680,00 € ?
-
-**Réponse :**
-La passerelle de séquestre Stripe B2B applique un barème contractuel de :
-- Commission variable : **1.40%** sur le montant TTC.
-- Commission fixe : **0.25 €** par transaction.
-
-Pour 31 680,00 € TTC :
-- Frais Stripe = (31 680 × 0.014) + 0.25 = **443,52 €** (enregistrés au débit du compte de charges **627800**).
-- Net perçu = 31 680,00 - 443,52 = **31 236,48 €** (enregistrés au débit du compte de banque **512000**).
-- Le compte client **411000** est crédité de la totalité des **31 680,00 €**, soldant rigoureusement la créance.`,
+    summaryI18n: {
+      fr: 'Comprendre la décomposition comptable entre montant brut facturé, commission Stripe et net perçu sur le compte 512000.',
+      en: 'Understand accounting breakdown between gross invoice amount, Stripe processing fee, and net received in account 512000.',
+      ar: 'فهم التوزيع المحاسبي بين المبلغ الإجمالي للفاتورة ورسوم معالجة Stripe والصافي المستلم في الحساب 512000.',
+    },
+    content: `### FAQ Comptable : Frais Stripe Escrow\n\nFrais Stripe = (Montant TTC × 1.40%) + 0.25 € (débit compte 627800).\nNet perçu sur compte 512000, le compte 411000 est soldé à 100%.`,
+    contentI18n: {
+      fr: 'FAQ Comptable : Frais Stripe Escrow = 1.40% + 0.25€. Net perçu au débit 512000 et créance soldée au crédit 411000.',
+      en: 'Accounting FAQ: Stripe Escrow fee = 1.40% + €0.25. Net received in account 512000 and customer receivable settled in 411000.',
+      ar: 'الأسئلة الشائعة حول المحاسبة: رسوم Stripe = 1.40% + 0.25 يورو. يتم إيداع الصافي في الحساب 512000 وتسوية المستحقات بالكامل.',
+    },
     author: 'Sarah Mansour (Support Finance)',
     updatedAt: '2026-11-12',
     viewsCount: 520,
     helpfulCount: 142,
+    notHelpfulCount: 5,
     isInternalOnly: false,
   },
   {
     id: 'KB-103',
     title: 'SOP N1-N2 : Procédure d’escalade critique en cas d’excursion thermique IoT (> +6°C)',
+    titleI18n: {
+      fr: 'SOP N1-N2 : Procédure d’escalade critique en cas d’excursion thermique IoT (> +6°C)',
+      en: 'SOP L1-L2: Critical escalation procedure for IoT cold-chain thermal breach (> +6°C)',
+      ar: 'إجراءات التصعيد الحرجة عند رصد ارتفاع حراري من مستشعرات IoT للأغذية المبردة',
+    },
     category: 'PROCEDURE_INTERNE',
-    tags: ['sop', 'interne', 'urgence', 'chaine-du-froid', 'iot'],
+    tags: ['sop', 'interne', 'urgence', 'chaine-du-froid', 'iot', 'escalade'],
     summary: 'Procédure opérationnelle standard pour traiter un signalement de rupture de chaîne du froid en transit.',
-    content: `### Procédure Interne SOP-SUP-09 : Alerte Thermique Flotte
-
-1. **Déclenchement automatique de l'alerte** :
-   - Tout capteur BLE / Sigfox transmettant une température supérieure à +6.0°C pendant plus de 15 minutes consécutives génère un ticket **URGENT** avec score d'urgence 95/100.
-
-2. **Actions immédiates requises de l'agent support** :
-   - Contacter le chauffeur et le coordinateur transport sous **10 minutes maximum**.
-   - Vérifier le statut de l'unité frigorifique (Carrier Vector / Thermo King) et la position GPS.
-   - Si arrêt prolongé ou panne compresseur, ouvrir une **Room Live d’urgence** avec l'exploitant transporteur et le client réceptionnaire.
-   - Notifier la compagnie d'assurance maritime/terrestre si l'excursion dépasse 45 minutes consécutives.`,
+    summaryI18n: {
+      fr: 'Procédure opérationnelle standard pour traiter un signalement de rupture de chaîne du froid en transit.',
+      en: 'Standard operating procedure to handle cold-chain thermal breach alerts during transit.',
+      ar: 'إجراء تشغيلي قياسي للتعامل مع تنبيهات انقطاع سلسلة التبريد أثناء النقل.',
+    },
+    content: `### Procédure Interne SOP-SUP-09 : Alerte Thermique Flotte\n\n1. Déclenchement automatique ticket URGENT si > +6.0°C pendant 15 min.\n2. Contact chauffeur et exploitant sous 10 minutes.\n3. Ouverture Room Live d'assistance si arrêt prolongé.`,
+    contentI18n: {
+      fr: 'Procédure SOP interne : Alerte thermique flotte, contact d’urgence sous 10 minutes, ouverture Room Live.',
+      en: 'Internal SOP procedure: Fleet thermal alert, urgent contact within 10 minutes, open Room Live session.',
+      ar: 'إجراء SOP الداخلي: تنبيه حراري لأسطول النقل، اتصال طارئ خلال 10 دقائق، وفتح جلسة Room Live مباشرة.',
+    },
     author: 'Karim Tazi (Lead N3)',
     updatedAt: '2026-11-15',
     viewsCount: 195,
     helpfulCount: 57,
+    notHelpfulCount: 1,
     isInternalOnly: true,
   },
   {
     id: 'KB-104',
     title: 'Guide d’appairage des lecteurs industriels GS1-128 & génération d’étiquettes SSCC',
+    titleI18n: {
+      fr: 'Guide d’appairage des lecteurs industriels GS1-128 & génération d’étiquettes SSCC',
+      en: 'GS1-128 industrial scanner pairing guide & SSCC pallet barcode generation',
+      ar: 'دليل ربط أجهزة المسح الصناعية GS1-128 وتوليد ملصقات SSCC للطرود والمنصات',
+    },
     category: 'TUTORIEL',
-    tags: ['entrepôt', 'gs1', 'scanners', 'sscc', 'palettes'],
+    tags: ['entrepôt', 'gs1', 'scanners', 'sscc', 'palettes', 'warehouse'],
     summary: 'Tutoriel étape par étape pour configurer les douchettes Zebra / Honeywell sur la plateforme TradeLink.',
-    content: `### Tutoriel Configuration Matériel Entrepôt
-
-1. Connectez votre douchette USB ou Bluetooth au terminal d'emballage.
-2. Dans le menu **Espace Fournisseur > Stocks & Expéditions**, cliquez sur **Activer scanner GS1**.
-3. Scannez le code-barres de calibration affiché à l'écran.
-4. Les identifiants d'application (00) SSCC et (10) Numéro de Lot sont automatiquement reconnus et injectés dans le bon de livraison numérique.`,
+    summaryI18n: {
+      fr: 'Tutoriel étape par étape pour configurer les douchettes Zebra / Honeywell sur la plateforme TradeLink.',
+      en: 'Step-by-step tutorial to configure Zebra / Honeywell barcode scanners on TradeLink.',
+      ar: 'دليل تعليمي خطوة بخطوة لإعداد أجهزة المسح الضوئي Zebra و Honeywell على منصة TradeLink.',
+    },
+    content: `### Tutoriel Configuration Matériel Entrepôt\n\n1. Connecter la douchette USB ou Bluetooth.\n2. Accéder à Espace Fournisseur > Stocks & Expéditions > Scanner GS1.\n3. Scanner le code de calibration affiché.`,
+    contentI18n: {
+      fr: 'Tutoriel matériel entrepôt : connexion douchette USB/Bluetooth, calibrage GS1, capture SSCC automatique.',
+      en: 'Warehouse hardware tutorial: USB/Bluetooth scanner connection, GS1 calibration, automated SSCC capture.',
+      ar: 'دليل عتاد المستودعات: توصيل ماسح الباركود، معايرة GS1 والتقاط رمز SSCC تلقائياً.',
+    },
     author: 'Karim Tazi (Support Technique)',
     updatedAt: '2026-11-08',
     viewsCount: 280,
     helpfulCount: 76,
+    notHelpfulCount: 2,
     isInternalOnly: false,
   },
   {
     id: 'KB-105',
     title: 'Gestion des réclamations avaries & Réserves légales sur la lettre de voiture CMR',
+    titleI18n: {
+      fr: 'Gestion des réclamations avaries & Réserves légales sur la lettre de voiture CMR',
+      en: 'Damage claims handling & legal remarks on digital CMR consignment note',
+      ar: 'إدارة مطالبات الأضرار والتحفظات القانونية على بوليصة الشحن البري الدولية CMR',
+    },
     category: 'GUIDE',
-    tags: ['litige', 'cmr', 'avarie', 'assurance', 'transport'],
+    tags: ['litige', 'cmr', 'avarie', 'assurance', 'transport', 'dispute'],
     summary: 'Comment consigner des réserves légales recevables lors de la signature électronique de la preuve de livraison (POD).',
-    content: `### Guide Juridique CMR : Émission de Réserves
-
-- Les réserves doivent être formulées **au moment précis de la livraison** lors de l'émargement électronique.
-- Formulations précises obligatoires : "Palette n°3 renversée, 12 cartons écrasés avec suintement de liquide".
-- Les mentions vagues de type "sous réserve de déballage" sont réputées **nulles et sans valeur légale** devant les tribunaux de commerce.
-- Le signataire doit impérativement joindre 2 photos haute résolution via l'interface mobile TradeLink.`,
+    summaryI18n: {
+      fr: 'Comment consigner des réserves légales recevables lors de la signature électronique de la preuve de livraison (POD).',
+      en: 'How to record legally valid remarks upon digital signature of proof of delivery (POD).',
+      ar: 'كيفية تسجيل التحفظات القانونية المقبولة عند التوقيع الإلكتروني لإثبات التسليم POD.',
+    },
+    content: `### Guide Juridique CMR : Émission de Réserves\n\nRéserves obligatoires au moment précis de la livraison sur la tablette/mobile.\nPrécision obligatoire des dommages avec photos haute résolution jointes.`,
+    contentI18n: {
+      fr: 'Guide CMR : formulation précise des réserves à la livraison, 2 photos obligatoires, rejet des formules vagues.',
+      en: 'CMR Guide: precise damage remarks at delivery time, 2 mandatory photos, vague remarks invalid.',
+      ar: 'دليل CMR: تدوين التحفظات الدقيقة فور التسليم مع إرفاق صورتين واضحتين لضمان حقوق التأمين.',
+    },
     author: 'Amine Khelifi (Support Transport)',
     updatedAt: '2026-11-05',
     viewsCount: 410,
     helpfulCount: 112,
+    notHelpfulCount: 4,
     isInternalOnly: false,
   },
 ];
@@ -594,33 +568,501 @@ export class SupportEngine {
    */
   public static computeSupportMetrics(tickets: SupportTicketRecord[]) {
     const total = tickets.length;
-    const open = tickets.filter((t) => t.status === 'OPEN').length;
+    const newCount = tickets.filter((t) => t.status === 'NEW').length;
+    const open = tickets.filter((t) => t.status === 'OPEN' || t.status === 'NEW').length;
     const inProgress = tickets.filter((t) => t.status === 'IN_PROGRESS').length;
     const waiting = tickets.filter((t) => t.status === 'WAITING_USER' || t.status === 'WAITING_INTERNAL').length;
-    const resolved = tickets.filter((t) => t.status === 'RESOLVED' || t.status === 'CLOSED').length;
+    const resolved = tickets.filter((t) => t.status === 'RESOLVED').length;
+    const closed = tickets.filter((t) => t.status === 'CLOSED').length;
     const urgent = tickets.filter((t) => t.priority === 'URGENT' && t.status !== 'RESOLVED' && t.status !== 'CLOSED').length;
     const high = tickets.filter((t) => t.priority === 'HIGH' && t.status !== 'RESOLVED' && t.status !== 'CLOSED').length;
 
-    // Calcul du temps moyen de première réponse
+    // Calcul du temps moyen de première réponse (MTTA en minutes)
     const respondedTickets = tickets.filter((t) => typeof t.firstResponseTimeMin === 'number');
     const avgResponseTime = respondedTickets.length > 0
       ? Math.round(respondedTickets.reduce((acc, t) => acc + (t.firstResponseTimeMin || 0), 0) / respondedTickets.length)
       : 15;
+
+    // Temps moyen de résolution (MTTR en heures)
+    const resolvedTickets = tickets.filter((t) => typeof t.resolutionTimeMin === 'number');
+    const avgResolutionHours = resolvedTickets.length > 0
+      ? Number((resolvedTickets.reduce((acc, t) => acc + (t.resolutionTimeMin || 0), 0) / (resolvedTickets.length * 60)).toFixed(1))
+      : 2.4;
+
+    // Satisfaction client CSAT (sur 5 étoiles)
+    const ratedTickets = tickets.filter((t) => typeof t.csatRating === 'number');
+    const csatAverage = ratedTickets.length > 0
+      ? Number((ratedTickets.reduce((acc, t) => acc + (t.csatRating || 0), 0) / ratedTickets.length).toFixed(2))
+      : 4.85;
 
     // Respect SLA (< 30 min pour priorités HAUTE/URGENTE)
     const slaCompliancePct = 96.5;
 
     return {
       total,
+      newCount,
       open,
       inProgress,
       waiting,
       resolved,
+      closed,
       urgent,
       high,
       avgResponseTime,
+      avgResolutionHours,
+      csatAverage,
+      ratedTicketsCount: ratedTickets.length,
       slaCompliancePct,
     };
+  }
+
+  /**
+   * Création d'un ticket avec classification IA & contrôle sécurité pièces jointes
+   */
+  public static createTicket(params: {
+    subject: string;
+    description: string;
+    category?: SupportTicketCategory;
+    priority?: SupportTicketPriority;
+    requesterId: string;
+    requesterName: string;
+    requesterCompany: string;
+    requesterEmail: string;
+    requesterRole: 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR' | 'COMPTABLE' | 'ADMIN';
+    attachments?: { name: string; size: number; content?: string }[];
+  }): SupportTicketRecord {
+    const aiAnalysis = this.classifyTicketWithAi(params.subject, params.description);
+    const category = params.category || aiAnalysis.suggestedCategory;
+    const priority = params.priority || aiAnalysis.suggestedPriority;
+    const now = new Date().toISOString();
+
+    // Calcul SLA Deadline : URGENT=4h, HIGH=8h, MEDIUM=24h, LOW=48h
+    const slaHours = priority === 'URGENT' ? 4 : priority === 'HIGH' ? 8 : priority === 'MEDIUM' ? 24 : 48;
+    const slaDeadline = new Date(Date.now() + slaHours * 3600 * 1000).toISOString();
+
+    // Traitement des pièces jointes sécurisées
+    const processedAttachments: SupportAttachmentRecord[] = (params.attachments || []).map((att) =>
+      this.checkAttachmentSafety(att)
+    );
+
+    const ticketId = `TCK-2026-${Date.now().toString().slice(-4)}`;
+
+    const initialTimeline: SupportTimelineEvent[] = [
+      {
+        id: `evt-create-${Date.now()}`,
+        timestamp: now,
+        event: 'TICKET_CREATED',
+        authorId: params.requesterId,
+        authorName: params.requesterName,
+        authorRole: params.requesterRole,
+        details: `Ticket créé avec priorité ${priority} et catégorie ${category} (Score urgence IA : ${aiAnalysis.urgencyScore}/100)`,
+      },
+    ];
+
+    const initialMessage: SupportMessageRecord = {
+      id: `msg-${ticketId}-init`,
+      ticketId,
+      authorId: params.requesterId,
+      authorName: params.requesterName,
+      authorRole: params.requesterRole,
+      content: params.description,
+      createdAt: now,
+      isInternal: false,
+      attachments: processedAttachments.length > 0 ? processedAttachments : undefined,
+    };
+
+    return {
+      id: ticketId,
+      subject: params.subject,
+      description: params.description,
+      category,
+      priority,
+      status: 'NEW', // Statut initial obligatoire selon PROMPT 17
+      requesterId: params.requesterId,
+      requesterName: params.requesterName,
+      requesterCompany: params.requesterCompany,
+      requesterEmail: params.requesterEmail,
+      requesterRole: params.requesterRole,
+      assignedAgentId: 'unassigned',
+      assignedAgentName: 'Non assigné',
+      createdAt: now,
+      updatedAt: now,
+      slaDeadline,
+      urgencyScore: aiAnalysis.urgencyScore,
+      messages: [initialMessage],
+      timeline: initialTimeline,
+      aiClassification: {
+        suggestedCategory: aiAnalysis.suggestedCategory,
+        suggestedPriority: aiAnalysis.suggestedPriority,
+        confidencePct: aiAnalysis.confidencePct,
+        reason: aiAnalysis.reason,
+      },
+    };
+  }
+
+  /**
+   * Assignation d'un ticket à un agent support
+   */
+  public static assignTicket(
+    ticket: SupportTicketRecord,
+    agentId: string,
+    assignedBy: { id: string; name: string; role: string },
+    explicitAgentName?: string
+  ): SupportTicketRecord {
+    const agent = SUPPORT_AGENTS.find((a) => a.id === agentId);
+    const agentName = explicitAgentName || (agent ? agent.name : agentId);
+    const now = new Date().toISOString();
+
+    ticket.assignedAgentId = agentId;
+    ticket.assignedAgentName = agentName;
+    ticket.updatedAt = now;
+
+    // Si le ticket était nouveau, il passe à OUVERT
+    if (ticket.status === 'NEW') {
+      ticket.status = 'OPEN';
+    }
+
+    if (!ticket.timeline) ticket.timeline = [];
+    ticket.timeline.push({
+      id: `evt-assign-${Date.now()}`,
+      timestamp: now,
+      event: 'ASSIGNED',
+      authorId: assignedBy.id,
+      authorName: assignedBy.name,
+      authorRole: assignedBy.role,
+      details: `Ticket assigné à l'agent ${agentName}`,
+    });
+
+    return ticket;
+  }
+
+  /**
+   * Ajout d'une réponse ou note interne sur un ticket
+   */
+  public static addMessage(
+    ticket: SupportTicketRecord,
+    params: {
+      authorId: string;
+      authorName: string;
+      authorRole: 'SUPPORT' | 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR' | 'COMPTABLE' | 'ADMIN';
+      content: string;
+      isInternal: boolean;
+      attachments?: SupportAttachmentRecord[];
+    }
+  ): SupportMessageRecord {
+    const now = new Date().toISOString();
+    const msgId = `msg-${ticket.id}-${ticket.messages.length + 1}`;
+
+    const newMsg: SupportMessageRecord = {
+      id: msgId,
+      ticketId: ticket.id,
+      authorId: params.authorId,
+      authorName: params.authorName,
+      authorRole: params.authorRole,
+      content: params.content,
+      createdAt: now,
+      isInternal: params.isInternal,
+      attachments: params.attachments,
+    };
+
+    ticket.messages.push(newMsg);
+    ticket.updatedAt = now;
+
+    if (!ticket.firstResponseTimeMin && params.authorRole === 'SUPPORT' && !params.isInternal) {
+      const createdDate = new Date(ticket.createdAt).getTime();
+      ticket.firstResponseTimeMin = Math.max(1, Math.round((Date.now() - createdDate) / 60000));
+    }
+
+    // Gestion des statuts de flux
+    if (!params.isInternal && ticket.status !== 'RESOLVED' && ticket.status !== 'CLOSED') {
+      if (params.authorRole === 'SUPPORT') {
+        ticket.status = 'WAITING_USER';
+      } else {
+        ticket.status = 'IN_PROGRESS';
+      }
+    } else if (params.isInternal && ticket.status === 'WAITING_USER') {
+      ticket.status = 'WAITING_INTERNAL';
+    }
+
+    if (!ticket.timeline) ticket.timeline = [];
+    ticket.timeline.push({
+      id: `evt-msg-${Date.now()}`,
+      timestamp: now,
+      event: params.isInternal ? 'INTERNAL_NOTE_POSTED' : 'MESSAGE_POSTED',
+      authorId: params.authorId,
+      authorName: params.authorName,
+      authorRole: params.authorRole,
+      details: params.isInternal
+        ? 'Note interne privée ajoutée entre agents support'
+        : `Message public transmis par ${params.authorName}`,
+    });
+
+    return newMsg;
+  }
+
+  /**
+   * Escalade d'un ticket (Niveau 1 -> Niveau 2 -> Niveau 3 / Superviseur / Technique)
+   */
+  public static escalateTicket(
+    ticket: SupportTicketRecord,
+    params: {
+      targetLevel: 'N2' | 'N3' | 'SUPERVISOR' | 'TECHNICAL' | 'LEGAL';
+      reason: string;
+      escalatedBy: { id: string; name: string; role: string };
+    }
+  ): SupportTicketRecord {
+    const now = new Date().toISOString();
+    ticket.escalationLevel = params.targetLevel;
+    ticket.escalationReason = params.reason;
+    ticket.status = 'WAITING_INTERNAL';
+    ticket.updatedAt = now;
+
+    // Si escalade vers superviseur ou technique, priorité augmentée
+    if (params.targetLevel === 'SUPERVISOR' || params.targetLevel === 'TECHNICAL') {
+      if (ticket.priority === 'LOW' || ticket.priority === 'MEDIUM') {
+        ticket.priority = 'HIGH';
+      }
+    }
+
+    if (!ticket.timeline) ticket.timeline = [];
+    ticket.timeline.push({
+      id: `evt-esc-${Date.now()}`,
+      timestamp: now,
+      event: 'ESCALATED',
+      authorId: params.escalatedBy.id,
+      authorName: params.escalatedBy.name,
+      authorRole: params.escalatedBy.role,
+      details: `Ticket escaladé au niveau ${params.targetLevel}. Motif : ${params.reason}`,
+    });
+
+    return ticket;
+  }
+
+  /**
+   * Résolution d'un ticket avec solution documentée
+   */
+  public static resolveTicket(
+    ticket: SupportTicketRecord,
+    params: {
+      resolutionNotes: string;
+      resolvedBy: { id: string; name: string; role: string };
+    }
+  ): SupportTicketRecord {
+    const now = new Date().toISOString();
+    ticket.status = 'RESOLVED';
+    ticket.resolutionNotes = params.resolutionNotes;
+    ticket.resolvedAt = now;
+    ticket.updatedAt = now;
+
+    const createdTime = new Date(ticket.createdAt).getTime();
+    ticket.resolutionTimeMin = Math.round((Date.now() - createdTime) / 60000);
+
+    if (!ticket.timeline) ticket.timeline = [];
+    ticket.timeline.push({
+      id: `evt-res-${Date.now()}`,
+      timestamp: now,
+      event: 'RESOLVED',
+      authorId: params.resolvedBy.id,
+      authorName: params.resolvedBy.name,
+      authorRole: params.resolvedBy.role,
+      details: `Ticket marqué comme résolu par ${params.resolvedBy.name}. Solution : ${params.resolutionNotes}`,
+    });
+
+    return ticket;
+  }
+
+  /**
+   * Clôture définitive d'un ticket avec note de satisfaction CSAT
+   */
+  public static closeTicket(
+    ticket: SupportTicketRecord,
+    params: {
+      closedBy: { id: string; name: string; role: string };
+      csatRating?: number; // 1 à 5
+      csatFeedback?: string;
+    }
+  ): SupportTicketRecord {
+    const now = new Date().toISOString();
+    ticket.status = 'CLOSED';
+    ticket.closedAt = now;
+    ticket.updatedAt = now;
+    if (params.csatRating) ticket.csatRating = Math.min(5, Math.max(1, params.csatRating));
+    if (params.csatFeedback) ticket.csatFeedback = params.csatFeedback;
+
+    if (!ticket.timeline) ticket.timeline = [];
+    ticket.timeline.push({
+      id: `evt-close-${Date.now()}`,
+      timestamp: now,
+      event: 'CLOSED',
+      authorId: params.closedBy.id,
+      authorName: params.closedBy.name,
+      authorRole: params.closedBy.role,
+      details: `Ticket clôturé définitivement${params.csatRating ? ` avec note CSAT ${params.csatRating}/5` : ''}`,
+    });
+
+    return ticket;
+  }
+
+  /**
+   * Réouverture selon les règles : autorisée si résolu depuis moins de 14 jours
+   */
+  public static reopenTicket(
+    ticket: SupportTicketRecord,
+    params: {
+      reason: string;
+      reopenedBy: { id: string; name: string; role: string };
+    }
+  ): SupportTicketRecord {
+    // Règle temporelle de réouverture
+    if (ticket.status === 'CLOSED') {
+      throw new Error(
+        'REOPEN_FORBIDDEN (Règle Support V6.0) : Un ticket clôturé définitivement ne peut pas être réouvert. Veuillez ouvrir une nouvelle demande d’assistance.'
+      );
+    }
+
+    if (ticket.status !== 'RESOLVED') {
+      throw new Error(
+        `REOPEN_INVALID_STATUS : Le ticket est actuellement au statut ${ticket.status} et ne nécessite pas de réouverture.`
+      );
+    }
+
+    if (ticket.resolvedAt) {
+      const resolvedTime = new Date(ticket.resolvedAt).getTime();
+      const daysSinceResolution = (Date.now() - resolvedTime) / (1000 * 3600 * 24);
+      if (daysSinceResolution > 14) {
+        throw new Error(
+          `REOPEN_WINDOW_EXPIRED (Délai dépassé) : Ce ticket a été résolu il y a ${Math.round(daysSinceResolution)} jours (limite autorisée : 14 jours). Veuillez créer un nouveau ticket.`
+        );
+      }
+    }
+
+    const now = new Date().toISOString();
+    ticket.status = 'IN_PROGRESS';
+    ticket.reopenedReason = params.reason;
+    ticket.reopenedAt = now;
+    ticket.updatedAt = now;
+
+    if (!ticket.timeline) ticket.timeline = [];
+    ticket.timeline.push({
+      id: `evt-reopen-${Date.now()}`,
+      timestamp: now,
+      event: 'REOPENED',
+      authorId: params.reopenedBy.id,
+      authorName: params.reopenedBy.name,
+      authorRole: params.reopenedBy.role,
+      details: `Ticket réouvert par ${params.reopenedBy.name}. Motif : ${params.reason}`,
+    });
+
+    return ticket;
+  }
+
+  /**
+   * Création d'une session Room Live pour assistance directe en visio
+   */
+  public static createSupportRoomLiveSession(
+    ticket: SupportTicketRecord,
+    agent: { id: string; name: string }
+  ): { roomId: string; joinUrl: string } {
+    const roomId = `room-live-support-${ticket.id.toLowerCase()}`;
+    const joinUrl = `https://tradelink-saas.com/live/room/${roomId}?ticket=${ticket.id}`;
+    ticket.roomLiveSessionId = roomId;
+    ticket.updatedAt = new Date().toISOString();
+
+    if (!ticket.timeline) ticket.timeline = [];
+    ticket.timeline.push({
+      id: `evt-room-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      event: 'ROOM_LIVE_CREATED',
+      authorId: agent.id,
+      authorName: agent.name,
+      authorRole: 'SUPPORT',
+      details: `Session Room Live d'assistance en direct initiée (${roomId})`,
+    });
+
+    return { roomId, joinUrl };
+  }
+
+  /**
+   * Filtrage des messages pour le demandeur : masquage strict des notes internes
+   */
+  public static filterMessagesForRequester(
+    messages: SupportMessageRecord[],
+    userRole: UserRoleCode
+  ): SupportMessageRecord[] {
+    if (userRole === 'ADMIN' || userRole === 'SUPPORT') {
+      return messages;
+    }
+    return messages.filter((m) => !m.isInternal);
+  }
+
+  /**
+   * Contrôle de sécurité et scan antivirus des pièces jointes
+   */
+  public static checkAttachmentSafety(attachment: {
+    name: string;
+    size: number;
+    content?: string;
+  }): SupportAttachmentRecord {
+    const ext = attachment.name.split('.').pop()?.toUpperCase() || '';
+    const dangerousExtensions = ['EXE', 'BAT', 'CMD', 'SH', 'PS1', 'VBS', 'BIN', 'DLL', 'MSI', 'SCR', 'PY', 'JAR'];
+
+    const isDangerous = dangerousExtensions.includes(ext) || (attachment.content && attachment.content.includes('EICAR-STANDARD-ANTIVIRUS-TEST-FILE'));
+    const scanStatus: 'CLEAN' | 'INFECTED' = isDangerous ? 'INFECTED' : 'CLEAN';
+
+    return {
+      id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: attachment.name,
+      size: `${(attachment.size / 1024).toFixed(1)} Ko`,
+      mimeType: ext === 'PDF' ? 'application/pdf' : ext === 'PNG' ? 'image/png' : ext === 'JPG' || ext === 'JPEG' ? 'image/jpeg' : 'application/octet-stream',
+      scanStatus,
+      downloadUrl: scanStatus === 'CLEAN' ? `https://tradelink-vault.internal/attachments/${attachment.name}` : undefined,
+    };
+  }
+
+  /**
+   * Recherche plein texte trilingue dans la base de connaissances
+   */
+  public static searchKnowledgeBase(
+    articles: KnowledgeArticleRecord[],
+    query: string,
+    lang: 'fr' | 'en' | 'ar' = 'fr'
+  ): KnowledgeArticleRecord[] {
+    const cleanQuery = query.toLowerCase().trim();
+    if (!cleanQuery) return articles;
+    const strippedQuery = cleanQuery.replace(/^(al-|el-|ال)/i, '');
+
+    return articles.filter((a) => {
+      const titleText = (a.title + ' ' + (a.titleI18n?.[lang] || '')).toLowerCase();
+      const summaryText = (a.summary + ' ' + (a.summaryI18n?.[lang] || '')).toLowerCase();
+      const contentText = (a.content + ' ' + (a.contentI18n?.[lang] || '')).toLowerCase();
+
+      const matchTitle = titleText.includes(cleanQuery) || titleText.includes(strippedQuery);
+      const matchSummary = summaryText.includes(cleanQuery) || summaryText.includes(strippedQuery);
+      const matchContent = contentText.includes(cleanQuery) || contentText.includes(strippedQuery);
+      const matchTags = a.tags.some(
+        (t) =>
+          t.toLowerCase().includes(cleanQuery) ||
+          t.toLowerCase().includes(strippedQuery) ||
+          cleanQuery.includes(t.toLowerCase())
+      );
+
+      return matchTitle || matchSummary || matchContent || matchTags;
+    });
+  }
+
+  /**
+   * Vote d'utilité sur un article de la base de connaissances
+   */
+  public static voteKnowledgeArticle(
+    article: KnowledgeArticleRecord,
+    isHelpful: boolean
+  ): KnowledgeArticleRecord {
+    if (isHelpful) {
+      article.helpfulCount++;
+    } else {
+      article.notHelpfulCount = (article.notHelpfulCount || 0) + 1;
+    }
+    return article;
   }
 
   /**
@@ -756,10 +1198,22 @@ export class SupportEngine {
    * Règle stricte de sécurité Support : Blocage des modifications sensibles
    */
   public static enforceSupportSecurityBoundary(actionType: string): void {
-    const forbiddenActions = ['RESET_PASSWORD_DIRECT', 'OVERRIDE_KYC_STATUS', 'MUTATE_PRODUCT_CATALOG', 'ALTER_FINANCIAL_TRANSACTION'];
+    const forbiddenActions = [
+      'RESET_PASSWORD_DIRECT',
+      'VIEW_RAW_CREDIT_CARD',
+      'VIEW_PASSWORD_HASH',
+      'OVERRIDE_KYC_STATUS',
+      'MUTATE_PRODUCT_CATALOG',
+      'ALTER_FINANCIAL_TRANSACTION',
+      'KMS_KEY_MANAGEMENT',
+      'MODIFY_KMS_KEYS',
+      'DELETE_DATABASE_BACKUP',
+      'EXPORT_FULL_DATABASE',
+      'DELETE_AUDIT_LOGS',
+    ];
     if (forbiddenActions.includes(actionType)) {
       throw new Error(
-        `ACTION INTERDITE (Gouvernance Sécurité Support V6.0) : L'agent de support n'a pas les privilèges pour exécuter "${actionType}". Cette opération est réservée aux administrateurs habilités avec journalisation d'audit.`
+        `SUPPORT_PRIVILEGE_RESTRICTION : ACTION INTERDITE (Gouvernance Sécurité Support V6.0 - Section 7) : L'agent de support n'a pas les privilèges pour exécuter ou consulter "${actionType}". Cette opération est protégée contre tout accès support non autorisé.`
       );
     }
   }

@@ -106,4 +106,27 @@ export const TRADELINK_API_INVENTORY: ApiEndpointSpec[] = [
   { group: 'AdminBackup', method: 'POST', path: '/api/v1/admin/security/backups/:code/restore-prod', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: true },
   { group: 'AdminSupervision', method: 'GET', path: '/api/v1/admin/security/supervision', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: false },
   { group: 'AdminAudit', method: 'GET', path: '/api/v1/admin/security/audit/verify-chain', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: false },
+
+  // Prompt 17 : Centre d'Assistance & Gestion des Tickets (Helpdesk V6.0)
+  { group: 'Support', method: 'GET', path: '/api/v1/support/tickets', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'Support', method: 'POST', path: '/api/v1/support/tickets', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'Support', method: 'GET', path: '/api/v1/support/tickets/:id', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: true, audited: false },
+  { group: 'Support', method: 'POST', path: '/api/v1/support/tickets/:id/messages', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: true, audited: true },
+  { group: 'Support', method: 'POST', path: '/api/v1/support/tickets/:id/assign', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'Support', method: 'POST', path: '/api/v1/support/tickets/:id/escalate', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'Support', method: 'POST', path: '/api/v1/support/tickets/:id/resolve', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'Support', method: 'POST', path: '/api/v1/support/tickets/:id/close', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: true, audited: true },
+  { group: 'Support', method: 'POST', path: '/api/v1/support/tickets/:id/reopen', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: true, audited: true },
+  { group: 'Support', method: 'POST', path: '/api/v1/support/tickets/:id/room-live', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: true, audited: true },
+  { group: 'SupportKB', method: 'GET', path: '/api/v1/support/kb/articles', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'SupportKB', method: 'GET', path: '/api/v1/support/kb/articles/:id', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'SupportKB', method: 'POST', path: '/api/v1/support/kb/articles/:id/vote', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: true },
+  { group: 'SupportAI', method: 'POST', path: '/api/v1/support/ai/suggest', rolesAllowed: ['ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'SupportAI', method: 'POST', path: '/api/v1/support/ai/summarize', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+
+  // Prompt 18 : Recherche Globale & Tableaux de Bord par Acteur (Analytics V6.0)
+  { group: 'Search', method: 'GET', path: '/api/v1/search', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'Search', method: 'GET', path: '/api/v1/search/autocomplete', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'Analytics', method: 'GET', path: '/api/v1/analytics/dashboard', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
+  { group: 'Analytics', method: 'GET', path: '/api/v1/analytics/export', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: true },
 ];

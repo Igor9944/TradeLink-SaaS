@@ -146,7 +146,24 @@ import {
   ExportFormatType,
   DataExportResult,
   ImportFinalReport,
+  SupportTicketRecord,
+  KnowledgeArticleRecord,
+  SupportTicketStatus,
+  SupportTicketPriority,
+  SupportTicketCategory,
+  SupportAttachmentRecord,
+  GlobalSearchDomain,
+  GlobalSearchResponse,
+  AutocompleteSuggestion,
+  AnalyticsPeriod,
+  RoleSpecificAnalytics,
 } from '../../types';
+import { SupportEngine } from '../../services/supportEngine';
+import {
+  GlobalSearchEngine,
+  AnalyticsEngine,
+  DatasetRepositorySnapshot,
+} from '../../services/globalSearchAndAnalyticsEngine';
 import { ImportExportEngine } from '../../services/importExportEngine';
 import {
   BillingDocumentEngine,
@@ -8819,6 +8836,660 @@ export class TradeLinkDomainServices {
       isChainIntact: verification.isChainIntact,
       totalEntriesVerified: verification.totalEntriesVerified,
       chainLength: chain.length,
+    };
+  }
+
+  // ==========================================================================
+  // PROMPT 17 : CENTRE D'ASSISTANCE & GESTION DES TICKETS (HELPDESK)
+  // ==========================================================================
+
+  private recordAuditEntry(
+    actorId: string,
+    action: string,
+    targetType: string,
+    targetId: string,
+    result: 'SUCCESS' | 'DENIED' | 'WARNING',
+    details: Record<string, unknown>
+  ): void {
+    const entry: AuditLogRecord = {
+      id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+      timestamp: new Date().toISOString(),
+      actorName: actorId,
+      actorRole: 'ADMIN',
+      action,
+      targetType,
+      targetId,
+      result,
+      correlationId: `corr-${Date.now()}`,
+      ipAddress: '127.0.0.1',
+      details: JSON.stringify(details),
+    };
+    this.repo.addAuditLog(entry);
+  }
+
+  public listSupportTicketsService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    filters?: {
+      status?: SupportTicketStatus;
+      priority?: SupportTicketPriority;
+      category?: SupportTicketCategory;
+      assignedToAgentId?: string;
+      search?: string;
+      page?: number;
+      limit?: number;
+    }
+  ): { tickets: SupportTicketRecord[]; total: number; page: number; limit: number; totalPages: number } {
+    const isSupportOrAdmin = actor.role === 'ADMIN' || actor.role === ('SUPPORT' as any);
+    const queryFilter: any = { ...filters };
+
+    // Isolation stricte : Un client/fournisseur/transporteur ne peut voir que SES tickets
+    if (!isSupportOrAdmin) {
+      queryFilter.requesterId = actor.id;
+    }
+
+    const allTickets = this.repo.listSupportTickets(queryFilter);
+
+    // Filtrer les messages pour masquer les notes internes aux demandeurs
+    const sanitizedTickets = allTickets.map((t) => ({
+      ...t,
+      messages: SupportEngine.filterMessagesForRequester(t.messages, actor.role as UserRoleCode),
+    }));
+
+    const page = Math.max(1, filters?.page || 1);
+    const limit = Math.max(1, Math.min(100, filters?.limit || 20));
+    const offset = (page - 1) * limit;
+    const paginated = sanitizedTickets.slice(offset, offset + limit);
+
+    return {
+      tickets: paginated,
+      total: sanitizedTickets.length,
+      page,
+      limit,
+      totalPages: Math.ceil(sanitizedTickets.length / limit) || 1,
+    };
+  }
+
+  public getSupportTicketByIdService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string
+  ): SupportTicketRecord {
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+
+    const isSupportOrAdmin = actor.role === 'ADMIN' || actor.role === ('SUPPORT' as any);
+    if (!isSupportOrAdmin && ticket.requesterId !== actor.id) {
+      throw new AppError(403, 'FORBIDDEN', "Vous n'êtes pas autorisé à consulter ce ticket.");
+    }
+
+    return {
+      ...ticket,
+      messages: SupportEngine.filterMessagesForRequester(ticket.messages, actor.role as UserRoleCode),
+    };
+  }
+
+  public createSupportTicketService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      subject: string;
+      description: string;
+      category?: SupportTicketCategory;
+      priority?: SupportTicketPriority;
+      attachments?: SupportAttachmentRecord[];
+      orderId?: string;
+      invoiceId?: string;
+      productId?: string;
+    }
+  ): SupportTicketRecord {
+    if (!payload.subject || !payload.subject.trim()) {
+      throw new AppError(400, 'INVALID_PAYLOAD', 'Le sujet du ticket est obligatoire.');
+    }
+    if (!payload.description || !payload.description.trim()) {
+      throw new AppError(400, 'INVALID_PAYLOAD', 'La description du ticket est obligatoire.');
+    }
+
+    // Contrôle de sécurité sur les pièces jointes
+    if (payload.attachments && payload.attachments.length > 0) {
+      for (const att of payload.attachments) {
+        const sizeNum = typeof att.size === 'number' ? att.size : parseInt(att.size as any, 10) || 1024;
+        const safety = SupportEngine.checkAttachmentSafety({ name: att.name, size: sizeNum });
+        if (safety.scanStatus === 'INFECTED') {
+          throw new AppError(400, 'ATTACHMENT_REJECTED', `Pièce jointe rejetée (${att.name}) : Détection de risque de sécurité.`);
+        }
+      }
+    }
+
+    const ticket = SupportEngine.createTicket({
+      subject: payload.subject.trim(),
+      description: payload.description.trim(),
+      category: payload.category,
+      priority: payload.priority,
+      requesterId: actor.id,
+      requesterName: actor.email,
+      requesterCompany: (actor as any).companyName || 'TradeLink Network',
+      requesterEmail: actor.email,
+      requesterRole: (actor.role === 'VISITEUR' ? 'CLIENT' : actor.role) as any,
+      attachments: payload.attachments?.map((a) => ({
+        name: a.name,
+        size: typeof a.size === 'number' ? a.size : parseInt(a.size as any, 10) || 1024,
+        content: (a as any).content,
+      })),
+    });
+
+    if (payload.orderId) ticket.orderId = payload.orderId;
+    if (payload.invoiceId) ticket.invoiceId = payload.invoiceId;
+    if (payload.productId) ticket.productId = payload.productId;
+
+    this.repo.saveSupportTicket(ticket);
+
+    this.recordAuditEntry(
+      actor.id,
+      'SUPPORT_TICKET_CREATED',
+      'SUPPORT_TICKET',
+      ticket.id,
+      'SUCCESS',
+      { ticketId: ticket.id, category: ticket.category, priority: ticket.priority }
+    );
+
+    return ticket;
+  }
+
+  public addSupportMessageService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string,
+    payload: {
+      message: string;
+      isInternal?: boolean;
+      attachments?: SupportAttachmentRecord[];
+    }
+  ): SupportTicketRecord {
+    if (!payload.message || !payload.message.trim()) {
+      throw new AppError(400, 'INVALID_PAYLOAD', 'Le contenu du message est obligatoire.');
+    }
+
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+
+    const isSupportOrAdmin = actor.role === 'ADMIN' || actor.role === ('SUPPORT' as any);
+
+    if (payload.isInternal) {
+      if (!isSupportOrAdmin) {
+        throw new AppError(403, 'FORBIDDEN', 'Les notes internes sont réservées aux agents de support et administrateurs.');
+      }
+    } else {
+      if (!isSupportOrAdmin && ticket.requesterId !== actor.id && ticket.assignedAgentId !== actor.id) {
+        throw new AppError(403, 'FORBIDDEN', "Vous n'êtes pas autorisé à poster un message sur ce ticket.");
+      }
+    }
+
+    if (payload.attachments && payload.attachments.length > 0) {
+      for (const att of payload.attachments) {
+        const sizeNum = typeof att.size === 'number' ? att.size : parseInt(att.size as any, 10) || 1024;
+        const safety = SupportEngine.checkAttachmentSafety({ name: att.name, size: sizeNum });
+        if (safety.scanStatus === 'INFECTED') {
+          throw new AppError(400, 'ATTACHMENT_REJECTED', `Pièce jointe rejetée (${att.name}) : Détection de risque de sécurité.`);
+        }
+      }
+    }
+
+    SupportEngine.addMessage(ticket, {
+      authorId: actor.id,
+      authorName: actor.email,
+      authorRole: (actor.role === 'VISITEUR' ? 'CLIENT' : actor.role) as any,
+      content: payload.message.trim(),
+      isInternal: !!payload.isInternal,
+      attachments: payload.attachments,
+    });
+
+    this.repo.saveSupportTicket(ticket);
+
+    return {
+      ...ticket,
+      messages: SupportEngine.filterMessagesForRequester(ticket.messages, actor.role as UserRoleCode),
+    };
+  }
+
+  public assignSupportTicketService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string,
+    payload: { agentId: string; agentName: string }
+  ): SupportTicketRecord {
+    if (actor.role !== 'ADMIN' && (actor.role as any) !== 'SUPPORT') {
+      throw new AppError(403, 'FORBIDDEN', 'Seuls les agents support et administrateurs peuvent affecter un ticket.');
+    }
+
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+
+    const updated = SupportEngine.assignTicket(
+      ticket,
+      payload.agentId,
+      {
+        id: actor.id,
+        name: actor.email,
+        role: actor.role,
+      },
+      payload.agentName
+    );
+    this.repo.saveSupportTicket(updated);
+
+    this.recordAuditEntry(
+      actor.id,
+      'SUPPORT_TICKET_ASSIGNED',
+      'SUPPORT_TICKET',
+      ticket.id,
+      'SUCCESS',
+      { assignedTo: payload.agentId, agentName: payload.agentName }
+    );
+
+    return updated;
+  }
+
+  public escalateSupportTicketService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string,
+    payload: {
+      targetLevel: 'N2' | 'N3' | 'SUPERVISOR' | 'TECHNICAL' | 'LEGAL';
+      reason: string;
+      escalatedToAgentId?: string;
+    }
+  ): SupportTicketRecord {
+    if (actor.role !== 'ADMIN' && (actor.role as any) !== 'SUPPORT') {
+      throw new AppError(403, 'FORBIDDEN', 'Seuls les agents support et administrateurs peuvent escalader un ticket.');
+    }
+
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+
+    const updated = SupportEngine.escalateTicket(ticket, {
+      targetLevel: payload.targetLevel,
+      reason: payload.reason,
+      escalatedBy: { id: actor.id, name: actor.email, role: actor.role },
+    });
+
+    this.repo.saveSupportTicket(updated);
+
+    this.recordAuditEntry(
+      actor.id,
+      'SUPPORT_TICKET_ESCALATED',
+      'SUPPORT_TICKET',
+      ticket.id,
+      'SUCCESS',
+      { targetLevel: payload.targetLevel, reason: payload.reason }
+    );
+
+    return updated;
+  }
+
+  public resolveSupportTicketService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string,
+    payload: {
+      resolutionNotes: string;
+      resolutionCategory?: string;
+      rootCause?: string;
+    }
+  ): SupportTicketRecord {
+    if (actor.role !== 'ADMIN' && (actor.role as any) !== 'SUPPORT') {
+      throw new AppError(403, 'FORBIDDEN', 'Seuls les agents support et administrateurs peuvent résoudre un ticket.');
+    }
+
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+
+    const updated = SupportEngine.resolveTicket(ticket, {
+      resolvedBy: { id: actor.id, name: actor.email, role: actor.role },
+      resolutionNotes: payload.resolutionNotes,
+    });
+
+    this.repo.saveSupportTicket(updated);
+
+    this.recordAuditEntry(
+      actor.id,
+      'SUPPORT_TICKET_RESOLVED',
+      'SUPPORT_TICKET',
+      ticket.id,
+      'SUCCESS',
+      { resolvedBy: actor.id }
+    );
+
+    return updated;
+  }
+
+  public closeSupportTicketService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string,
+    payload?: { csatScore?: number; csatFeedback?: string }
+  ): SupportTicketRecord {
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+
+    const isSupportOrAdmin = actor.role === 'ADMIN' || actor.role === ('SUPPORT' as any);
+    if (!isSupportOrAdmin && ticket.requesterId !== actor.id) {
+      throw new AppError(403, 'FORBIDDEN', "Vous n'êtes pas autorisé à clôturer ce ticket.");
+    }
+
+    const updated = SupportEngine.closeTicket(ticket, {
+      closedBy: { id: actor.id, name: actor.email, role: actor.role },
+      csatRating: payload?.csatScore,
+      csatFeedback: payload?.csatFeedback,
+    });
+
+    this.repo.saveSupportTicket(updated);
+
+    this.recordAuditEntry(
+      actor.id,
+      'SUPPORT_TICKET_CLOSED',
+      'SUPPORT_TICKET',
+      ticket.id,
+      'SUCCESS',
+      { csatScore: payload?.csatScore }
+    );
+
+    return updated;
+  }
+
+  public reopenSupportTicketService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string,
+    payload: { reason: string }
+  ): SupportTicketRecord {
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+
+    const isSupportOrAdmin = actor.role === 'ADMIN' || actor.role === ('SUPPORT' as any);
+    if (!isSupportOrAdmin && ticket.requesterId !== actor.id) {
+      throw new AppError(403, 'FORBIDDEN', "Vous n'êtes pas autorisé à réouvrir ce ticket.");
+    }
+
+    try {
+      const updated = SupportEngine.reopenTicket(ticket, {
+        reopenedBy: { id: actor.id, name: actor.email, role: actor.role },
+        reason: payload.reason,
+      });
+
+      this.repo.saveSupportTicket(updated);
+
+      this.recordAuditEntry(
+        actor.id,
+        'SUPPORT_TICKET_REOPENED',
+        'SUPPORT_TICKET',
+        ticket.id,
+        'SUCCESS',
+        { reason: payload.reason }
+      );
+
+      return updated;
+    } catch (err: any) {
+      throw new AppError(400, 'CANNOT_REOPEN_TICKET', err.message || 'Impossible de réouvrir le ticket.');
+    }
+  }
+
+  public createSupportRoomLiveService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string
+  ): { roomId: string; joinUrl: string } {
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+
+    const session = SupportEngine.createSupportRoomLiveSession(ticket, {
+      id: actor.id,
+      name: actor.email,
+    });
+
+    this.repo.saveSupportTicket(ticket);
+    return session;
+  }
+
+  public listKnowledgeArticlesService(
+    _actor: NonNullable<ServerRequestContext['user']>,
+    params?: { query?: string; category?: string; locale?: string }
+  ): KnowledgeArticleRecord[] {
+    const all = this.repo.listKnowledgeArticles();
+    if (params?.query && params.query.trim()) {
+      return SupportEngine.searchKnowledgeBase(all, params.query, (params.locale as any) || 'fr');
+    }
+    if (params?.category) {
+      return all.filter((a) => a.category.toLowerCase() === params.category!.toLowerCase());
+    }
+    return all;
+  }
+
+  public getKnowledgeArticleByIdService(
+    _actor: NonNullable<ServerRequestContext['user']>,
+    articleId: string
+  ): KnowledgeArticleRecord {
+    const article = this.repo.getKnowledgeArticle(articleId);
+    if (!article) {
+      throw new AppError(404, 'ARTICLE_NOT_FOUND', `Article KB introuvable : ${articleId}`);
+    }
+    article.viewsCount = (article.viewsCount || 0) + 1;
+    this.repo.saveKnowledgeArticle(article);
+    return article;
+  }
+
+  public voteKnowledgeArticleService(
+    _actor: NonNullable<ServerRequestContext['user']>,
+    articleId: string,
+    helpful: boolean
+  ): { success: boolean; helpfulCount: number; notHelpfulCount: number } {
+    const article = this.repo.getKnowledgeArticle(articleId);
+    if (!article) {
+      throw new AppError(404, 'ARTICLE_NOT_FOUND', `Article KB introuvable : ${articleId}`);
+    }
+    const updated = SupportEngine.voteKnowledgeArticle(article, helpful);
+    this.repo.saveKnowledgeArticle(updated);
+    return {
+      success: true,
+      helpfulCount: updated.helpfulCount,
+      notHelpfulCount: updated.notHelpfulCount || 0,
+    };
+  }
+
+  public generateAiSuggestedReplyService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string
+  ): { suggestedReply: string; confidenceScore: number; relevantArticleIds: string[] } {
+    if (actor.role !== 'ADMIN' && (actor.role as any) !== 'SUPPORT') {
+      throw new AppError(403, 'FORBIDDEN', 'Accès réservé aux agents support et administrateurs.');
+    }
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+    const kb = this.repo.listKnowledgeArticles();
+    const suggestedReply = SupportEngine.generateAiSuggestedReply(ticket, kb);
+    return {
+      suggestedReply,
+      confidenceScore: 92,
+      relevantArticleIds: kb.slice(0, 2).map((a) => a.id),
+    };
+  }
+
+  public summarizeSupportTicketService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    ticketId: string
+  ): { initialIssue: string; actionsTaken: string[]; currentStatus: string; nextStep: string } {
+    const ticket = this.repo.getSupportTicket(ticketId);
+    if (!ticket) {
+      throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
+    }
+    const isSupportOrAdmin = actor.role === 'ADMIN' || actor.role === ('SUPPORT' as any);
+    if (!isSupportOrAdmin && ticket.requesterId !== actor.id) {
+      throw new AppError(403, 'FORBIDDEN', 'Accès non autorisé.');
+    }
+    return SupportEngine.summarizeConversation(ticket.messages);
+  }
+
+  public checkSupportSecurityBoundaryService(action: string): void {
+    SupportEngine.enforceSupportSecurityBoundary(action);
+  }
+
+  // ==========================================================================
+  // PROMPT 18 : RECHERCHE GLOBALE ET ANALYSE INTELLIGENTE (ANALYTICS)
+  // ==========================================================================
+
+  private buildDatasetSnapshotForAnalytics(): DatasetRepositorySnapshot {
+    const snap = this.repo.getSnapshot();
+    const tickets = this.repo.listSupportTickets();
+    const directory = [
+      { id: 'usr-admin-01', name: 'Super Admin TradeLink', email: 'admin@tradelink.com', role: 'ADMIN' as UserRoleCode, companyName: 'TradeLink International', country: 'FR' },
+      { id: 'usr-client-01', name: 'Sarah Benali', email: 'sarah.benali@casablanca-import.ma', role: 'CLIENT' as UserRoleCode, companyName: 'Casablanca Import SAS', country: 'MA' },
+      { id: 'usr-supp-01', name: 'Atlas Agri Export', email: 'contact@atlas-agri.ma', role: 'FOURNISSEUR' as UserRoleCode, companyName: 'Atlas Agri SARL', country: 'MA' },
+      { id: 'usr-carrier-01', name: 'TransMaghreb Logistics', email: 'dispatch@transmaghreb.com', role: 'TRANSPORTEUR' as UserRoleCode, companyName: 'TransMaghreb Express', country: 'MA' },
+      { id: 'usr-agent-01', name: 'Support Agent Jean', email: 'support.jean@tradelink.com', role: 'ADMIN' as UserRoleCode, companyName: 'TradeLink Helpdesk', country: 'FR' },
+      { id: 'usr-compta-01', name: 'Cabinet Fiduciaire Atlas', email: 'compta@atlas-fiduciaire.com', role: 'COMPTABLE' as UserRoleCode, companyName: 'Atlas Fiduciaire', country: 'FR' },
+    ];
+
+    return {
+      products: snap.products || [],
+      orders: snap.orders || [],
+      quotes: snap.quotes || [],
+      invoices: snap.invoices || [],
+      shipments: snap.shipments || [],
+      documents: snap.commercialDocuments || [],
+      tickets: tickets || [],
+      conversations: [],
+      usersDirectory: directory,
+    };
+  }
+
+  public executeGlobalSearchService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    params: {
+      query: string;
+      domains?: GlobalSearchDomain[];
+      limit?: number;
+      page?: number;
+      sortBy?: 'RELEVANCE' | 'DATE_DESC' | 'DATE_ASC';
+      statusFilter?: string;
+      dateFrom?: string;
+      dateTo?: string;
+    }
+  ): GlobalSearchResponse {
+    const snapshot = this.buildDatasetSnapshotForAnalytics();
+    return GlobalSearchEngine.executeGlobalSearch({
+      query: {
+        query: params.query || '',
+        domains: params.domains,
+        limit: params.limit,
+        page: params.page,
+        sortBy: params.sortBy,
+        statusFilter: params.statusFilter,
+        dateFrom: params.dateFrom,
+        dateTo: params.dateTo,
+      },
+      actor: {
+        id: actor.id,
+        role: actor.role as UserRoleCode,
+        companyName: (actor as any).companyName,
+      },
+      snapshot,
+    });
+  }
+
+  public getAutocompleteSuggestionsService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    query: string,
+    domain?: GlobalSearchDomain
+  ): { suggestions: AutocompleteSuggestion[] } {
+    const snapshot = this.buildDatasetSnapshotForAnalytics();
+    const suggestions = GlobalSearchEngine.getAutocompleteSuggestions(
+      { id: actor.id, role: actor.role as UserRoleCode },
+      query || '',
+      snapshot,
+      domain
+    );
+    return { suggestions };
+  }
+
+  public getRoleAnalyticsDashboardService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    params?: {
+      period?: AnalyticsPeriod;
+      roleOverride?: UserRoleCode;
+    }
+  ): RoleSpecificAnalytics {
+    const snapshot = this.buildDatasetSnapshotForAnalytics();
+    const period = params?.period || '30D';
+    const targetRole = actor.role === 'ADMIN' && params?.roleOverride ? params.roleOverride : (actor.role as UserRoleCode);
+
+    switch (targetRole) {
+      case 'ADMIN':
+        return AnalyticsEngine.computeAdminDashboard(snapshot, period);
+      case 'CLIENT':
+        return AnalyticsEngine.computeClientDashboard(snapshot, actor.id, period);
+      case 'FOURNISSEUR':
+        return AnalyticsEngine.computeSupplierDashboard(snapshot, actor.id, period);
+      case 'TRANSPORTEUR':
+        return AnalyticsEngine.computeCarrierDashboard(snapshot, actor.id, period);
+      case 'COMPTABLE':
+        return AnalyticsEngine.computeAccountingDashboard(snapshot, period);
+      case 'SUPPORT' as any:
+        return AnalyticsEngine.computeSupportDashboard(snapshot, period);
+      default:
+        return AnalyticsEngine.computeAdminDashboard(snapshot, period);
+    }
+  }
+
+  public exportAnalyticsReportService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    params: {
+      period?: AnalyticsPeriod;
+      format: 'CSV' | 'XLSX' | 'JSON' | 'PDF';
+      roleOverride?: UserRoleCode;
+    }
+  ): {
+    format: 'CSV' | 'XLSX' | 'JSON' | 'PDF';
+    content: string;
+    mimeType: string;
+    fileName: string;
+    fileSizeBytes: number;
+    checksumSha256: string;
+  } {
+    const dashboard = this.getRoleAnalyticsDashboardService(actor, {
+      period: params.period,
+      roleOverride: params.roleOverride,
+    });
+
+    const exported = AnalyticsEngine.exportAnalyticsReport(
+      dashboard,
+      params.format
+    );
+
+    const fileSizeBytes = Buffer.byteLength(exported.content, 'utf-8');
+
+    this.recordAuditEntry(
+      actor.id,
+      'ANALYTICS_REPORT_EXPORTED',
+      'ANALYTICS',
+      dashboard.period,
+      'SUCCESS',
+      { format: params.format, fileName: exported.fileName, size: fileSizeBytes }
+    );
+
+    return {
+      format: params.format,
+      content: exported.content,
+      mimeType: exported.mimeType,
+      fileName: exported.fileName,
+      fileSizeBytes,
+      checksumSha256: exported.sha256,
     };
   }
 }

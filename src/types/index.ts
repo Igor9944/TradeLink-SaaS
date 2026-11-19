@@ -2384,5 +2384,264 @@ export interface BackupRestoreDrillResult {
   summary: string;
 }
 
+// ============================================================================
+// PROMPT 17 : CENTRE D'ASSISTANCE ET GESTION DES TICKETS
+// ============================================================================
+
+export type SupportTicketPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+export type SupportTicketStatus = 'NEW' | 'OPEN' | 'IN_PROGRESS' | 'WAITING_USER' | 'WAITING_INTERNAL' | 'RESOLVED' | 'CLOSED';
+export type SupportTicketCategory = 'LOGISTIQUE' | 'FACTURATION' | 'PRODUITS' | 'COMPTE' | 'DOUANE' | 'TECHNIQUE' | 'COMMANDES' | 'AUTRE';
+
+export interface SupportAttachmentRecord {
+  id: string;
+  name: string;
+  size: string;
+  mimeType: string;
+  scanStatus: 'CLEAN' | 'SCANNING' | 'INFECTED';
+  sha256Checksum?: string;
+  downloadUrl?: string;
+}
+
+export interface SupportMessageRecord {
+  id: string;
+  ticketId: string;
+  authorId: string;
+  authorName: string;
+  authorRole: 'SUPPORT' | 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR' | 'COMPTABLE' | 'ADMIN';
+  content: string;
+  createdAt: string;
+  isInternal: boolean; // Note privée entre agents support
+  attachments?: SupportAttachmentRecord[];
+}
+
+export interface SupportTimelineEvent {
+  id: string;
+  timestamp: string;
+  event:
+    | 'TICKET_CREATED'
+    | 'ASSIGNED'
+    | 'REASSIGNED'
+    | 'STATUS_CHANGED'
+    | 'ESCALATED'
+    | 'MESSAGE_POSTED'
+    | 'INTERNAL_NOTE_POSTED'
+    | 'RESOLVED'
+    | 'CLOSED'
+    | 'REOPENED'
+    | 'ROOM_LIVE_CREATED';
+  authorId: string;
+  authorName: string;
+  authorRole: string;
+  details: string;
+}
+
+export interface SupportTicketRecord {
+  id: string; // Ex: TCK-2026-409
+  subject: string;
+  description: string;
+  category: SupportTicketCategory;
+  priority: SupportTicketPriority;
+  status: SupportTicketStatus;
+  requesterId: string;
+  requesterName: string;
+  requesterCompany: string;
+  requesterEmail: string;
+  requesterRole: 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR' | 'COMPTABLE' | 'ADMIN';
+  assignedAgentId: string;
+  assignedAgentName: string;
+  createdAt: string;
+  updatedAt: string;
+  slaDeadline: string; // Heure limite de réponse SLA
+  firstResponseTimeMin?: number;
+  resolutionTimeMin?: number;
+  resolutionNotes?: string;
+  reopenedReason?: string;
+  reopenedAt?: string;
+  resolvedAt?: string;
+  closedAt?: string;
+  csatRating?: number; // 1 à 5 étoiles
+  csatFeedback?: string;
+  urgencyScore: number; // 0 à 100 calculé par l'IA
+  messages: SupportMessageRecord[];
+  timeline?: SupportTimelineEvent[];
+  escalationLevel?: 'N1' | 'N2' | 'N3' | 'SUPERVISOR' | 'TECHNICAL' | 'LEGAL';
+  escalationReason?: string;
+  roomLiveSessionId?: string;
+  orderId?: string;
+  invoiceId?: string;
+  productId?: string;
+  aiClassification?: {
+    suggestedCategory: SupportTicketCategory;
+    suggestedPriority: SupportTicketPriority;
+    confidencePct: number;
+    reason: string;
+  };
+}
+
+export interface KnowledgeArticleRecord {
+  id: string;
+  title: string;
+  category: 'FAQ' | 'GUIDE' | 'TUTORIEL' | 'PROCEDURE_INTERNE';
+  tags: string[];
+  summary: string;
+  content: string;
+  titleI18n?: { fr: string; en: string; ar: string };
+  summaryI18n?: { fr: string; en: string; ar: string };
+  contentI18n?: { fr: string; en: string; ar: string };
+  author: string;
+  updatedAt: string;
+  viewsCount: number;
+  helpfulCount: number;
+  notHelpfulCount?: number;
+  isInternalOnly: boolean; // Procédure SOP réservée aux agents vs article public
+}
+
+export interface CannedResponseTemplate {
+  id: string;
+  title: string;
+  category: SupportTicketCategory;
+  content: {
+    fr: string;
+    en: string;
+    ar: string;
+  };
+}
+
+export interface SupportAgentRecord {
+  id: string;
+  name: string;
+  email: string;
+  level: 'N1' | 'N2' | 'N3';
+  status: 'ONLINE' | 'BUSY' | 'AWAY' | 'OFFLINE';
+  activeTicketsCount: number;
+  resolvedTodayCount: number;
+  avgResponseMinutes: number;
+  satisfactionRatingPct: number;
+  specialties: string[];
+}
+
+export interface SupportEscalationRequest {
+  ticketId: string;
+  targetLevel: 'N2' | 'N3' | 'SUPERVISOR' | 'TECHNICAL' | 'LEGAL';
+  reason: string;
+  escalatedByUserId: string;
+}
+
+export interface SupportResolutionPayload {
+  resolutionNotes: string;
+  resolvedByUserId: string;
+  csatRating?: number;
+  csatFeedback?: string;
+}
+
+// ============================================================================
+// PROMPT 18 : RECHERCHE GLOBALE ET ANALYSE INTELLIGENTE
+// ============================================================================
+
+export type GlobalSearchDomain =
+  | 'PRODUCTS'
+  | 'ORDERS'
+  | 'QUOTES'
+  | 'INVOICES'
+  | 'SUPPLIERS'
+  | 'CLIENTS'
+  | 'DOCUMENTS'
+  | 'SHIPMENTS'
+  | 'TICKETS'
+  | 'MESSAGES';
+
+export interface GlobalSearchQuery {
+  query: string;
+  domains?: GlobalSearchDomain[];
+  dateFrom?: string;
+  dateTo?: string;
+  statusFilter?: string;
+  page?: number;
+  limit?: number;
+  sortBy?: 'RELEVANCE' | 'DATE_DESC' | 'DATE_ASC';
+}
+
+export interface GlobalSearchResultItem {
+  id: string;
+  domain: GlobalSearchDomain;
+  reference: string;
+  title: string;
+  subtitle: string;
+  snippet: string;
+  relevanceScore: number; // 0 to 100
+  metadata: Record<string, any>;
+  targetUrl: string;
+  highlightedMatches?: string[];
+  createdAt?: string;
+}
+
+export interface AutocompleteSuggestion {
+  text: string;
+  title?: string;
+  domain: GlobalSearchDomain;
+  reference: string;
+  score: number;
+}
+
+export interface GlobalSearchResponse {
+  query: string;
+  normalizedQuery: string;
+  domainsSearched: GlobalSearchDomain[];
+  items: GlobalSearchResultItem[];
+  totalMatches: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  tookMs: number;
+  fromCache: boolean;
+  suggestions: AutocompleteSuggestion[];
+  facets: Record<GlobalSearchDomain, number>;
+}
+
+export type AnalyticsPeriod = '7D' | '30D' | '90D' | '1Y' | 'CUSTOM';
+
+export interface AnalyticsMetricCard {
+  id: string;
+  title: string;
+  value: string;
+  numericValue: number;
+  unit?: string;
+  previousValue?: string;
+  growthPct?: number; // ex: +12.5% ou -3.2%
+  trend: 'UP' | 'DOWN' | 'STABLE';
+  description?: string;
+}
+
+export interface AnalyticsTimeSeriesPoint {
+  date: string;
+  label: string;
+  primaryValue: number;
+  secondaryValue?: number;
+  tertiaryValue?: number;
+}
+
+export interface AnalyticsBreakdownItem {
+  category: string;
+  label: string;
+  count: number;
+  valueAmount?: string;
+  percentage: number;
+}
+
+export interface RoleSpecificAnalytics {
+  role: UserRoleCode;
+  period: AnalyticsPeriod;
+  dateRange: { from: string; to: string };
+  kpis: AnalyticsMetricCard[];
+  timeSeries: AnalyticsTimeSeriesPoint[];
+  breakdowns: {
+    title: string;
+    items: AnalyticsBreakdownItem[];
+  }[];
+  generatedAt: string;
+  cached: boolean;
+}
+
+
 
 

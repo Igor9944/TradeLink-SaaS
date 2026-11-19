@@ -3327,6 +3327,212 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, verification, 200);
     }
 
+    // ========================================================================
+    // PROMPT 17 : CENTRE D'ASSISTANCE & GESTION DES TICKETS (HELPDESK)
+    // ========================================================================
+
+    // 29A. Support : Liste des tickets avec pagination & filtrage sécurisé
+    if (method === 'GET' && path === '/api/v1/support/tickets') {
+      const user = requireAuthenticatedSession(ctx);
+      const res = this.services.listSupportTicketsService(user, {
+        status: ctx.query?.status as any,
+        priority: ctx.query?.priority as any,
+        category: ctx.query?.category as any,
+        assignedToAgentId: ctx.query?.assignedToAgentId,
+        search: ctx.query?.search || ctx.query?.q,
+        page: ctx.query?.page ? parseInt(ctx.query.page, 10) : 1,
+        limit: ctx.query?.limit ? parseInt(ctx.query.limit, 10) : 20,
+      });
+      return this.ok(ctx, res.tickets, 200, {
+        page: res.page,
+        limit: res.limit,
+        totalItems: res.total,
+        totalPages: res.totalPages,
+      });
+    }
+
+    // 29B. Support : Création d'un ticket avec classification IA initiale
+    if (method === 'POST' && path === '/api/v1/support/tickets') {
+      const user = requireAuthenticatedSession(ctx);
+      const ticket = this.services.createSupportTicketService(user, (ctx.body || {}) as any);
+      return this.ok(ctx, ticket, 201);
+    }
+
+    // 29C. Support : Base de connaissances (KB) - Recherche & Liste
+    if (method === 'GET' && path === '/api/v1/support/kb/articles') {
+      const user = requireAuthenticatedSession(ctx);
+      const articles = this.services.listKnowledgeArticlesService(user, {
+        query: ctx.query?.q || ctx.query?.query,
+        category: ctx.query?.category,
+        locale: ctx.query?.locale,
+      });
+      return this.ok(ctx, articles, 200);
+    }
+
+    // 29D. Support : Article KB par ID
+    if (method === 'GET' && path.startsWith('/api/v1/support/kb/articles/') && !path.endsWith('/vote')) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/kb/articles/', '');
+      const article = this.services.getKnowledgeArticleByIdService(user, id);
+      return this.ok(ctx, article, 200);
+    }
+
+    // 29E. Support : Vote utilité d'un article KB
+    if (method === 'POST' && path.startsWith('/api/v1/support/kb/articles/') && path.endsWith('/vote')) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/kb/articles/', '').replace('/vote', '');
+      const { helpful } = ctx.body || {};
+      const res = this.services.voteKnowledgeArticleService(user, id, !!helpful);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 29F. Support IA : Proposition de réponse
+    if (method === 'POST' && path === '/api/v1/support/ai/suggest') {
+      const user = requireAuthenticatedSession(ctx);
+      const { ticketId } = ctx.body || {};
+      if (!ticketId) throw new AppError(400, 'INVALID_PAYLOAD', 'ticketId est obligatoire.');
+      const res = this.services.generateAiSuggestedReplyService(user, ticketId);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 29G. Support IA : Résumé de conversation
+    if (method === 'POST' && path === '/api/v1/support/ai/summarize') {
+      const user = requireAuthenticatedSession(ctx);
+      const { ticketId } = ctx.body || {};
+      if (!ticketId) throw new AppError(400, 'INVALID_PAYLOAD', 'ticketId est obligatoire.');
+      const res = this.services.summarizeSupportTicketService(user, ticketId);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 29H. Support : Consultation d'un ticket individuel
+    if (
+      method === 'GET' &&
+      path.startsWith('/api/v1/support/tickets/') &&
+      !path.includes('/messages') &&
+      !path.includes('/assign') &&
+      !path.includes('/escalate') &&
+      !path.includes('/resolve') &&
+      !path.includes('/close') &&
+      !path.includes('/reopen') &&
+      !path.includes('/room-live')
+    ) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/tickets/', '');
+      const ticket = this.services.getSupportTicketByIdService(user, id);
+      return this.ok(ctx, ticket, 200);
+    }
+
+    // 29I. Support : Ajout d'un message public ou note interne
+    if (method === 'POST' && path.startsWith('/api/v1/support/tickets/') && path.endsWith('/messages')) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/tickets/', '').replace('/messages', '');
+      const ticket = this.services.addSupportMessageService(user, id, (ctx.body || {}) as any);
+      return this.ok(ctx, ticket, 201);
+    }
+
+    // 29J. Support : Affectation d'un agent
+    if (method === 'POST' && path.startsWith('/api/v1/support/tickets/') && path.endsWith('/assign')) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/tickets/', '').replace('/assign', '');
+      const ticket = this.services.assignSupportTicketService(user, id, (ctx.body || {}) as any);
+      return this.ok(ctx, ticket, 200);
+    }
+
+    // 29K. Support : Escalade N1 -> N2 -> N3 / Superviseur / Technique
+    if (method === 'POST' && path.startsWith('/api/v1/support/tickets/') && path.endsWith('/escalate')) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/tickets/', '').replace('/escalate', '');
+      const ticket = this.services.escalateSupportTicketService(user, id, (ctx.body || {}) as any);
+      return this.ok(ctx, ticket, 200);
+    }
+
+    // 29L. Support : Résolution d'un ticket avec notes
+    if (method === 'POST' && path.startsWith('/api/v1/support/tickets/') && path.endsWith('/resolve')) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/tickets/', '').replace('/resolve', '');
+      const ticket = this.services.resolveSupportTicketService(user, id, (ctx.body || {}) as any);
+      return this.ok(ctx, ticket, 200);
+    }
+
+    // 29M. Support : Clôture définitive avec note CSAT (1-5 étoiles)
+    if (method === 'POST' && path.startsWith('/api/v1/support/tickets/') && path.endsWith('/close')) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/tickets/', '').replace('/close', '');
+      const ticket = this.services.closeSupportTicketService(user, id, (ctx.body || {}) as any);
+      return this.ok(ctx, ticket, 200);
+    }
+
+    // 29N. Support : Réouverture conditionnelle (< 14 jours)
+    if (method === 'POST' && path.startsWith('/api/v1/support/tickets/') && path.endsWith('/reopen')) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/tickets/', '').replace('/reopen', '');
+      const ticket = this.services.reopenSupportTicketService(user, id, (ctx.body || {}) as any);
+      return this.ok(ctx, ticket, 200);
+    }
+
+    // 29O. Support : Session Room Live d'assistance en direct
+    if (method === 'POST' && path.startsWith('/api/v1/support/tickets/') && path.endsWith('/room-live')) {
+      const user = requireAuthenticatedSession(ctx);
+      const id = path.replace('/api/v1/support/tickets/', '').replace('/room-live', '');
+      const session = this.services.createSupportRoomLiveService(user, id);
+      return this.ok(ctx, session, 201);
+    }
+
+    // ========================================================================
+    // PROMPT 18 : RECHERCHE GLOBALE ET ANALYSE INTELLIGENTE (ANALYTICS)
+    // ========================================================================
+
+    // 30A. Recherche Globale : Recherche multi-domaines avec tolérance typo
+    if (method === 'GET' && path === '/api/v1/search') {
+      const user = requireAuthenticatedSession(ctx);
+      const domainsRaw = ctx.query?.domains;
+      const domains = domainsRaw ? (domainsRaw.split(',').map((d: string) => d.trim().toUpperCase()) as any) : undefined;
+      const res = this.services.executeGlobalSearchService(user, {
+        query: ctx.query?.q || ctx.query?.query || '',
+        domains,
+        page: ctx.query?.page ? parseInt(ctx.query.page, 10) : 1,
+        limit: ctx.query?.limit ? parseInt(ctx.query.limit, 10) : 20,
+        sortBy: ctx.query?.sortBy as any,
+        statusFilter: ctx.query?.status,
+        dateFrom: ctx.query?.dateFrom,
+        dateTo: ctx.query?.dateTo,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    // 30B. Recherche Globale : Autocomplétion temps réel & Suggestions
+    if (method === 'GET' && path === '/api/v1/search/autocomplete') {
+      const user = requireAuthenticatedSession(ctx);
+      const res = this.services.getAutocompleteSuggestionsService(
+        user,
+        ctx.query?.q || ctx.query?.query || '',
+        ctx.query?.domain as any
+      );
+      return this.ok(ctx, res, 200);
+    }
+
+    // 30C. Analytics : Tableaux de bord spécifiques aux 6 rôles
+    if (method === 'GET' && path === '/api/v1/analytics/dashboard') {
+      const user = requireAuthenticatedSession(ctx);
+      const dashboard = this.services.getRoleAnalyticsDashboardService(user, {
+        period: (ctx.query?.period as any) || '30D',
+        roleOverride: ctx.query?.roleOverride as any,
+      });
+      return this.ok(ctx, dashboard, 200);
+    }
+
+    // 30D. Analytics : Export certifié multi-format (CSV, XLSX, JSON, PDF)
+    if (method === 'GET' && path === '/api/v1/analytics/export') {
+      const user = requireAuthenticatedSession(ctx);
+      const format = ((ctx.query?.format || 'CSV') as string).toUpperCase() as 'CSV' | 'XLSX' | 'JSON' | 'PDF';
+      const exported = this.services.exportAnalyticsReportService(user, {
+        period: (ctx.query?.period as any) || '30D',
+        format,
+        roleOverride: ctx.query?.roleOverride as any,
+      });
+      return this.ok(ctx, exported, 200);
+    }
+
     throw new AppError(404, 'ENDPOINT_NOT_FOUND', `Route API introuvable : ${method} ${path}`);
   }
 }

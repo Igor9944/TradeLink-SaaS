@@ -60,6 +60,12 @@ import {
   DataExportResult,
   SecurityAlertRecord,
   BackupRestoreDrillResult,
+  SupportTicketRecord,
+  KnowledgeArticleRecord,
+  SupportTicketStatus,
+  SupportTicketPriority,
+  SupportTicketCategory,
+  UserRoleCode,
 } from '../../types';
 import { defaultCatalogEngine } from '../../services/catalogEngine';
 import { defaultStockEngine } from '../../services/stockEngine';
@@ -77,6 +83,7 @@ import {
   INITIAL_BENCHMARK_RATES,
 } from '../../services/accountingEngine';
 import { KYC_JURISDICTION_REGISTRY } from '../../services/kycEngine';
+import { INITIAL_SUPPORT_TICKETS, KNOWLEDGE_BASE_ARTICLES } from '../../services/supportEngine';
 
 export interface SoftDeletableEntity {
   id: string;
@@ -121,6 +128,8 @@ export interface DatabaseStateSnapshot {
   dataExports?: DataExportResult[];
   securityAlerts?: SecurityAlertRecord[];
   backupRestoreDrills?: BackupRestoreDrillResult[];
+  supportTickets?: SupportTicketRecord[];
+  knowledgeArticles?: KnowledgeArticleRecord[];
 }
 
 export class TradeLinkRepositoryStore {
@@ -211,6 +220,14 @@ export class TradeLinkRepositoryStore {
       dataExports: initialState.dataExports ?? [],
       securityAlerts: initialState.securityAlerts ?? [],
       backupRestoreDrills: initialState.backupRestoreDrills ?? [],
+      supportTickets:
+        initialState.supportTickets && initialState.supportTickets.length > 0
+          ? initialState.supportTickets
+          : structuredClone(INITIAL_SUPPORT_TICKETS),
+      knowledgeArticles:
+        initialState.knowledgeArticles && initialState.knowledgeArticles.length > 0
+          ? initialState.knowledgeArticles
+          : structuredClone(KNOWLEDGE_BASE_ARTICLES),
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
 
@@ -1504,5 +1521,89 @@ export class TradeLinkRepositoryStore {
 
   public listRestoreDrills(): BackupRestoreDrillResult[] {
     return (this.state.backupRestoreDrills || []).map((d) => structuredClone(d));
+  }
+
+  // ============================================================================
+  // PROMPT 17 : CENTRE D'ASSISTANCE, TICKETS ET BASE DE CONNAISSANCES
+  // ============================================================================
+
+  public listSupportTickets(filter?: {
+    requesterId?: string;
+    role?: UserRoleCode;
+    status?: SupportTicketStatus;
+    priority?: SupportTicketPriority;
+    category?: SupportTicketCategory;
+  }): SupportTicketRecord[] {
+    if (!this.state.supportTickets) this.state.supportTickets = [];
+    let list = this.state.supportTickets.map((t) => structuredClone(t));
+
+    if (filter?.requesterId) {
+      list = list.filter((t) => t.requesterId === filter.requesterId);
+    }
+    if (filter?.status) {
+      list = list.filter((t) => t.status === filter.status);
+    }
+    if (filter?.priority) {
+      list = list.filter((t) => t.priority === filter.priority);
+    }
+    if (filter?.category) {
+      list = list.filter((t) => t.category === filter.category);
+    }
+
+    return list;
+  }
+
+  public getSupportTicket(id: string): SupportTicketRecord | undefined {
+    if (!this.state.supportTickets) return undefined;
+    const ticket = this.state.supportTickets.find((t) => t.id === id);
+    return ticket ? structuredClone(ticket) : undefined;
+  }
+
+  public saveSupportTicket(ticket: SupportTicketRecord): SupportTicketRecord {
+    if (!this.state.supportTickets) this.state.supportTickets = [];
+    const idx = this.state.supportTickets.findIndex((t) => t.id === ticket.id);
+    if (idx >= 0) {
+      this.state.supportTickets[idx] = structuredClone(ticket);
+    } else {
+      this.state.supportTickets.unshift(structuredClone(ticket));
+    }
+    return structuredClone(ticket);
+  }
+
+  public listKnowledgeArticles(category?: string, search?: string): KnowledgeArticleRecord[] {
+    if (!this.state.knowledgeArticles) this.state.knowledgeArticles = [];
+    let list = this.state.knowledgeArticles.map((a) => structuredClone(a));
+
+    if (category) {
+      list = list.filter((a) => a.category === category);
+    }
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter(
+        (a) =>
+          a.title.toLowerCase().includes(q) ||
+          a.summary.toLowerCase().includes(q) ||
+          a.tags.some((t) => t.toLowerCase().includes(q))
+      );
+    }
+
+    return list;
+  }
+
+  public getKnowledgeArticle(id: string): KnowledgeArticleRecord | undefined {
+    if (!this.state.knowledgeArticles) return undefined;
+    const article = this.state.knowledgeArticles.find((a) => a.id === id);
+    return article ? structuredClone(article) : undefined;
+  }
+
+  public saveKnowledgeArticle(article: KnowledgeArticleRecord): KnowledgeArticleRecord {
+    if (!this.state.knowledgeArticles) this.state.knowledgeArticles = [];
+    const idx = this.state.knowledgeArticles.findIndex((a) => a.id === article.id);
+    if (idx >= 0) {
+      this.state.knowledgeArticles[idx] = structuredClone(article);
+    } else {
+      this.state.knowledgeArticles.unshift(structuredClone(article));
+    }
+    return structuredClone(article);
   }
 }
