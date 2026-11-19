@@ -255,6 +255,7 @@ export function handleCentralizedServerError(
     };
   }
 
+  console.error('SERVER_UNCAUGHT_ERROR:', err);
   return {
     statusCode: 500,
     headers: {

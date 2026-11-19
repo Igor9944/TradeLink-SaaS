@@ -680,6 +680,7 @@ export class AccountingEngine {
     const subtotalDec = new Decimal(invoice.subtotal);
     const taxDec = new Decimal(invoice.taxAmount);
     const totalDec = new Decimal(invoice.totalAmount);
+    const shippingDec = totalDec.minus(subtotalDec.plus(taxDec));
 
     const lines: AccountingEntryLineRecord[] = [
       {
@@ -708,6 +709,17 @@ export class AccountingEngine {
         credit: taxDec.toFixed(2),
       },
     ];
+
+    if (shippingDec.gt(0)) {
+      lines.push({
+        id: `line-${Date.now()}-4`,
+        accountCode: '708500',
+        accountName: 'Ports et frais accessoires facturés',
+        label: `Frais de port et transport ${invoice.invoiceNumber}`,
+        debit: '0.00',
+        credit: shippingDec.toFixed(2),
+      });
+    }
 
     const balanceCheck = this.validateDoubleEntryBalance(lines);
     if (!balanceCheck.isBalanced) {

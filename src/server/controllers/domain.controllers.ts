@@ -1172,15 +1172,14 @@ export class TradeLinkApiApplication {
     // 4C. Facturation & Paiements Stripe Idempotents
     if (method === 'GET' && path === '/api/v1/invoices') {
       const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const allInvoices = this.repo.getSnapshot().invoices;
       const scoped =
         user.role === 'ADMIN' || user.role === 'COMPTABLE'
           ? allInvoices
           : user.role === 'CLIENT'
           ? allInvoices.filter((i) => i.clientId === user.id)
-          : user.role === 'FOURNISSEUR'
-          ? allInvoices.filter((i) => i.supplierId === user.id)
-          : allInvoices;
+          : allInvoices.filter((i) => i.supplierId === user.id);
       return this.ok(ctx, scoped);
     }
 
