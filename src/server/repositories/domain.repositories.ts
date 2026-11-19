@@ -38,7 +38,9 @@ import {
   NotificationPreferencesRecord,
   ConversationRecord,
   ConversationMessageRecord,
+  ProductCategoryRecord,
 } from '../../types';
+import { defaultCatalogEngine } from '../../services/catalogEngine';
 import { PaginationAndFilterParams } from '../validators/schema.validator';
 import { StockMovementRecord } from '../../services/commercialEngine';
 import {
@@ -138,6 +140,11 @@ export class TradeLinkRepositoryStore {
 
     // Initialisation des notifications par défaut
     this.initDefaultNotifications();
+
+    // Synchronisation des produits du repository dans le moteur de catalogue
+    if (this.state.products && this.state.products.length > 0) {
+      defaultCatalogEngine.syncProducts(this.state.products.filter((p) => !p.deletedAt));
+    }
   }
 
   private initDefaultNotifications(): void {
@@ -803,5 +810,40 @@ export class TradeLinkRepositoryStore {
       conversationId,
       messages.map((m) => structuredClone(m))
     );
+  }
+
+  // ============================================================================
+  // CATALOGUE CENTRAL & CATÉGORIES (PROMPT 09)
+  // ============================================================================
+
+  public listCatalogCategories(includeInactive = false): ProductCategoryRecord[] {
+    return defaultCatalogEngine.listCategories(includeInactive);
+  }
+
+  public getCatalogCategoryById(id: string): ProductCategoryRecord | null {
+    return defaultCatalogEngine.getCategoryById(id);
+  }
+
+  public createCatalogCategory(params: Parameters<typeof defaultCatalogEngine.createCategory>[0]): ProductCategoryRecord {
+    return defaultCatalogEngine.createCategory(params);
+  }
+
+  public updateCatalogCategory(
+    id: string,
+    updates: Partial<ProductCategoryRecord>
+  ): ProductCategoryRecord {
+    return defaultCatalogEngine.updateCategory(id, updates);
+  }
+
+  public deleteCatalogCategory(id: string): { success: boolean; message: string } {
+    return defaultCatalogEngine.deleteCategory(id);
+  }
+
+  public toggleCatalogFavorite(userId: string, productId: string) {
+    return defaultCatalogEngine.toggleFavorite(userId, productId);
+  }
+
+  public listCatalogFavorites(userId: string): ProductItem[] {
+    return defaultCatalogEngine.listFavorites(userId);
   }
 }

@@ -31,6 +31,7 @@ import {
   AlertCircle,
   Copy,
   ExternalLink,
+  Trash2,
 } from 'lucide-react';
 import { useApp, DEMO_USERS } from '../contexts/AppContext';
 import { downloadDataExport, formatCurrency } from '../i18n/translations';
@@ -82,6 +83,11 @@ export const AdminWorkspacePage: React.FC<{
     currentUser,
     switchUserAccount,
     products,
+    categories,
+    addCategory,
+    deleteCategory,
+    moderateProduct,
+    suspendProduct,
     orders,
     quotes,
     invoices,
@@ -1306,37 +1312,191 @@ export const AdminWorkspacePage: React.FC<{
                         </div>
                       ),
                     },
+                    {
+                      key: 'status',
+                      header: 'Statut & Modération',
+                      render: (p) => (
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <Badge
+                              variant={
+                                p.status === 'PUBLISHED'
+                                  ? 'success'
+                                  : p.status === 'PENDING_REVIEW'
+                                  ? 'warning'
+                                  : p.status === 'SUSPENDED'
+                                  ? 'danger'
+                                  : 'neutral'
+                              }
+                            >
+                              {p.status || (p.isPublished ? 'PUBLISHED' : 'DRAFT')}
+                            </Badge>
+                            {p.isReported && (
+                              <span title={p.reportReason}>
+                                <Badge variant="danger">
+                                  Signalé
+                                </Badge>
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            {(p.status === 'PENDING_REVIEW' || p.status === 'DRAFT' || !p.status) && (
+                              <button
+                                type="button"
+                                onClick={() => moderateProduct(p.id, 'APPROVE')}
+                                className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30"
+                              >
+                                Approuver
+                              </button>
+                            )}
+                            {p.status !== 'DRAFT' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const reason = window.prompt('Motif obligatoire du rejet / renvoi en brouillon :');
+                                  if (reason) moderateProduct(p.id, 'REJECT', reason);
+                                }}
+                                className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 hover:bg-amber-500/30"
+                              >
+                                Rejeter
+                              </button>
+                            )}
+                            {p.status === 'PUBLISHED' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const reason = window.prompt('Motif obligatoire de suspension du produit :');
+                                  if (reason) suspendProduct(p.id, reason);
+                                }}
+                                className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-red-700 dark:text-red-300 hover:bg-red-500/30"
+                              >
+                                Suspendre
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ),
+                    },
                   ]}
                 />
               </div>
             )}
 
-            {/* ONGLET 2 : CATÉGORIES & SOUS-CATÉGORIES */}
+            {/* ONGLET 2 : CATÉGORIES & SOUS-CATÉGORIES HIÉRARCHIQUES */}
             {commercialTab === 'categories' && (
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
-                {[
-                  { name: 'Conteneurs Maritimes & Stockage', refs: 32, icon: 'container' as const, vol: '85 000,00 €', sub: '20ft, 40ft HC, Reefer ATP' },
-                  { name: 'Vannes & Pompes Industrielles', refs: 48, icon: 'hazardous-goods' as const, vol: '62 000,00 €', sub: 'DN50 à DN300, Inox 316L' },
-                  { name: 'Équipements de Manutention', refs: 24, icon: 'forklift' as const, vol: '45 000,00 €', sub: 'Chariots, Transpalettes, Palonniers' },
-                  { name: 'Conditionnement & Palettes', refs: 60, icon: 'pallet-load' as const, vol: '28 000,00 €', sub: 'EPAL Euro, Caisses Navettes NIMP15' },
-                  { name: 'Chaîne du Froid & Réfrigération', refs: 18, icon: 'cold-chain' as const, vol: '23 000,00 €', sub: 'Groupes Froid ThermoKing, Enregistreurs' },
-                  { name: 'Sécurité & Emballage Fret', refs: 20, icon: 'secure-parcel' as const, vol: '12 000,00 €', sub: 'Scellés ISO 17712, Sangles d’Arrimage' },
-                ].map((c) => (
-                  <div
-                    key={c.name}
-                    className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 flex items-start gap-3"
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-slate-500">
+                    Arborescence hiérarchique des catégories B2B trilingues (FR / EN / AR). Suppression contrôlée : interdite si des sous-catégories ou des produits y sont rattachés.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => {
+                      const code = window.prompt('Code de la catégorie (ex: PACKAGING_SOLUTIONS) :');
+                      if (!code) return;
+                      const nameFr = window.prompt('Nom en Français :') || code;
+                      const nameEn = window.prompt('Nom en Anglais :') || nameFr;
+                      const nameAr = window.prompt('Nom en Arabe :') || nameFr;
+                      addCategory({
+                        code,
+                        name: { fr: nameFr, en: nameEn, ar: nameAr },
+                        description: { fr: nameFr, en: nameEn, ar: nameAr },
+                      });
+                    }}
                   >
-                    <Icon3D name={c.icon} size="md" withGlow />
-                    <div className="space-y-1">
-                      <p className="font-bold text-sm text-slate-900 dark:text-white">{c.name}</p>
-                      <p className="text-slate-400">{c.sub}</p>
-                      <div className="pt-2 flex items-center justify-between text-xs">
-                        <span className="font-semibold text-slate-500">{c.refs} Références</span>
-                        <span className="font-bold text-[#E85D22]">{c.vol}</span>
+                    + Nouvelle Catégorie Racine
+                  </Button>
+                </div>
+
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+                  {categories.map((c) => {
+                    const linkedCount = products.filter(
+                      (p) => p.categoryId === c.id || p.category === c.code
+                    ).length;
+                    return (
+                      <div
+                        key={c.id}
+                        className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-3">
+                            <Icon3D name={c.icon3d || 'pallet-load'} size="md" withGlow />
+                            <div>
+                              <p className="font-bold text-sm text-slate-900 dark:text-white">
+                                {c.name[locale] || c.name.fr}
+                              </p>
+                              <p className="text-[10px] font-mono text-slate-400">{c.code}</p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => deleteCategory(c.id)}
+                            className="text-slate-400 hover:text-red-500 p-1"
+                            title="Supprimer la catégorie"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        <p className="text-slate-500 dark:text-slate-400 text-[11px]">
+                          {c.description[locale] || c.description.fr}
+                        </p>
+
+                        {c.subcategories && c.subcategories.length > 0 && (
+                          <div className="pt-2 border-t border-slate-200 dark:border-teal-900/40 space-y-1.5">
+                            <span className="font-bold text-[10px] text-slate-400 uppercase tracking-wider">
+                              Sous-catégories ({c.subcategories.length}) :
+                            </span>
+                            <div className="space-y-1">
+                              {c.subcategories.map((sub) => (
+                                <div
+                                  key={sub.id}
+                                  className="flex items-center justify-between px-2 py-1 rounded-lg bg-white dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 text-[11px]"
+                                >
+                                  <span className="font-medium">{sub.name[locale] || sub.name.fr}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteCategory(sub.id)}
+                                    className="text-slate-400 hover:text-red-500 p-0.5"
+                                    title="Supprimer la sous-catégorie"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="pt-2 flex items-center justify-between text-xs">
+                          <span className="font-semibold text-slate-500">
+                            {linkedCount} Référence{linkedCount > 1 ? 's' : ''} liée{linkedCount > 1 ? 's' : ''}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const code = window.prompt(`Code sous-catégorie pour ${c.name.fr} :`);
+                              if (!code) return;
+                              const nameFr = window.prompt('Nom en Français :') || code;
+                              const nameEn = window.prompt('Nom en Anglais :') || nameFr;
+                              const nameAr = window.prompt('Nom en Arabe :') || nameFr;
+                              addCategory({
+                                code,
+                                parentCategoryId: c.id,
+                                name: { fr: nameFr, en: nameEn, ar: nameAr },
+                                description: { fr: nameFr, en: nameEn, ar: nameAr },
+                              });
+                            }}
+                            className="text-[11px] font-bold text-[#E85D22] hover:underline"
+                          >
+                            + Sous-catégorie
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  </div>
-                ))}
+                    );
+                  })}
+                </div>
               </div>
             )}
 

@@ -93,7 +93,16 @@ import {
   ConversationType,
   ConversationParticipantDetail,
   MessageAttachment,
+  ProductCategoryRecord,
+  Locale,
 } from '../../types';
+import {
+  defaultCatalogEngine,
+  CatalogFilterCriteria,
+  CatalogSearchResult,
+  ProductComparisonMatrix,
+  BulkImportResult,
+} from '../../services/catalogEngine';
 import {
   validateFileMagicBytes,
   calculateDocumentSha256,
@@ -5343,6 +5352,337 @@ export class TradeLinkDomainServices {
         'Pièce jointe rejetée par le contrôle de sécurité.'
       );
     }
+  }
+
+  // ============================================================================
+  // SERVICES DU CATALOGUE CENTRAL B2B & GESTION DES PRODUITS (PROMPT 09)
+  // ============================================================================
+
+  public listCatalogCategoriesService(includeInactive = false): ProductCategoryRecord[] {
+    return this.repo.listCatalogCategories(includeInactive);
+  }
+
+  public getCatalogCategoryDetailService(id: string): ProductCategoryRecord {
+    const cat = this.repo.getCatalogCategoryById(id);
+    if (!cat) {
+      throw new AppError(404, 'CATEGORY_NOT_FOUND', `Catégorie "${id}" introuvable.`);
+    }
+    return cat;
+  }
+
+  public createCatalogCategoryService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: {
+      code: string;
+      name: Record<Locale, string>;
+      description: Record<Locale, string>;
+      parentCategoryId?: string;
+      icon3d?: any;
+      imageUrl?: string;
+      displayOrder?: number;
+    }
+  ): ProductCategoryRecord {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_CATEGORY_MANAGEMENT', 'Seul un Administrateur peut créer une catégorie.');
+    }
+    return this.repo.createCatalogCategory(payload);
+  }
+
+  public updateCatalogCategoryService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    id: string,
+    updates: Partial<ProductCategoryRecord>
+  ): ProductCategoryRecord {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_CATEGORY_MANAGEMENT', 'Seul un Administrateur peut modifier une catégorie.');
+    }
+    return this.repo.updateCatalogCategory(id, updates);
+  }
+
+  public deleteCatalogCategoryService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    id: string
+  ): { success: boolean; message: string } {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_CATEGORY_MANAGEMENT', 'Seul un Administrateur peut supprimer une catégorie.');
+    }
+    try {
+      return this.repo.deleteCatalogCategory(id);
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public searchCatalogProductsService(
+    criteria: CatalogFilterCriteria,
+    actor?: ServerRequestContext['user']
+  ): CatalogSearchResult {
+    const role = actor?.role || 'CLIENT';
+    const userId = actor?.id;
+    return defaultCatalogEngine.searchProducts(criteria, role, userId);
+  }
+
+  public getCatalogProductDetailService(
+    id: string,
+    actor?: ServerRequestContext['user']
+  ): ProductItem {
+    const product = defaultCatalogEngine.getProductById(id);
+    if (!product) {
+      throw new AppError(404, 'PRODUCT_NOT_FOUND', `Produit "${id}" introuvable.`);
+    }
+    if ((!actor || actor.role === 'CLIENT' || actor.role === 'VISITEUR') && product.status !== 'PUBLISHED') {
+      throw new AppError(403, 'FORBIDDEN_UNPUBLISHED_PRODUCT', 'Ce produit n’est pas encore publié au catalogue.');
+    }
+    if (actor?.role === 'FOURNISSEUR' && product.status !== 'PUBLISHED' && product.supplierId !== actor.id) {
+      throw new AppError(403, 'FORBIDDEN_UNPUBLISHED_PRODUCT', 'Ce produit appartient à un tiers et n’est pas publié.');
+    }
+    return product;
+  }
+
+  public createCatalogProductService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    payload: any,
+    correlationId = 'cid-catalog',
+    ipAddress = '127.0.0.1'
+  ): ProductItem {
+    if (actor.role !== 'FOURNISSEUR' && actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_PRODUCT_CREATION', 'Seul un Fournisseur ou Admin peut créer un produit.');
+    }
+
+    const supplierId = actor.role === 'FOURNISSEUR' ? actor.id : payload.supplierId || actor.id;
+    const supplierName = actor.role === 'FOURNISSEUR' ? (actor.companyName || actor.email || 'Fournisseur') : (payload.supplierName || 'Fournisseur Certifié');
+
+    try {
+      const createdProduct = defaultCatalogEngine.createProduct({
+        ...payload,
+        supplierId,
+        supplierName,
+        originalLanguage: payload.originalLanguage || 'fr',
+      });
+
+      this.repo.executeTransaction((tx) => {
+        tx.products.unshift(createdProduct);
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'CATALOG_PRODUCT_CREATED',
+          targetType: 'CATALOG_PRODUCT',
+          targetId: createdProduct.id,
+          result: 'SUCCESS',
+          correlationId,
+          ipAddress,
+          details: `Produit ${createdProduct.sku} (${createdProduct.id}) créé dans le catalogue.`,
+        });
+      });
+
+      return createdProduct;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public updateCatalogProductService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    id: string,
+    updates: Partial<ProductItem>,
+    correlationId = 'cid-catalog',
+    ipAddress = '127.0.0.1'
+  ): ProductItem {
+    try {
+      const updated = defaultCatalogEngine.updateProduct(id, actor.id, actor.role, updates);
+
+      this.repo.executeTransaction((tx) => {
+        const idx = tx.products.findIndex((p) => p.id === id);
+        if (idx !== -1) {
+          tx.products[idx] = { ...tx.products[idx], ...updated };
+        }
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          actorName: actor.companyName || actor.email,
+          actorRole: actor.role,
+          action: 'CATALOG_PRODUCT_UPDATED',
+          targetType: 'CATALOG_PRODUCT',
+          targetId: id,
+          result: 'SUCCESS',
+          correlationId,
+          ipAddress,
+          details: `Produit ${updated.sku} (${id}) mis à jour.`,
+        });
+      });
+
+      return updated;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public updateCatalogStockAndPriceQuickService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    id: string,
+    params: { stockAvailable?: number; unitPrice?: string }
+  ): ProductItem {
+    try {
+      const updated = defaultCatalogEngine.updateStockAndPriceQuick(id, actor.id, actor.role, params);
+      this.repo.executeTransaction((tx) => {
+        const idx = tx.products.findIndex((p) => p.id === id);
+        if (idx !== -1) {
+          tx.products[idx] = { ...tx.products[idx], ...updated };
+        }
+      });
+      return updated;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public archiveCatalogProductService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    id: string
+  ): ProductItem {
+    try {
+      const updated = defaultCatalogEngine.archiveProduct(id, actor.id, actor.role);
+      this.repo.executeTransaction((tx) => {
+        const idx = tx.products.findIndex((p) => p.id === id);
+        if (idx !== -1) {
+          tx.products[idx] = { ...tx.products[idx], ...updated };
+        }
+      });
+      return updated;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public deleteCatalogProductService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    id: string
+  ): { success: boolean; message: string } {
+    try {
+      const result = defaultCatalogEngine.deleteProduct(id, actor.id, actor.role);
+      this.repo.softDeleteProduct(id);
+      return result;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public moderateCatalogProductService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    id: string,
+    action: 'APPROVE' | 'REJECT',
+    reason?: string
+  ): ProductItem {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_MODERATION', 'Seul un Administrateur peut modérer les produits.');
+    }
+    try {
+      const updated = defaultCatalogEngine.moderateProductPublication(id, action, reason);
+      this.repo.executeTransaction((tx) => {
+        const idx = tx.products.findIndex((p) => p.id === id);
+        if (idx !== -1) {
+          tx.products[idx] = { ...tx.products[idx], ...updated };
+        }
+      });
+      return updated;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public reportCatalogProductService(
+    _actor: NonNullable<ServerRequestContext['user']>,
+    id: string,
+    reason: string
+  ): ProductItem {
+    if (!reason?.trim()) {
+      throw new AppError(400, 'REPORT_REASON_MANDATORY', 'Le motif de signalement est obligatoire.');
+    }
+    try {
+      return defaultCatalogEngine.reportProduct(id, reason);
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public suspendCatalogProductService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    id: string,
+    reason: string
+  ): ProductItem {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_SUSPENSION', 'Seul un Administrateur peut suspendre un produit.');
+    }
+    if (!reason?.trim()) {
+      throw new AppError(400, 'SUSPENSION_REASON_MANDATORY', 'Le motif de suspension est obligatoire.');
+    }
+    try {
+      const updated = defaultCatalogEngine.suspendProduct(id, reason);
+      this.repo.executeTransaction((tx) => {
+        const idx = tx.products.findIndex((p) => p.id === id);
+        if (idx !== -1) {
+          tx.products[idx] = { ...tx.products[idx], ...updated };
+        }
+      });
+      return updated;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public compareCatalogProductsService(productIds: string[]): ProductComparisonMatrix {
+    try {
+      return defaultCatalogEngine.compareProducts(productIds);
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.message, err.message);
+    }
+  }
+
+  public toggleCatalogFavoriteService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    productId: string
+  ): { isFavorite: boolean; totalFavorites: number } {
+    return this.repo.toggleCatalogFavorite(actor.id, productId);
+  }
+
+  public listCatalogFavoritesService(
+    actor: NonNullable<ServerRequestContext['user']>
+  ): ProductItem[] {
+    return this.repo.listCatalogFavorites(actor.id);
+  }
+
+  public importCatalogProductsBulkService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    items: Partial<ProductItem>[]
+  ): BulkImportResult {
+    if (actor.role !== 'FOURNISSEUR' && actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_BULK_IMPORT', 'Seul un Fournisseur ou Admin peut importer par lot.');
+    }
+    const supplierId = actor.role === 'FOURNISSEUR' ? actor.id : 'sup-admin-bulk';
+    const supplierName = actor.companyName || actor.email || 'Fournisseur B2B';
+
+    const result = defaultCatalogEngine.importProductsBulk(items, supplierId, supplierName);
+
+    if (result.importedProducts.length > 0) {
+      this.repo.executeTransaction((tx) => {
+        for (const p of result.importedProducts) {
+          tx.products.unshift(p);
+        }
+      });
+    }
+
+    return result;
+  }
+
+  public getCatalogStatsService(
+    actor: NonNullable<ServerRequestContext['user']>
+  ) {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_STATS', 'Seul un Administrateur peut consulter les statistiques globales du catalogue.');
+    }
+    return defaultCatalogEngine.getCatalogStatistics();
   }
 }
 

@@ -523,6 +523,193 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, { id: productId, softDeleted: true });
     }
 
+    // ============================================================================
+    // PROMPT 09 : CATALOGUE CENTRAL B2B & GESTION DES PRODUITS (/api/v1/catalog/*)
+    // ============================================================================
+
+    // 1. Catégories Hiérarchiques
+    if (method === 'GET' && path === '/api/v1/catalog/categories') {
+      const includeInactive = ctx.query?.includeInactive === 'true';
+      const categories = this.services.listCatalogCategoriesService(includeInactive);
+      return this.ok(ctx, categories);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/catalog/categories/')) {
+      const categoryId = path.replace('/api/v1/catalog/categories/', '');
+      const cat = this.services.getCatalogCategoryDetailService(categoryId);
+      return this.ok(ctx, cat);
+    }
+
+    if (method === 'POST' && path === '/api/v1/catalog/categories') {
+      const user = requireAuthenticatedSession(ctx);
+      const cat = this.services.createCatalogCategoryService(user, ctx.body as any);
+      return this.ok(ctx, cat, 201);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/catalog/categories/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const categoryId = path.replace('/api/v1/catalog/categories/', '');
+      const cat = this.services.updateCatalogCategoryService(user, categoryId, ctx.body);
+      return this.ok(ctx, cat);
+    }
+
+    if (method === 'DELETE' && path.startsWith('/api/v1/catalog/categories/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const categoryId = path.replace('/api/v1/catalog/categories/', '');
+      const result = this.services.deleteCatalogCategoryService(user, categoryId);
+      return this.ok(ctx, result);
+    }
+
+    // 2. Recherche & Filtres Produits
+    if (method === 'GET' && path === '/api/v1/catalog/products') {
+      const criteria = {
+        search: ctx.query?.search,
+        categoryId: ctx.query?.categoryId || ctx.query?.category,
+        subcategoryId: ctx.query?.subcategoryId || ctx.query?.subcategory,
+        originCountry: ctx.query?.originCountry || ctx.query?.country,
+        minPrice: ctx.query?.minPrice,
+        maxPrice: ctx.query?.maxPrice,
+        currency: ctx.query?.currency,
+        inStockOnly: ctx.query?.inStockOnly === 'true',
+        maxMoq: ctx.query?.maxMoq ? Number(ctx.query.maxMoq) : undefined,
+        incoterm: ctx.query?.incoterm,
+        supplierId: ctx.query?.supplierId,
+        status: ctx.query?.status as any,
+        sortBy: ctx.query?.sortBy as any,
+        page: ctx.query?.page ? Number(ctx.query.page) : 1,
+        limit: ctx.query?.limit ? Number(ctx.query.limit) : 20,
+      };
+      const result = this.services.searchCatalogProductsService(criteria, ctx.user);
+      return this.ok(ctx, result, 200, {
+        page: result.page,
+        limit: criteria.limit,
+        totalItems: result.total,
+        totalPages: result.totalPages,
+      });
+    }
+
+    // 3. Comparateur B2B
+    if (method === 'POST' && path === '/api/v1/catalog/compare') {
+      const { productIds } = ctx.body;
+      if (!Array.isArray(productIds) || productIds.length === 0) {
+        throw new AppError(400, 'INVALID_PRODUCT_IDS', 'Un tableau productIds non vide est requis.');
+      }
+      const matrix = this.services.compareCatalogProductsService(productIds);
+      return this.ok(ctx, matrix);
+    }
+
+    // 4. Favoris / Wishlist Client
+    if (method === 'POST' && path.startsWith('/api/v1/catalog/favorites/') && path.endsWith('/toggle')) {
+      const user = requireAuthenticatedSession(ctx);
+      const productId = path.replace('/api/v1/catalog/favorites/', '').replace('/toggle', '');
+      const result = this.services.toggleCatalogFavoriteService(user, productId);
+      return this.ok(ctx, result);
+    }
+
+    if (method === 'GET' && path === '/api/v1/catalog/favorites') {
+      const user = requireAuthenticatedSession(ctx);
+      const favs = this.services.listCatalogFavoritesService(user);
+      return this.ok(ctx, favs);
+    }
+
+    // 5. Importation par Lot (Bulk Import)
+    if (method === 'POST' && path === '/api/v1/catalog/products/bulk-import') {
+      const user = requireAuthenticatedSession(ctx);
+      const { items } = ctx.body;
+      if (!Array.isArray(items)) {
+        throw new AppError(400, 'INVALID_BULK_ITEMS', 'Un tableau "items" est requis.');
+      }
+      const result = this.services.importCatalogProductsBulkService(user, items);
+      return this.ok(ctx, result, 201);
+    }
+
+    // 6. Statistiques Globales Catalogue (Admin)
+    if (method === 'GET' && path === '/api/v1/catalog/stats') {
+      const user = requireAuthenticatedSession(ctx);
+      const stats = this.services.getCatalogStatsService(user);
+      return this.ok(ctx, stats);
+    }
+
+    // 7. Actions Spécifiques sur Produit (/api/v1/catalog/products/:id/*)
+    if (method === 'PUT' && path.startsWith('/api/v1/catalog/products/') && path.endsWith('/quick-update')) {
+      const user = requireAuthenticatedSession(ctx);
+      const productId = path.replace('/api/v1/catalog/products/', '').replace('/quick-update', '');
+      const updated = this.services.updateCatalogStockAndPriceQuickService(user, productId, ctx.body);
+      return this.ok(ctx, updated);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/catalog/products/') && path.endsWith('/archive')) {
+      const user = requireAuthenticatedSession(ctx);
+      const productId = path.replace('/api/v1/catalog/products/', '').replace('/archive', '');
+      const updated = this.services.archiveCatalogProductService(user, productId);
+      return this.ok(ctx, updated);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/catalog/products/') && path.endsWith('/moderate')) {
+      const user = requireAuthenticatedSession(ctx);
+      const productId = path.replace('/api/v1/catalog/products/', '').replace('/moderate', '');
+      const { action, reason } = ctx.body;
+      if (action !== 'APPROVE' && action !== 'REJECT') {
+        throw new AppError(400, 'INVALID_MODERATION_ACTION', 'Action doit être APPROVE ou REJECT.');
+      }
+      const updated = this.services.moderateCatalogProductService(user, productId, action, reason);
+      return this.ok(ctx, updated);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/catalog/products/') && path.endsWith('/report')) {
+      const user = requireAuthenticatedSession(ctx);
+      const productId = path.replace('/api/v1/catalog/products/', '').replace('/report', '');
+      const { reason } = ctx.body;
+      const reported = this.services.reportCatalogProductService(user, productId, reason);
+      return this.ok(ctx, reported);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/catalog/products/') && path.endsWith('/suspend')) {
+      const user = requireAuthenticatedSession(ctx);
+      const productId = path.replace('/api/v1/catalog/products/', '').replace('/suspend', '');
+      const { reason } = ctx.body;
+      const suspended = this.services.suspendCatalogProductService(user, productId, reason);
+      return this.ok(ctx, suspended);
+    }
+
+    // 8. CRUD Produit Individuel (/api/v1/catalog/products/:id et /api/v1/catalog/products)
+    if (method === 'GET' && path.startsWith('/api/v1/catalog/products/')) {
+      const productId = path.replace('/api/v1/catalog/products/', '');
+      const product = this.services.getCatalogProductDetailService(productId, ctx.user);
+      return this.ok(ctx, product);
+    }
+
+    if (method === 'POST' && path === '/api/v1/catalog/products') {
+      const user = requireAuthenticatedSession(ctx);
+      const created = this.services.createCatalogProductService(
+        user,
+        ctx.body,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, created, 201);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/catalog/products/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const productId = path.replace('/api/v1/catalog/products/', '');
+      const updated = this.services.updateCatalogProductService(
+        user,
+        productId,
+        ctx.body,
+        ctx.correlationId,
+        ctx.ipAddress
+      );
+      return this.ok(ctx, updated);
+    }
+
+    if (method === 'DELETE' && path.startsWith('/api/v1/catalog/products/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const productId = path.replace('/api/v1/catalog/products/', '');
+      const result = this.services.deleteCatalogProductService(user, productId);
+      return this.ok(ctx, result);
+    }
+
     // 4. Commandes Transactionnelles, Ownership & Réservation de Stock
     if (method === 'GET' && path === '/api/v1/orders') {
       const user = requireAuthenticatedSession(ctx);

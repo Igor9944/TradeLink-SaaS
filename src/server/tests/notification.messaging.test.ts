@@ -16,10 +16,8 @@ import {
   SecureAttachmentManager,
 } from '../../services/messagingEngine';
 import { TradeLinkRepositoryStore } from '../repositories/domain.repositories';
-import { TradeLinkDomainServices } from '../services/domain.services';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
-import { registerSingleActiveSession } from '../middlewares/errorAndSecurity.middleware';
-import { ServerRequestContext } from '../types';
+import { registerSingleActiveSession, ServerRequestContext } from '../middlewares/errorAndSecurity.middleware';
 
 console.log('\n====================================================================');
 console.log('TRADELINK V6.0 — SUITE DE TESTS NOTIFICATIONS ET MESSAGERIE CENTRALISÉES');
@@ -46,7 +44,7 @@ async function runNotificationAndMessagingTests() {
     id: 'usr-admin-01',
     email: 'direction.sec@tradelink-saas.com',
     role: 'ADMIN',
-    permissions: ['*'],
+    companyName: 'TradeLink Global Direction',
     sessionId: 'sess-admin-01',
     mfaVerified: true,
   };
@@ -56,7 +54,7 @@ async function runNotificationAndMessagingTests() {
     id: 'usr-client-01',
     email: 'youssef.berrada@atlastrading.ma',
     role: 'CLIENT',
-    permissions: ['READ_CATALOG', 'SUBMIT_ORDER', 'VIEW_INVOICE'],
+    companyName: 'Atlas Trading & Imports',
     sessionId: 'sess-client-01',
   };
   registerSingleActiveSession(clientActor.id, clientActor.sessionId);
@@ -65,7 +63,7 @@ async function runNotificationAndMessagingTests() {
     id: 'usr-carrier-01',
     email: 'operations@maghreb-express.ma',
     role: 'TRANSPORTEUR',
-    permissions: ['VIEW_SHIPMENTS', 'UPDATE_TELEMETRY', 'SIGN_POD'],
+    companyName: 'Maghreb Express Logistics',
     sessionId: 'sess-carrier-01',
   };
   registerSingleActiveSession(carrierActor.id, carrierActor.sessionId);
@@ -74,7 +72,7 @@ async function runNotificationAndMessagingTests() {
     id: 'usr-outsider-99',
     email: 'outsider@pirate.org',
     role: 'CLIENT',
-    permissions: ['READ_CATALOG'],
+    companyName: 'Outsider Corp',
     sessionId: 'sess-outsider-99',
   };
   registerSingleActiveSession(outsiderActor.id, outsiderActor.sessionId);
@@ -753,51 +751,51 @@ async function runNotificationAndMessagingTests() {
   // --------------------------------------------------------------------------
   console.log('🔹 [API-01] Validation des Routes REST API (/api/v1/notifications & /api/v1/messaging)...');
   {
+    const req = (opts: Partial<ServerRequestContext> & { method: string; path: string; user?: any }): ServerRequestContext => ({
+      headers: {},
+      query: {},
+      params: {},
+      body: {},
+      correlationId: 'corr-notif-api',
+      ipAddress: '127.0.0.1',
+      ...opts,
+    });
+
     // 1. GET /api/v1/notifications
-    const getNotifsRes = app.handleRequest({
+    const getNotifsRes = app.handleRequest(req({
       method: 'GET',
       path: '/api/v1/notifications',
-      headers: {},
       user: clientActor,
-      correlationId: 'corr-notif-01',
-      ipAddress: '127.0.0.1',
-    });
+    }));
     assert.strictEqual(getNotifsRes.statusCode, 200);
-    assert.ok(Array.isArray(getNotifsRes.body.data.notifications));
+    assert.ok(Array.isArray((getNotifsRes.body.data as any).notifications));
 
     // 2. GET /api/v1/notifications/preferences
-    const getPrefsRes = app.handleRequest({
+    const getPrefsRes = app.handleRequest(req({
       method: 'GET',
       path: '/api/v1/notifications/preferences',
-      headers: {},
       user: clientActor,
-      correlationId: 'corr-notif-02',
-      ipAddress: '127.0.0.1',
-    });
+    }));
     assert.strictEqual(getPrefsRes.statusCode, 200);
-    assert.strictEqual(getPrefsRes.body.data.preferences.userId, clientActor.id);
+    assert.strictEqual((getPrefsRes.body.data as any).preferences.userId, clientActor.id);
 
     // 3. PUT /api/v1/notifications/preferences
-    const updatePrefsRes = app.handleRequest({
+    const updatePrefsRes = app.handleRequest(req({
       method: 'PUT',
       path: '/api/v1/notifications/preferences',
-      headers: {},
       user: clientActor,
       body: {
         quietHoursStart: '23:00',
         quietHoursEnd: '07:00',
       },
-      correlationId: 'corr-notif-03',
-      ipAddress: '127.0.0.1',
-    });
+    }));
     assert.strictEqual(updatePrefsRes.statusCode, 200);
-    assert.strictEqual(updatePrefsRes.body.data.preferences.quietHoursStart, '23:00');
+    assert.strictEqual((updatePrefsRes.body.data as any).preferences.quietHoursStart, '23:00');
 
     // 4. POST /api/v1/messaging/conversations
-    const createConvRes = app.handleRequest({
+    const createConvRes = app.handleRequest(req({
       method: 'POST',
       path: '/api/v1/messaging/conversations',
-      headers: {},
       user: clientActor,
       body: {
         type: 'ORDER_THREAD',
@@ -809,48 +807,38 @@ async function runNotificationAndMessagingTests() {
         relatedEntityId: 'CMD-902',
         relatedEntityType: 'ORDER',
       },
-      correlationId: 'corr-msg-01',
-      ipAddress: '127.0.0.1',
-    });
+    }));
     assert.strictEqual(createConvRes.statusCode, 201);
-    const createdConvId = createConvRes.body.data.conversation.id;
+    const createdConvId = (createConvRes.body.data as any).conversation.id;
 
     // 5. POST /api/v1/messaging/conversations/:id/messages
-    const sendMsgRes = app.handleRequest({
+    const sendMsgRes = app.handleRequest(req({
       method: 'POST',
       path: `/api/v1/messaging/conversations/${createdConvId}/messages`,
-      headers: {},
       user: clientActor,
       body: {
         text: 'Les documents douaniers sont prêts.',
       },
-      correlationId: 'corr-msg-02',
-      ipAddress: '127.0.0.1',
-    });
+    }));
     assert.strictEqual(sendMsgRes.statusCode, 201);
-    assert.strictEqual(sendMsgRes.body.data.message.originalText, 'Les documents douaniers sont prêts.');
+    assert.strictEqual((sendMsgRes.body.data as any).message.originalText, 'Les documents douaniers sont prêts.');
 
     // 6. GET /api/v1/messaging/conversations/:id
-    const getConvRes = app.handleRequest({
+    const getConvRes = app.handleRequest(req({
       method: 'GET',
       path: `/api/v1/messaging/conversations/${createdConvId}`,
-      headers: {},
       user: clientActor,
-      correlationId: 'corr-msg-03',
-      ipAddress: '127.0.0.1',
-    });
+    }));
     assert.strictEqual(getConvRes.statusCode, 200);
-    assert.strictEqual(getConvRes.body.data.messages.length, 1);
+    assert.strictEqual((getConvRes.body.data as any).messages.length, 1);
 
     // 7. Blocage Anti-IDOR sur conversation pour utilisateur non participant
-    const idorRes = app.handleRequest({
+    const idorRes = app.handleRequest(req({
       method: 'GET',
       path: `/api/v1/messaging/conversations/${createdConvId}`,
-      headers: {},
       user: outsiderActor,
       correlationId: 'corr-msg-idor',
-      ipAddress: '127.0.0.1',
-    });
+    }));
     assert.strictEqual(idorRes.statusCode, 403);
 
     console.log('  ✅ [API-01] 7 endpoints REST /api/v1 (Notifications & Messaging) certifiés.');

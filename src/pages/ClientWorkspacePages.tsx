@@ -80,6 +80,12 @@ export const ClientWorkspacePage: React.FC<{
     addToCart,
     updateCartQuantity,
     removeFromCart,
+    categories,
+    catalogFavorites,
+    toggleCatalogFavorite,
+    comparisonProductIds,
+    toggleComparisonProduct,
+    clearComparison,
     orders,
     updateOrderStatus,
     createOrderFromCart,
@@ -124,9 +130,14 @@ export const ClientWorkspacePage: React.FC<{
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
   const [incotermFilter, setIncotermFilter] = useState<string>('ALL');
   const [showOnlyFavorites, setShowOnlyFavorites] = useState(false);
-  const [favorites, setFavorites] = useState<string[]>(['prod-01', 'prod-03']);
-  const [comparedProducts, setComparedProducts] = useState<ProductItem[]>([]);
+  const favorites = catalogFavorites;
+  const toggleFavorite = toggleCatalogFavorite;
+  const comparedProducts = products.filter((p) => comparisonProductIds.includes(p.id));
   const [isCompareDrawerOpen, setIsCompareDrawerOpen] = useState(false);
+  const toggleCompare = (prod: ProductItem) => {
+    toggleComparisonProduct(prod.id);
+    setIsCompareDrawerOpen(true);
+  };
 
   // États Checkout & Commande
   const [checkoutStep, setCheckoutStep] = useState(0);
@@ -189,35 +200,7 @@ export const ClientWorkspacePage: React.FC<{
     0
   );
 
-  // Bascule des Favoris
-  const toggleFavorite = (productId: string) => {
-    setFavorites((prev) => {
-      const exists = prev.includes(productId);
-      const updated = exists ? prev.filter((id) => id !== productId) : [...prev, productId];
-      notifyToast(
-        exists ? 'Produit retiré de vos favoris.' : 'Produit ajouté à vos favoris !',
-        'info'
-      );
-      return updated;
-    });
-  };
 
-  // Bascule du Comparateur de produits
-  const toggleCompare = (prod: ProductItem) => {
-    setComparedProducts((prev) => {
-      const exists = prev.some((p) => p.id === prod.id);
-      if (exists) {
-        return prev.filter((p) => p.id !== prod.id);
-      }
-      if (prev.length >= 4) {
-        notifyToast('Vous pouvez comparer jusqu’à 4 produits simultanément.', 'warning');
-        return prev;
-      }
-      setIsCompareDrawerOpen(true);
-      notifyToast(`Produit ${prod.name[locale] || prod.name.fr} ajouté au comparateur.`, 'success');
-      return [...prev, prod];
-    });
-  };
 
   // Annulation de commande selon règles métier
   const handleConfirmCancelOrder = () => {
@@ -588,10 +571,11 @@ export const ClientWorkspacePage: React.FC<{
                   className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#071E22] border border-slate-300 dark:border-teal-800 font-semibold"
                 >
                   <option value="ALL">Toutes les catégories</option>
-                  <option value="Conteneurs & Stockage">Conteneurs & Stockage Maritimes</option>
-                  <option value="Vannes & Pompes">Vannes & Pompes Industrielles</option>
-                  <option value="Équipements Manutention">Équipements de Manutention</option>
-                  <option value="Conditionnement & Palettes">Conditionnement & Palettes</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.code}>
+                      {c.name[locale] || c.name.fr}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -699,6 +683,9 @@ export const ClientWorkspacePage: React.FC<{
                           <p className="text-[11px] text-slate-500">
                             HT / {prod.unit} • En stock : <strong className="text-emerald-600 dark:text-emerald-400">{prod.stockAvailable}</strong>
                           </p>
+                          <p className="text-[10px] text-amber-600 dark:text-amber-400 font-bold">
+                            MOQ min. : {prod.minOrderQuantity || 1} {prod.unit}
+                          </p>
                         </div>
                         <div className="flex gap-1.5">
                           <Link to={`/client/catalogue/${prod.id}`}>
@@ -708,8 +695,7 @@ export const ClientWorkspacePage: React.FC<{
                             size="sm"
                             variant="primary"
                             onClick={() => {
-                              addToCart(prod, 1);
-                              notifyToast(`Produit ${prod.name[locale] || prod.name.fr} ajouté au panier !`, 'success');
+                              addToCart(prod, prod.minOrderQuantity || 1);
                             }}
                           >
                             + Panier
@@ -775,7 +761,7 @@ export const ClientWorkspacePage: React.FC<{
                 </div>
 
                 <div className="flex justify-between pt-2 border-t border-slate-200 dark:border-teal-800">
-                  <Button size="sm" variant="secondary" onClick={() => setComparedProducts([])}>
+                  <Button size="sm" variant="secondary" onClick={() => clearComparison()}>
                     Réinitialiser
                   </Button>
                   <Button size="sm" variant="teal" onClick={() => setIsCompareDrawerOpen(false)}>

@@ -257,12 +257,51 @@ export interface UserProfile {
   delegatedRoomIds?: string[]; // Ponctuel uniquement pour un Client hôte délégué
 }
 
+export type ProductStatus =
+  | 'DRAFT'
+  | 'PENDING_REVIEW'
+  | 'PUBLISHED'
+  | 'ARCHIVED'
+  | 'SUSPENDED';
+
+export interface ProductVariant {
+  id: string;
+  sku: string;
+  name: string;
+  attributes: Record<string, string>; // e.g. { "Conditionnement": "Carton 10kg", "Calibre": "Catégorie 1" }
+  priceDelta: string; // e.g. "+5.00" or "-2.50" or "0.00"
+  stockAvailable: number;
+  isDefault?: boolean;
+}
+
+export interface ProductSpecification {
+  key: string;
+  value: string;
+  category?: string; // e.g. "Technique", "Dimensions", "Normes & Certifications"
+}
+
+export interface ProductCategoryRecord {
+  id: string;
+  code: string;
+  name: Record<Locale, string>;
+  description: Record<Locale, string>;
+  parentCategoryId?: string;
+  icon3d: Icon3DName;
+  imageUrl?: string;
+  displayOrder: number;
+  isActive: boolean;
+  subcategories?: ProductCategoryRecord[];
+}
+
 export interface ProductItem {
   id: string;
   sku: string;
   supplierId: string;
   supplierName: string;
   category: string;
+  categoryId?: string;
+  subcategory?: string;
+  subcategoryId?: string;
   name: Record<Locale, string>;
   description: Record<Locale, string>;
   unitPrice: string; // Decimal string
@@ -272,11 +311,27 @@ export interface ProductItem {
   stockAvailable: number;
   stockReserved: number;
   minStockAlert: number;
+  minOrderQuantity?: number; // MOQ (Minimum Order Quantity)
   icon3d: Icon3DName;
+  photos?: string[];
+  gallery?: string[];
+  specifications?: ProductSpecification[];
+  variants?: ProductVariant[];
   originCountry: string;
   incoterm: string;
   leadTimeDays: number;
   isPublished: boolean;
+  status?: ProductStatus;
+  isReported?: boolean;
+  reportReason?: string;
+  adminRejectionReason?: string;
+  supplierCountry?: string;
+  supplierRating?: number;
+  supplierKycStatus?: string;
+  originalLanguage?: Locale;
+  isAutoTranslated?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface CartItem {

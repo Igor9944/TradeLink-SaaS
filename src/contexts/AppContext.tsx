@@ -32,7 +32,9 @@ import {
   ConversationParticipantDetail,
   MessageAttachment,
   Icon3DName,
+  ProductCategoryRecord,
 } from '../types';
+import { INITIAL_CATALOG_CATEGORIES } from '../services/catalogEngine';
 import i18n from '../i18n/config';
 import { translations } from '../i18n/translations';
 import {
@@ -1288,6 +1290,20 @@ interface AppContextValue {
   currentUser: UserProfile;
   switchUserAccount: (userKey: keyof typeof DEMO_USERS) => void;
   products: ProductItem[];
+  categories: ProductCategoryRecord[];
+  addCategory: (cat: { code: string; name: Record<Locale, string>; description: Record<Locale, string>; parentCategoryId?: string; icon3d?: Icon3DName; imageUrl?: string; displayOrder?: number }) => void;
+  updateCategory: (id: string, updates: Partial<ProductCategoryRecord>) => void;
+  deleteCategory: (id: string) => { ok: boolean; message: string };
+  catalogFavorites: string[];
+  toggleCatalogFavorite: (productId: string) => void;
+  isCatalogFavorite: (productId: string) => boolean;
+  comparisonProductIds: string[];
+  toggleComparisonProduct: (productId: string) => void;
+  clearComparison: () => void;
+  moderateProduct: (productId: string, action: 'APPROVE' | 'REJECT', reason?: string) => void;
+  reportProduct: (productId: string, reason: string) => void;
+  suspendProduct: (productId: string, reason: string) => void;
+  updateProductQuick: (productId: string, stock: number, price: string) => void;
   addProduct: (p: Omit<ProductItem, 'id'>) => void;
   updateProductDetails: (productId: string, sku: string, unitPrice: string, nameFr: string, nameAr: string) => void;
   updateProductStock: (productId: string, delta: number, reason: string) => void;
@@ -1513,6 +1529,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [currentUser, setCurrentUser] = useState<UserProfile>(DEMO_USERS.ADMIN_1);
   const [products, setProducts] = useState<ProductItem[]>(INITIAL_PRODUCTS);
+  const [categories, setCategories] = useState<ProductCategoryRecord[]>(INITIAL_CATALOG_CATEGORIES);
+  const [catalogFavorites, setCatalogFavorites] = useState<string[]>(['prod-01']);
+  const [comparisonProductIds, setComparisonProductIds] = useState<string[]>([]);
   const [cart, setCart] = useState<CartItem[]>([
     { product: INITIAL_PRODUCTS[0], quantity: 2 },
   ]);
@@ -2039,8 +2058,193 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newItems.length;
   };
 
+  const addCategory = (cat: {
+    code: string;
+    name: Record<Locale, string>;
+    description: Record<Locale, string>;
+    parentCategoryId?: string;
+    icon3d?: Icon3DName;
+    imageUrl?: string;
+    displayOrder?: number;
+  }) => {
+    const id = `cat-${cat.code.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString().slice(-4)}`;
+    const record: ProductCategoryRecord = {
+      id,
+      code: cat.code.toUpperCase(),
+      name: cat.name,
+      description: cat.description,
+      parentCategoryId: cat.parentCategoryId,
+      icon3d: cat.icon3d || 'pallet-load',
+      imageUrl: cat.imageUrl,
+      displayOrder: cat.displayOrder || categories.length + 1,
+      isActive: true,
+    };
+    setCategories((prev) => {
+      if (cat.parentCategoryId) {
+        return prev.map((c) =>
+          c.id === cat.parentCategoryId
+            ? { ...c, subcategories: [...(c.subcategories || []), record] }
+            : c
+        );
+      }
+      return [...prev, record];
+    });
+    notifyToast(`Catégorie ${record.name[locale] || record.code} créée avec succès.`, 'success');
+  };
+
+  const updateCategory = (id: string, updates: Partial<ProductCategoryRecord>) => {
+    setCategories((prev) =>
+      prev.map((c) => {
+        if (c.id === id) {
+          return { ...c, ...updates };
+        }
+        if (c.subcategories) {
+          return {
+            ...c,
+            subcategories: c.subcategories.map((sub) =>
+              sub.id === id ? { ...sub, ...updates } : sub
+            ),
+          };
+        }
+        return c;
+      })
+    );
+    notifyToast('Catégorie mise à jour.', 'success');
+  };
+
+  const deleteCategory = (id: string): { ok: boolean; message: string } => {
+    const cat = categories.find((c) => c.id === id);
+    if (cat?.subcategories && cat.subcategories.length > 0) {
+      notifyToast('Impossible de supprimer une catégorie contenant des sous-catégories.', 'error');
+      return { ok: false, message: 'La catégorie possède des sous-catégories.' };
+    }
+    const isLinked = products.some((p) => p.categoryId === id || p.category === cat?.code);
+    if (isLinked) {
+      notifyToast('Impossible de supprimer une catégorie liée à des produits du catalogue.', 'error');
+      return { ok: false, message: 'Des produits sont rattachés à cette catégorie.' };
+    }
+    setCategories((prev) =>
+      prev
+        .filter((c) => c.id !== id)
+        .map((c) => ({
+          ...c,
+          subcategories: c.subcategories?.filter((sub) => sub.id !== id),
+        }))
+    );
+    notifyToast('Catégorie supprimée avec succès.', 'success');
+    return { ok: true, message: 'Catégorie supprimée.' };
+  };
+
+  const toggleCatalogFavorite = (productId: string) => {
+    setCatalogFavorites((prev) => {
+      const exists = prev.includes(productId);
+      const next = exists ? prev.filter((id) => id !== productId) : [...prev, productId];
+      notifyToast(
+        exists ? 'Produit retiré des favoris.' : 'Produit ajouté à votre liste d’envies B2B !',
+        'info'
+      );
+      return next;
+    });
+  };
+
+  const isCatalogFavorite = (productId: string): boolean => {
+    return catalogFavorites.includes(productId);
+  };
+
+  const toggleComparisonProduct = (productId: string) => {
+    setComparisonProductIds((prev) => {
+      if (prev.includes(productId)) {
+        return prev.filter((id) => id !== productId);
+      }
+      if (prev.length >= 4) {
+        notifyToast('Le comparateur est limité à 4 produits simultanément.', 'warning');
+        return prev;
+      }
+      notifyToast('Produit ajouté au comparateur B2B.', 'info');
+      return [...prev, productId];
+    });
+  };
+
+  const clearComparison = () => {
+    setComparisonProductIds([]);
+    notifyToast('Comparateur réinitialisé.', 'info');
+  };
+
+  const moderateProduct = (productId: string, action: 'APPROVE' | 'REJECT', reason?: string) => {
+    if (action === 'REJECT' && !reason?.trim()) {
+      notifyToast('Le motif de rejet est obligatoire.', 'error');
+      return;
+    }
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (p.id !== productId) return p;
+        if (action === 'APPROVE') {
+          return {
+            ...p,
+            status: 'PUBLISHED',
+            isPublished: true,
+            adminRejectionReason: undefined,
+          };
+        } else {
+          return {
+            ...p,
+            status: 'DRAFT',
+            isPublished: false,
+            adminRejectionReason: reason,
+          };
+        }
+      })
+    );
+    notifyToast(
+      action === 'APPROVE'
+        ? `Produit ${productId} validé et publié au catalogue.`
+        : `Produit ${productId} rejeté avec motif envoyé au fournisseur.`,
+      action === 'APPROVE' ? 'success' : 'warning'
+    );
+  };
+
+  const reportProduct = (productId: string, reason: string) => {
+    if (!reason.trim()) {
+      notifyToast('Veuillez préciser le motif du signalement.', 'error');
+      return;
+    }
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === productId ? { ...p, isReported: true, reportReason: reason } : p
+      )
+    );
+    notifyToast('Produit signalé aux administrateurs pour vérification.', 'info');
+  };
+
+  const suspendProduct = (productId: string, reason: string) => {
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === productId
+          ? { ...p, status: 'SUSPENDED', isPublished: false, adminRejectionReason: reason }
+          : p
+      )
+    );
+    notifyToast(`Produit ${productId} suspendu par l'administration.`, 'warning');
+  };
+
+  const updateProductQuick = (productId: string, stock: number, price: string) => {
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === productId
+          ? { ...p, stockAvailable: Math.max(0, stock), unitPrice: price }
+          : p
+      )
+    );
+    notifyToast('Prix et stock mis à jour instantanément.', 'success');
+  };
+
   const addToCart = (product: ProductItem, qty = 1) => {
-    if (qty > product.stockAvailable) {
+    const moq = product.minOrderQuantity || 1;
+    const effectiveQty = Math.max(qty, moq);
+    if (qty < moq) {
+      notifyToast(`Quantité ajustée à la MOQ minimale : ${moq} ${product.unit}`, 'info');
+    }
+    if (effectiveQty > product.stockAvailable) {
       notifyToast(`Stock insuffisant (Disponible : ${product.stockAvailable})`, 'error');
       return;
     }
@@ -2049,13 +2253,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (existing) {
         return prev.map((item) =>
           item.product.id === product.id
-            ? { ...item, quantity: Math.min(product.stockAvailable, item.quantity + qty) }
+            ? { ...item, quantity: Math.min(product.stockAvailable, item.quantity + effectiveQty) }
             : item
         );
       }
-      return [...prev, { product, quantity: qty }];
+      return [...prev, { product, quantity: effectiveQty }];
     });
-    notifyToast(`${product.name[locale]} ajouté au panier B2B`, 'success');
+    notifyToast(`${product.name[locale]} ajouté au panier B2B (${effectiveQty} ${product.unit})`, 'success');
   };
 
   const updateCartQuantity = (productId: string, delta: number) => {
@@ -3802,6 +4006,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentUser,
         switchUserAccount,
         products,
+        categories,
+        addCategory,
+        updateCategory,
+        deleteCategory,
+        catalogFavorites,
+        toggleCatalogFavorite,
+        isCatalogFavorite,
+        comparisonProductIds,
+        toggleComparisonProduct,
+        clearComparison,
+        moderateProduct,
+        reportProduct,
+        suspendProduct,
+        updateProductQuick,
         addProduct,
         updateProductDetails,
         updateProductStock,
