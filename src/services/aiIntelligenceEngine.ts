@@ -779,6 +779,16 @@ export interface RoomParticipantState {
   videoEnabled: boolean;
   screenSharing: boolean;
   joinedAt: string;
+  handRaised?: boolean;
+  raisedHand?: boolean;
+  handRaisedAt?: string;
+  handRaisedIndex?: number;
+  raisedHandOrder?: number;
+  reactionEmoji?: string;
+  isSpeaking?: boolean;
+  audioLevel?: number;
+  connectionQuality?: 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR';
+  networkQuality?: 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR';
 }
 
 export interface LiveRoomChatLine {
@@ -802,22 +812,36 @@ export interface RoomLiveSessionState {
   roomId: string;
   roomCode: string;
   title: string;
+  description?: string;
   creatorId: string;
   creatorName: string;
   creatorRole: UserRoleCode;
   hostUserId: string;
   status: 'SCHEDULED' | 'WAITING' | 'LIVE' | 'ENDED';
   recordingConsent: boolean;
+  isRecording?: boolean;
+  recordingStartedAt?: string;
+  recordingDurationSeconds?: number;
+  recordingKeyAes256?: string;
+  retentionDays?: number;
   screenShareActive: boolean;
   sharedDocumentTitle?: string;
+  sharedDocument?: { id: string; title: string; type: string; url?: string; previewUrl?: string };
+  viewMode?: 'GRID' | 'SPEAKER' | 'SCREEN';
+  activeSpeakerId?: string;
   participants: RoomParticipantState[];
   chatHistory: LiveRoomChatLine[];
   subtitlesHistory: LiveSubtitleLine[];
+  topicsDiscussed?: { id: string; topic: string; detectedAt: string; confidence: number }[];
+  activeReactions?: { id: string; participantId: string; participantName: string; emoji: string; timestamp: number }[];
   aiSummary?: {
     summary: string;
     decisions: string[];
-    actionItems: string[];
+    actionItems: any[];
+    topicsDiscussed?: string[];
     generatedAt: string;
+    certifiedHashSha256?: string;
+    signatureSha256?: string;
   };
 }
 
@@ -960,11 +984,13 @@ L'acheteur accepte les conditions de transport CIP et autorise la facturation co
 export function moderateParticipantAction(
   session: RoomLiveSessionState,
   targetParticipantId: string,
-  action: 'MUTE_MIC' | 'DISABLE_CAM' | 'EXPEL' | 'DELEGATE_HOST' | 'ADMIT' | 'DENY',
+  action: 'MUTE_MIC' | 'DISABLE_CAM' | 'EXPEL' | 'DELEGATE_HOST' | 'ADMIT' | 'DENY' | 'LOWER_HAND',
   actorId: string
 ): { success: boolean; session: RoomLiveSessionState; message: string } {
   const actor = session.participants.find((p) => p.userId === actorId || p.id === actorId);
-  const isActorHost = actor ? actor.isHost || actor.isDelegatedHost : false;
+  const isActorHost = actor
+    ? Boolean(actor.isHost || actor.isDelegatedHost)
+    : (actorId === session.hostUserId || actorId === session.creatorId);
 
   if (!isActorHost) {
     return {
@@ -981,6 +1007,7 @@ export function moderateParticipantAction(
         if (action === 'DISABLE_CAM') return { ...p, videoEnabled: false };
         if (action === 'ADMIT') return { ...p, status: 'CONNECTED' as const, audioEnabled: true, videoEnabled: true };
         if (action === 'DELEGATE_HOST') return { ...p, isDelegatedHost: true };
+        if (action === 'LOWER_HAND') return { ...p, handRaised: false, handRaisedAt: undefined, handRaisedIndex: undefined };
       }
       return p;
     })
@@ -1010,6 +1037,9 @@ export function moderateParticipantAction(
       break;
     case 'DENY':
       message = "Accès refusé au participant dans la salle d'attente.";
+      break;
+    case 'LOWER_HAND':
+      message = 'Main levée du participant abaissée par le modérateur.';
       break;
   }
 

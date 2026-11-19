@@ -241,6 +241,7 @@ export interface UserProfile {
   firstName: string;
   lastName: string;
   companyName: string;
+  avatarUrl?: string;
   role: UserRoleCode;
   permissions: string[];
   mfaEnabled: boolean;
@@ -456,21 +457,114 @@ export interface RoomLiveRecord {
   id: string;
   roomCode: string;
   title: string;
+  description?: string;
   createdById: string;
   creatorName: string;
   creatorRole: UserRoleCode;
   delegatedClientHostId?: string;
-  status: 'SCHEDULED' | 'LIVE' | 'ENDED';
+  status: 'SCHEDULED' | 'WAITING' | 'LIVE' | 'ENDED';
   scheduledAt: string;
+  durationMinutes?: number;
+  isImmediate?: boolean;
+  isScheduled?: boolean;
+  isPrivate?: boolean;
+  hasWaitingRoom?: boolean;
   participantsCount: number;
   allowedUserIds: string[];
+  invitedEmails?: string[];
+  securityToken?: string;
+  hostAccessToken?: string;
   recordingConsent: boolean;
+  isRecording?: boolean;
+  recordingStartedAt?: string;
+  recordingRetentionDays?: number;
+  recordingKey?: string;
   aiSummaryAvailable: boolean;
   aiSummary?: {
     summary: string;
     decisions: string[];
     actionItems: string[];
+    topicsDiscussed?: string[];
+    generatedAt?: string;
+    certifiedHashSha256?: string;
   };
+}
+
+export type RoomViewMode = 'GRID' | 'SPEAKER' | 'SCREEN';
+
+export type RoomParticipantModerationAction =
+  | 'MUTE_MIC'
+  | 'DISABLE_CAM'
+  | 'EXPEL'
+  | 'DELEGATE_HOST'
+  | 'ADMIT'
+  | 'DENY'
+  | 'LOWER_HAND';
+
+export interface RoomLiveReaction {
+  id: string;
+  participantId: string;
+  participantName: string;
+  emoji: string;
+  timestamp: number;
+}
+
+export interface RoomLiveDocumentShare {
+  id: string;
+  title: string;
+  type: string;
+  url?: string;
+  previewUrl?: string;
+  sharedBy: string;
+  sharedAt: string;
+}
+
+export interface RoomLiveTopic {
+  id: string;
+  topic: string;
+  detectedAt: string;
+  confidence: number;
+}
+
+export interface RoomLiveActionItem {
+  id: string;
+  task: string;
+  assigneeName?: string;
+  dueDate?: string;
+  status: 'PENDING' | 'DONE';
+}
+
+export interface RoomLiveAiSummary {
+  summary: string;
+  decisions: string[];
+  actionItems: RoomLiveActionItem[];
+  topicsDiscussed: string[];
+  generatedAt: string;
+  certifiedHashSha256?: string;
+}
+
+export interface RoomLiveAccessTokenPayload {
+  roomId: string;
+  roomCode: string;
+  userId: string;
+  userName: string;
+  userRole: UserRoleCode;
+  isHost: boolean;
+  canPublishAudio: boolean;
+  canPublishVideo: boolean;
+  canPublishScreen: boolean;
+  canModerate: boolean;
+  expiresAt: number;
+}
+
+export type RoomSfuConnectionQuality = 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR';
+
+export interface RoomSfuNetworkStats {
+  rttMs: number;
+  jitterMs: number;
+  packetLossPct: number;
+  quality: RoomSfuConnectionQuality;
+  simulcastLayer: 'HIGH_1080P' | 'MEDIUM_720P' | 'LOW_360P';
 }
 
 export interface ImportJobRecord {

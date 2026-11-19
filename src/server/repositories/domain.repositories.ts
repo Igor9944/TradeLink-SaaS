@@ -260,6 +260,39 @@ export class TradeLinkRepositoryStore {
   }
 
   // ============================================================================
+  // GESTION DES SALLES ROOM LIVE & SFU (PROMPT 07)
+  // ============================================================================
+
+  public getRoom(roomIdOrCode: string): (RoomLiveRecord & { deletedAt?: string | null }) | undefined {
+    return this.state.rooms.find(
+      (r) => (r.id === roomIdOrCode || r.roomCode === roomIdOrCode) && !r.deletedAt
+    );
+  }
+
+  public listRooms(): RoomLiveRecord[] {
+    return this.state.rooms
+      .filter((r) => !r.deletedAt)
+      .map((r) => structuredClone(r));
+  }
+
+  public saveRoom(room: RoomLiveRecord): RoomLiveRecord {
+    const existingIndex = this.state.rooms.findIndex((r) => r.id === room.id);
+    if (existingIndex >= 0) {
+      this.state.rooms[existingIndex] = structuredClone(room);
+    } else {
+      this.state.rooms.push(structuredClone(room));
+    }
+    return structuredClone(room);
+  }
+
+  public updateRoom(roomId: string, partial: Partial<RoomLiveRecord>): RoomLiveRecord | undefined {
+    const room = this.state.rooms.find((r) => (r.id === roomId || r.roomCode === roomId) && !r.deletedAt);
+    if (!room) return undefined;
+    Object.assign(room, partial);
+    return structuredClone(room);
+  }
+
+  // ============================================================================
   // GESTION REPOSITORIES : AUTHENTIFICATION, SESSIONS & AUDIT DE CONNEXION (PROMPT 01)
   // ============================================================================
 
@@ -423,6 +456,10 @@ export class TradeLinkRepositoryStore {
   public addAuditLog(entry: AuditLogRecord): AuditLogRecord {
     this.state.auditLogs.unshift(structuredClone(entry));
     return structuredClone(entry);
+  }
+
+  public listAuditLogs(): AuditLogRecord[] {
+    return [...this.state.auditLogs];
   }
 
   // ============================================================================

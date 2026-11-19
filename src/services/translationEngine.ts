@@ -153,6 +153,21 @@ export class CentralTranslationService {
   }
 
   /**
+   * Traduction dynamique de texte immédiate pour les composants UI
+   */
+  public static translateDynamicText(
+    text: string,
+    sourceLang: SupportedLocale = 'fr',
+    targetLang: SupportedLocale = 'en'
+  ): { translatedText: string; isRtl: boolean } {
+    const res = this.translateTextSync({ text, sourceLang, targetLang });
+    return {
+      translatedText: res.translatedText,
+      isRtl: targetLang === 'ar',
+    };
+  }
+
+  /**
    * 2. Traduction de texte principal avec Cache, Sanitization & Glossaire (Version synchrone haute performance)
    */
   public static translateTextSync(

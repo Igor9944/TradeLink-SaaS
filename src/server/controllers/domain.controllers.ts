@@ -974,17 +974,154 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, history, 200);
     }
 
-    // 6. Room Live — Création contrôlée par rôle (Client interdit en création générale)
+    // ============================================================================
+    // 6. ROOM LIVE & VISIOCONFÉRENCE SFU WEBRTC (PROMPT 07)
+    // ============================================================================
+
+    // 6.1. Liste des salles accessibles
+    if (method === 'GET' && path === '/api/v1/rooms') {
+      const user = requireAuthenticatedSession(ctx);
+      const rooms = this.services.listAccessibleRoomsService(user.id, user.role);
+      return this.ok(ctx, rooms, 200);
+    }
+
+    // 6.2. Création contrôlée par rôle (Client interdit en création générale -> 403)
     if (method === 'POST' && path === '/api/v1/rooms') {
       const user = requireAuthenticatedSession(ctx);
       const room = this.services.createRoomLiveChecked({
-        title: String(ctx.body.title ?? 'Réunion B2B'),
-        scheduledAt: String(ctx.body.scheduledAt ?? '2026-11-20 10:00'),
+        title: String(ctx.body?.title ?? 'Réunion B2B'),
+        scheduledAt: String(ctx.body?.scheduledAt ?? '2026-11-20 10:00'),
         actor: user,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
+        description: ctx.body?.description,
+        isImmediate: ctx.body?.isImmediate,
+        isPrivate: ctx.body?.isPrivate,
+        hasWaitingRoom: ctx.body?.hasWaitingRoom,
+        allowedUserIds: ctx.body?.allowedUserIds,
+        invitedEmails: ctx.body?.invitedEmails,
+        durationMinutes: ctx.body?.durationMinutes,
       });
       return this.ok(ctx, room, 201);
+    }
+
+    // 6.3. Rejoindre une salle ou le lobby Knocking
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/join')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/join', '');
+      const res = this.services.joinRoomLiveService({
+        roomIdOrCode,
+        actor: user,
+        deviceInfo: ctx.body?.deviceInfo,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    // 6.4. Admission d'un participant en salle d'attente (Knocking)
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/lobby/admit')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/lobby/admit', '');
+      const res = this.services.admitLobbyParticipantService(roomIdOrCode, String(ctx.body?.participantId), user);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 6.5. Refus d'un participant en salle d'attente (Knocking)
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/lobby/reject')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/lobby/reject', '');
+      const res = this.services.rejectLobbyParticipantService(roomIdOrCode, String(ctx.body?.participantId), user);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 6.6. Modération des médias & participants
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/moderate')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/moderate', '');
+      const session = this.services.moderateRoomParticipantService(
+        roomIdOrCode,
+        String(ctx.body?.participantId),
+        ctx.body?.action,
+        user
+      );
+      return this.ok(ctx, { session }, 200);
+    }
+
+    // 6.7. Démarrage de l'enregistrement chiffré KMS AES-256 RGPD
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/recording/start')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/recording/start', '');
+      const res = this.services.startRoomRecordingService(roomIdOrCode, user);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 6.8. Arrêt de l'enregistrement & Rétention 90j
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/recording/stop')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/recording/stop', '');
+      const res = this.services.stopRoomRecordingService(roomIdOrCode, user);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 6.9. Synthèse IA post-réunion multilingue & Sceau SHA-256
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/ai-summary')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/ai-summary', '');
+      const targetLocale = (ctx.body?.locale ?? 'fr') as 'fr' | 'en' | 'ar';
+      const summary = this.services.generateRoomAiSummaryService(roomIdOrCode, user, targetLocale);
+      return this.ok(ctx, { ...summary, language: targetLocale }, 200);
+    }
+
+    // 6.10. Partage de document métier certifié
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/documents')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/documents', '');
+      const session = this.services.shareRoomDocumentService(roomIdOrCode, ctx.body?.document, user);
+      return this.ok(ctx, { session }, 200);
+    }
+
+    // 6.11. Lever / Abaisser la main
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/raise-hand')) {
+      requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/raise-hand', '');
+      const session = this.services.raiseHandRoomService(
+        roomIdOrCode,
+        String(ctx.body?.participantId),
+        ctx.body?.isRaised
+      );
+      return this.ok(ctx, { session }, 200);
+    }
+
+    // 6.12. Diffusion de réactions interactives
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/reactions')) {
+      requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/reactions', '');
+      const res = this.services.broadcastRoomReactionService(
+        roomIdOrCode,
+        String(ctx.body?.participantId),
+        String(ctx.body?.emoji)
+      );
+      return this.ok(ctx, res, 200);
+    }
+
+    // 6.13. Inviter des collaborateurs (liens signés HMAC)
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/invite')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/invite', '');
+      const res = this.services.inviteToRoomService(
+        roomIdOrCode,
+        ctx.body?.userIds || [],
+        ctx.body?.emails || [],
+        user
+      );
+      return this.ok(ctx, res, 200);
+    }
+
+    // 6.14. Détails d'une salle & session SFU
+    if (method === 'GET' && path.startsWith('/api/v1/rooms/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '');
+      const details = this.services.getRoomDetailsService(roomIdOrCode, user);
+      return this.ok(ctx, details, 200);
     }
 
     // 7. Moteur de Calcul Financier Déterministe Decimal.js
@@ -1417,18 +1554,19 @@ export class TradeLinkApiApplication {
     // 21F. Ajout d'un terme au glossaire (Admin uniquement)
     if (method === 'POST' && path === '/api/v1/translation/glossary') {
       enforceRBACAndOwnership(ctx, ['ADMIN']);
-      const user = ctx.user!;
+      const user = requireAuthenticatedSession(ctx);
       const { category, termFr, termEn, termAr, context } = ctx.body || {};
       if (!category || !termFr || !termEn || !termAr) {
         throw new AppError(400, 'INVALID_PAYLOAD', 'Tous les termes (FR, EN, AR) et la catégorie sont requis.');
       }
+      const isAdmin = user.role === 'ADMIN';
       const newTerm = this.services.addGlossaryTermService({
         category,
         termFr,
         termEn,
         termAr,
         context,
-        isAdmin: true,
+        isAdmin,
         adminEmail: user.email,
       });
       return this.ok(ctx, newTerm, 201);
@@ -1437,9 +1575,8 @@ export class TradeLinkApiApplication {
     // 21F-bis. Validation administrative d'un terme
     if (method === 'POST' && path.startsWith('/api/v1/translation/glossary/') && path.endsWith('/validate')) {
       enforceRBACAndOwnership(ctx, ['ADMIN']);
-      const user = ctx.user!;
       const termId = path.replace('/api/v1/translation/glossary/', '').replace('/validate', '');
-      const validated = this.services.validateGlossaryTermService(termId, user.email);
+      const validated = this.services.validateGlossaryTermService(termId, ctx.user!.email);
       return this.ok(ctx, validated, 200);
     }
 

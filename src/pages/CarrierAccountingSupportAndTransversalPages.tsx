@@ -3,7 +3,7 @@
 // SUPPORT (69-73) & SERVICES TRANSVERSAUX : ROOM LIVE, OCR/IDP, NOTIFICATIONS, ERREURS (74-79)
 // ============================================================================
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import Decimal from 'decimal.js';
 import {
@@ -39,6 +39,13 @@ import {
   Video,
   VideoOff,
   Wallet,
+  LayoutGrid,
+  Maximize2,
+  Hand,
+  Smile,
+  UserPlus,
+  Disc,
+  Globe,
 } from 'lucide-react';
 import { VoiceDictationButton } from '../components/voice/VoiceDictationButton';
 import { useApp } from '../contexts/AppContext';
@@ -46,6 +53,11 @@ import { downloadDataExport, formatCurrency, translateStatus } from '../i18n/tra
 import { ActorKycWorkspaceView } from '../components/kyc/KycModuleViews';
 import { Icon3D } from '../components/ui/Icon3D';
 import { InteractiveLogisticsMap } from '../components/logistics/InteractiveLogisticsMap';
+import { RoomLiveLobbyView } from '../components/room/RoomLiveLobbyView';
+import { RoomLiveCreateModal } from '../components/room/RoomLiveCreateModal';
+import { RoomLiveShareDocModal } from '../components/room/RoomLiveShareDocModal';
+import { RoomLiveInviteModal } from '../components/room/RoomLiveInviteModal';
+import { CentralTranslationService } from '../services/translationEngine';
 import {
   ProofOfDeliveryData,
   VehicleRecord,
@@ -3936,17 +3948,35 @@ export const SupportWorkspacePage: React.FC<{
 export const RoomLiveSessionPage: React.FC = () => {
   const {
     activeRoomSession,
+    roomViewMode,
+    setRoomViewMode,
     moderateRoomParticipant,
     toggleRoomMedia,
     sendRoomChatMessage,
     addRoomSubtitle,
     exportRoomCertifiedSummary,
+    toggleRaiseHand,
+    broadcastRoomReaction,
+    startRoomRecording,
+    stopRoomRecording,
+    generateRoomAiSummary,
+    shareRoomDocument,
+    stopSharingRoomDocument,
     currentUser,
+    notifyToast,
   } = useApp();
 
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [shareDocModalOpen, setShareDocModalOpen] = useState(false);
+  const [inviteModalOpen, setInviteModalOpen] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [showLobbyPreview, setShowLobbyPreview] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [subtitleInput, setSubtitleInput] = useState('');
+  const [recordingSeconds, setRecordingSeconds] = useState(145);
+  const [summaryLocale, setSummaryLocale] = useState<'fr' | 'en' | 'ar'>('fr');
+  const [translatedMessages, setTranslatedMessages] = useState<Record<string, { lang: string; text: string }>>({});
+  const [reactionsOpen, setReactionsOpen] = useState(false);
 
   // Identifier le participant actuel
   const myParticipant = activeRoomSession.participants.find(
@@ -3955,6 +3985,30 @@ export const RoomLiveSessionPage: React.FC = () => {
   const isHost = myParticipant?.isHost || !!myParticipant?.isDelegatedHost;
   const isClient = currentUser.role === 'CLIENT';
 
+  // Timer de l'enregistrement si actif
+  useEffect(() => {
+    if (!activeRoomSession.isRecording) return;
+    const interval = setInterval(() => {
+      setRecordingSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [activeRoomSession.isRecording]);
+
+  const formatDuration = (sec: number) => {
+    const m = Math.floor(sec / 60).toString().padStart(2, '0');
+    const s = (sec % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  // Traduction instantanée d'un message du chat
+  const handleTranslateMessage = (msgId: string, text: string, targetLang: 'fr' | 'en' | 'ar') => {
+    const result = CentralTranslationService.translateDynamicText(text, 'fr', targetLang);
+    setTranslatedMessages((prev) => ({
+      ...prev,
+      [msgId]: { lang: targetLang.toUpperCase(), text: result.translatedText },
+    }));
+  };
+
   const connectedParticipants = activeRoomSession.participants.filter(
     (p) => p.status === 'CONNECTED'
   );
@@ -3962,8 +4016,42 @@ export const RoomLiveSessionPage: React.FC = () => {
     (p) => p.status === 'WAITING_ROOM'
   );
 
+  // Si le participant est dans la salle d'attente (Knocking) ou souhaite tester ses périphériques
+  if ((myParticipant?.status === 'WAITING_ROOM' || showLobbyPreview) && !isHost) {
+    return (
+      <RoomLiveLobbyView
+        roomTitle={activeRoomSession.title}
+        roomCode={activeRoomSession.roomCode}
+        creatorName={activeRoomSession.creatorName}
+        isAdmitted={myParticipant?.status === 'CONNECTED'}
+        onEnterRoom={() => setShowLobbyPreview(false)}
+      />
+    );
+  }
+
+  // Sélection du participant principal en mode Intervenant (SPEAKER)
+  const activeSpeaker =
+    connectedParticipants.find((p) => p.isSpeaking) ||
+    connectedParticipants.find((p) => p.id === activeRoomSession.activeSpeakerId) ||
+    connectedParticipants[0];
+
   return (
-    <div className="space-y-6">
+    <div className="relative space-y-6">
+      {/* Réactions éphémères interactives flottantes */}
+      {activeRoomSession.activeReactions && activeRoomSession.activeReactions.length > 0 && (
+        <div className="fixed bottom-24 right-8 pointer-events-none z-50 flex flex-col items-end gap-2">
+          {activeRoomSession.activeReactions.slice(-4).map((reaction) => (
+            <div
+              key={reaction.id}
+              className="animate-bounce bg-[#061E22]/90 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-teal-500/80 shadow-2xl flex items-center gap-2 text-white text-xs"
+            >
+              <span className="text-xl">{reaction.emoji}</span>
+              <span className="font-semibold text-teal-200">{reaction.participantName}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="rounded-3xl bg-[#062023] text-white p-6 border border-teal-700 shadow-2xl space-y-6">
         {/* Entête de la salle Room Live */}
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -3971,10 +4059,17 @@ export const RoomLiveSessionPage: React.FC = () => {
             <Icon3D name="support" size="lg" withGlow />
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="success">LIVE WEBRTC / SFU LIVEKIT</Badge>
-                <Badge variant="orange">CONSENTEMENT ENREGISTREMENT ACTIF</Badge>
+                <Badge variant="success">LIVE WEBRTC / SFU SIMULCAST</Badge>
+                {activeRoomSession.isRecording ? (
+                  <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-600/90 text-white animate-pulse">
+                    <span className="w-2 h-2 rounded-full bg-white" />
+                    REC [{formatDuration(recordingSeconds)}] • KMS AES-256 (90j)
+                  </span>
+                ) : (
+                  <Badge variant="orange">CONSENTEMENT ENREGISTREMENT ACTIF</Badge>
+                )}
                 <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-teal-900 text-teal-200 border border-teal-700">
-                  Rétention 90j RGPD
+                  Rétention 90j RGPD (Art. L. 123-22)
                 </span>
               </div>
               <h1 className="text-xl font-extrabold mt-1">{activeRoomSession.title}</h1>
@@ -3984,15 +4079,79 @@ export const RoomLiveSessionPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Button variant="primary" onClick={() => setSummaryOpen(true)}>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Bascule Grille / Intervenant Principal */}
+            <div className="flex items-center bg-black/50 p-1 rounded-xl border border-teal-800">
+              <button
+                type="button"
+                onClick={() => setRoomViewMode('GRID')}
+                className={`p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                  roomViewMode === 'GRID' ? 'bg-[#E85D22] text-white' : 'text-teal-300 hover:text-white'
+                }`}
+                title="Vue Grille"
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Grille</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRoomViewMode('SPEAKER')}
+                className={`p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                  roomViewMode === 'SPEAKER' ? 'bg-[#E85D22] text-white' : 'text-teal-300 hover:text-white'
+                }`}
+                title="Vue Intervenant"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Intervenant</span>
+              </button>
+            </div>
+
+            {/* Test Lobby */}
+            <Button size="sm" variant="secondary" onClick={() => setShowLobbyPreview(true)}>
+              Tester Lobby
+            </Button>
+
+            {/* Enregistrement Host Control */}
+            {isHost && (
+              <Button
+                size="sm"
+                variant={activeRoomSession.isRecording ? 'danger' : 'secondary'}
+                onClick={() => {
+                  if (activeRoomSession.isRecording) {
+                    stopRoomRecording();
+                  } else {
+                    startRoomRecording();
+                  }
+                }}
+              >
+                <Disc className={`w-3.5 h-3.5 ${activeRoomSession.isRecording ? 'animate-spin' : ''}`} />
+                {activeRoomSession.isRecording ? 'Arrêter Enregistrement' : 'Enregistrer (RGPD)'}
+              </Button>
+            )}
+
+            {/* Inviter Collaborateur */}
+            <Button size="sm" variant="secondary" onClick={() => setInviteModalOpen(true)}>
+              <UserPlus className="w-3.5 h-3.5" />
+              Inviter
+            </Button>
+
+            {/* Nouvelle Salle pour Rôles Habilités (Client exclu) */}
+            {!isClient && (
+              <Button size="sm" variant="secondary" onClick={() => setCreateModalOpen(true)}>
+                <PlusCircle className="w-3.5 h-3.5" />
+                Nouvelle Salle
+              </Button>
+            )}
+
+            {/* Compte Rendu IA & Décisions */}
+            <Button variant="primary" size="sm" onClick={() => setSummaryOpen(true)}>
               <Sparkles className="w-4 h-4" />
-              Compte Rendu IA & Décisions (PDF)
+              Compte Rendu IA
             </Button>
           </div>
         </div>
 
-        {/* Bannière de sensibilisation aux rôles & permissions (Règle stricte Prompt 10) */}
+        {/* Bannière de sensibilisation aux rôles & permissions (Règle stricte Prompt 07) */}
         {isClient ? (
           <div className="p-3.5 rounded-2xl bg-teal-950/80 border border-teal-700/80 flex items-center justify-between gap-3 text-xs">
             <div className="flex items-center gap-2.5">
@@ -4006,14 +4165,14 @@ export const RoomLiveSessionPage: React.FC = () => {
                 )}
               </span>
             </div>
-            <Badge variant="info">Rôle Client</Badge>
+            <Badge variant="info">Rôle Client Invité</Badge>
           </div>
         ) : (
           <div className="p-3.5 rounded-2xl bg-[#092B2F] border border-teal-800 flex items-center justify-between gap-3 text-xs text-teal-200">
             <div className="flex items-center gap-2.5">
               <ShieldCheck className="w-4 h-4 text-[#E85D22] shrink-0" />
               <span>
-                <strong>Modération SFU Active (Rôle {currentUser.role}) :</strong> Vous disposez des autorisations de modération pour gérer les participants, le micro et la salle d'attente.
+                <strong>Modération SFU Active (Rôle {currentUser.role}) :</strong> Vous disposez des autorisations de modération pour gérer les flux médias, expulser et valider la salle d'attente.
               </span>
             </div>
             <Badge variant="orange">{currentUser.role} Hôte</Badge>
@@ -4081,128 +4240,247 @@ export const RoomLiveSessionPage: React.FC = () => {
         {/* VideoGrid, Partage d'écran & ChatPanel */}
         <div className="grid lg:grid-cols-12 gap-6">
           <div className="lg:col-span-8 space-y-4">
-            {/* Si partage d'écran actif, aperçu du document partagé */}
+            {/* Si partage d'écran / document actif */}
             {activeRoomSession.screenShareActive && (
               <div className="rounded-2xl border-2 border-[#E85D22] bg-[#071E21] p-4 text-xs space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <MonitorUp className="w-4 h-4 text-[#E85D22]" />
                     <span className="font-bold text-orange-300">
-                      DOCUMENT PARTAGÉ À L'ÉCRAN : {activeRoomSession.sharedDocumentTitle}
+                      DOCUMENT PARTAGÉ À L'ÉCRAN : {activeRoomSession.sharedDocumentTitle || 'Lettre de Voiture e-CMR'}
                     </span>
                   </div>
-                  <Badge variant="orange">Diffusion HD 1080p</Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="orange">Diffusion HD 1080p</Badge>
+                    <Button size="sm" variant="danger" onClick={() => stopSharingRoomDocument()}>
+                      Arrêter
+                    </Button>
+                  </div>
                 </div>
                 <div className="p-4 rounded-xl bg-black/50 border border-teal-800 font-mono text-[11px] space-y-2">
                   <div className="flex justify-between border-b border-teal-800 pb-2">
-                    <span>LETTRE DE VOITURE CMR e-CMR #CMR-2026-9901</span>
-                    <span>Scellé Douanier : #MA-88190</span>
+                    <span>DOCUMENT OFFICIEL : {activeRoomSession.sharedDocument?.title || 'CMR-2026-9901'}</span>
+                    <span>Scellé Numérique : #TRADELINK-SFU-SECURE</span>
                   </div>
-                  <p>Incoterm : CIP Aéroport Mohammed V (CMN) Casablanca</p>
-                  <p>Protocole Thermique GDP : +2.0°C à +6.0°C (Sonde active #GDP-9941-DE)</p>
-                  <p className="text-emerald-400 font-bold">Statut du lot : Conforme sans excursion de température</p>
+                  <p>Type de Document : {activeRoomSession.sharedDocument?.type || 'TRANSPORT'} • Contrôle Douanier Validé</p>
+                  <p className="text-emerald-400 font-bold">Certification Intégrité SHA-256 Validée en Temps Réel</p>
                 </div>
               </div>
             )}
 
-            {/* Grille des flux vidéo des participants */}
-            <div className="grid sm:grid-cols-2 gap-4">
-              {connectedParticipants.map((part) => {
-                const isMe = part.userId === currentUser.id;
-                return (
-                  <div
-                    key={part.id}
-                    className={`relative rounded-2xl overflow-hidden h-52 border-2 transition-all ${
-                      part.isHost ? 'border-[#E85D22]' : 'border-teal-800'
-                    }`}
-                  >
-                    {part.videoEnabled ? (
-                      <img
-                        src={part.avatarUrl}
-                        alt={part.name}
-                        className="w-full h-full object-cover opacity-85"
-                      />
-                    ) : (
-                      <div className="w-full h-full bg-[#082225] flex flex-col items-center justify-center gap-2 text-slate-400">
-                        <VideoOff className="w-8 h-8 text-teal-600" />
-                        <span className="text-xs">Caméra désactivée</span>
-                      </div>
-                    )}
+            {/* Vue Vidéo selon Mode : Grille ou Intervenant Principal */}
+            {roomViewMode === 'SPEAKER' && activeSpeaker ? (
+              <div className="space-y-3">
+                {/* Intervenant Principal (Hero) */}
+                <div className="relative rounded-2xl overflow-hidden h-72 sm:h-80 border-2 border-[#E85D22] bg-[#082225] shadow-2xl">
+                  {activeSpeaker.videoEnabled ? (
+                    <img
+                      src={activeSpeaker.avatarUrl}
+                      alt={activeSpeaker.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-slate-400">
+                      <VideoOff className="w-10 h-10 text-teal-600" />
+                      <span className="text-xs">Caméra coupée</span>
+                    </div>
+                  )}
 
-                    {/* Superposition des contrôles & métadonnées du participant */}
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent p-3 flex flex-col justify-between">
-                      <div className="flex items-center justify-between">
-                        <span className="px-2 py-0.5 rounded bg-black/70 text-[10px] font-mono text-teal-300">
-                          HD • SFU STUN/TURN
-                        </span>
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className={`p-1 rounded-md text-[10px] ${
-                              part.audioEnabled ? 'bg-emerald-500/30 text-emerald-300' : 'bg-red-500/40 text-red-300'
-                            }`}
-                          >
-                            {part.audioEnabled ? <Mic className="w-3 h-3" /> : <MicOff className="w-3 h-3" />}
+                  {/* Overlay Intervenant */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent p-4 flex flex-col justify-between">
+                    <div className="flex items-center justify-between">
+                      <span className="px-2.5 py-0.5 rounded-full bg-[#E85D22] text-xs font-bold text-white flex items-center gap-1.5 shadow">
+                        <span className="w-2 h-2 rounded-full bg-white animate-ping" />
+                        Intervenant Principal
+                      </span>
+                      <div className="flex items-center gap-2">
+                        {activeSpeaker.isSpeaking && (
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/80 text-[10px] font-bold text-white animate-pulse">
+                            En train de parler...
                           </span>
-                          {part.isHost && (
-                            <Badge variant="orange">Hôte</Badge>
-                          )}
-                          {part.isDelegatedHost && !part.isHost && (
-                            <Badge variant="info">Co-Hôte Délégué</Badge>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <p className="text-sm font-bold text-white">
-                              {part.name} {isMe && `(Vous)`}
-                            </p>
-                            <p className="text-[11px] text-orange-300 font-medium">{part.role}</p>
-                          </div>
-                        </div>
-
-                        {/* Menu de modération réservé à l'hôte */}
-                        {isHost && !isMe && (
-                          <div className="flex flex-wrap gap-1 pt-1 border-t border-teal-800/80 text-[10px]">
-                            <button
-                              type="button"
-                              onClick={() => moderateRoomParticipant(part.id, 'MUTE_MIC')}
-                              className="px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/90 text-teal-200 transition-colors"
-                            >
-                              Muter
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => moderateRoomParticipant(part.id, 'DISABLE_CAM')}
-                              className="px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/90 text-teal-200 transition-colors"
-                            >
-                              Couper Cam
-                            </button>
-                            {!part.isDelegatedHost && (
-                              <button
-                                type="button"
-                                onClick={() => moderateRoomParticipant(part.id, 'DELEGATE_HOST')}
-                                className="px-1.5 py-0.5 rounded bg-[#E85D22]/80 hover:bg-[#E85D22] text-white transition-colors"
-                              >
-                                Déléguer Hôte
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => moderateRoomParticipant(part.id, 'EXPEL')}
-                              className="px-1.5 py-0.5 rounded bg-red-600/80 hover:bg-red-600 text-white transition-colors"
-                            >
-                              Exclure
-                            </button>
-                          </div>
                         )}
+                        <span className="px-2 py-0.5 rounded bg-black/70 text-[10px] font-mono text-teal-300">
+                          SFU Simulcast 1080p
+                        </span>
                       </div>
                     </div>
+
+                    <div className="flex items-end justify-between">
+                      <div>
+                        <p className="text-base font-black text-white">{activeSpeaker.name}</p>
+                        <p className="text-xs text-orange-300">{activeSpeaker.role}</p>
+                      </div>
+                      {activeSpeaker.raisedHand && (
+                        <span className="px-2.5 py-1 rounded-full bg-amber-500 text-white font-bold text-xs flex items-center gap-1 shadow-lg">
+                          <Hand className="w-3.5 h-3.5" />
+                          Main #{activeSpeaker.raisedHandOrder || 1}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                );
-              })}
-            </div>
+                </div>
+
+                {/* Bandeau inférieur des autres participants */}
+                <div className="flex gap-3 overflow-x-auto pb-2">
+                  {connectedParticipants
+                    .filter((p) => p.id !== activeSpeaker.id)
+                    .map((part) => (
+                      <div
+                        key={part.id}
+                        className="relative rounded-xl overflow-hidden w-40 h-28 shrink-0 border border-teal-800 bg-[#082225]"
+                      >
+                        {part.videoEnabled ? (
+                          <img
+                            src={part.avatarUrl}
+                            alt={part.name}
+                            className="w-full h-full object-cover opacity-85"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-slate-500 text-[10px]">
+                            Cam coupée
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent p-1.5 flex flex-col justify-between text-[10px]">
+                          <div className="flex justify-end">
+                            {part.audioEnabled ? (
+                              <Mic className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <MicOff className="w-3 h-3 text-red-400" />
+                            )}
+                          </div>
+                          <p className="font-bold text-white truncate">{part.name}</p>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            ) : (
+              /* Vue Grille Classique */
+              <div className="grid sm:grid-cols-2 gap-4">
+                {connectedParticipants.map((part) => {
+                  const isMe = part.userId === currentUser.id;
+                  const isSpeaking = part.isSpeaking;
+                  return (
+                    <div
+                      key={part.id}
+                      className={`relative rounded-2xl overflow-hidden h-52 border-2 transition-all ${
+                        isSpeaking
+                          ? 'border-emerald-400 ring-4 ring-emerald-500/50 shadow-[0_0_20px_rgba(52,211,153,0.3)]'
+                          : part.isHost
+                          ? 'border-[#E85D22]'
+                          : 'border-teal-800'
+                      }`}
+                    >
+                      {part.videoEnabled ? (
+                        <img
+                          src={part.avatarUrl}
+                          alt={part.name}
+                          className="w-full h-full object-cover opacity-90"
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-[#082225] flex flex-col items-center justify-center gap-2 text-slate-400">
+                          <VideoOff className="w-8 h-8 text-teal-600" />
+                          <span className="text-xs">Caméra désactivée</span>
+                        </div>
+                      )}
+
+                      {/* Superposition des contrôles & métadonnées du participant */}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent p-3 flex flex-col justify-between">
+                        <div className="flex items-center justify-between">
+                          <span className="px-2 py-0.5 rounded bg-black/70 text-[10px] font-mono text-teal-300">
+                            {part.networkQuality || 'EXCELLENT'} • Simulcast
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {isSpeaking && (
+                              <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-emerald-500 text-[10px] font-bold text-white animate-pulse">
+                                <span className="w-1 h-2 bg-white rounded-full animate-bounce" />
+                                <span className="w-1 h-3 bg-white rounded-full animate-bounce [animation-delay:0.1s]" />
+                                <span className="w-1 h-2 bg-white rounded-full animate-bounce [animation-delay:0.2s]" />
+                              </span>
+                            )}
+                            <span
+                              className={`p-1 rounded-md text-[10px] ${
+                                part.audioEnabled ? 'bg-emerald-500/30 text-emerald-300' : 'bg-red-500/40 text-red-300'
+                              }`}
+                            >
+                              {part.audioEnabled ? <Mic className="w-3 h-3" /> : <MicOff className="w-3 h-3" />}
+                            </span>
+                            {part.isHost && (
+                              <Badge variant="orange">Hôte</Badge>
+                            )}
+                            {part.isDelegatedHost && !part.isHost && (
+                              <Badge variant="info">Co-Hôte</Badge>
+                            )}
+                            {part.raisedHand && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-500 text-[10px] font-bold text-white flex items-center gap-1">
+                                <Hand className="w-3 h-3" />
+                                #{part.raisedHandOrder || 1}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-bold text-white">
+                                {part.name} {isMe && `(Vous)`}
+                              </p>
+                              <p className="text-[11px] text-orange-300 font-medium">{part.role}</p>
+                            </div>
+                          </div>
+
+                          {/* Menu de modération réservé à l'hôte */}
+                          {isHost && !isMe && (
+                            <div className="flex flex-wrap gap-1 pt-1 border-t border-teal-800/80 text-[10px]">
+                              <button
+                                type="button"
+                                onClick={() => moderateRoomParticipant(part.id, 'MUTE_MIC')}
+                                className="px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/90 text-teal-200 transition-colors"
+                              >
+                                Muter
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => moderateRoomParticipant(part.id, 'DISABLE_CAM')}
+                                className="px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/90 text-teal-200 transition-colors"
+                              >
+                                Couper Cam
+                              </button>
+                              {part.raisedHand && (
+                                <button
+                                  type="button"
+                                  onClick={() => moderateRoomParticipant(part.id, 'LOWER_HAND')}
+                                  className="px-1.5 py-0.5 rounded bg-amber-600/80 hover:bg-amber-600 text-white transition-colors"
+                                >
+                                  Abaisser Main
+                                </button>
+                              )}
+                              {!part.isDelegatedHost && (
+                                <button
+                                  type="button"
+                                  onClick={() => moderateRoomParticipant(part.id, 'DELEGATE_HOST')}
+                                  className="px-1.5 py-0.5 rounded bg-[#E85D22]/80 hover:bg-[#E85D22] text-white transition-colors"
+                                >
+                                  Déléguer Hôte
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => moderateRoomParticipant(part.id, 'EXPEL')}
+                                className="px-1.5 py-0.5 rounded bg-red-600/80 hover:bg-red-600 text-white transition-colors"
+                              >
+                                Exclure
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Bandeau de sous-titres IA en temps réel (Composant 56) */}
             <div className="rounded-2xl bg-black/60 border border-teal-800 p-3.5 space-y-2">
@@ -4211,7 +4489,7 @@ export const RoomLiveSessionPage: React.FC = () => {
                   <Sparkles className="w-3.5 h-3.5 text-[#E85D22]" />
                   Transcription IA & Sous-Titres Temps Réel (Composant 56) :
                 </span>
-                <span className="text-slate-400 font-mono text-[10px]">Français / Anglais / Arabe</span>
+                <span className="text-slate-400 font-mono text-[10px]">Français / English / العربية</span>
               </div>
               <div className="p-2.5 rounded-xl bg-teal-950/60 border border-teal-800/60 text-xs">
                 {activeRoomSession.subtitlesHistory.length > 0 ? (
@@ -4248,28 +4526,68 @@ export const RoomLiveSessionPage: React.FC = () => {
             </div>
           </div>
 
-          {/* ChatPanel intégré (Composant 55) */}
+          {/* ChatPanel intégré avec Traduction Instantanée (Composants 55 & 58) */}
           <div className="lg:col-span-4 rounded-2xl bg-[#092B2F] border border-teal-800 p-4 flex flex-col justify-between h-full min-h-[460px]">
             <div className="space-y-3 overflow-y-auto text-xs max-h-[380px] pe-1">
               <div className="flex items-center justify-between border-b border-teal-800 pb-2">
-                <p className="font-bold text-orange-300 uppercase tracking-wide">
-                  Chat de Salle (Composant 55)
+                <p className="font-bold text-orange-300 uppercase tracking-wide flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5" />
+                  Chat Trilingue (FR/EN/AR)
                 </p>
                 <span className="text-[10px] text-teal-400 font-mono">
                   {activeRoomSession.chatHistory.length} messages
                 </span>
               </div>
-              {activeRoomSession.chatHistory.map((c) => (
-                <div key={c.id} className="p-2.5 rounded-xl bg-black/40 border border-teal-800/70 space-y-1">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className="font-bold text-teal-200">
-                      {c.senderName} ({c.senderRole})
-                    </span>
-                    <span className="text-slate-400 font-mono">{c.timestamp}</span>
+              {activeRoomSession.chatHistory.map((c) => {
+                const translation = translatedMessages[c.id];
+                return (
+                  <div key={c.id} className="p-2.5 rounded-xl bg-black/40 border border-teal-800/70 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="font-bold text-teal-200">
+                        {c.senderName} ({c.senderRole})
+                      </span>
+                      <span className="text-slate-400 font-mono">{c.timestamp}</span>
+                    </div>
+                    <p className="text-slate-100">{c.text}</p>
+
+                    {/* Affichage de la traduction instantanée si demandée */}
+                    {translation && (
+                      <div className="p-2 rounded-lg bg-teal-950/80 border border-teal-700/60 text-[11px] text-teal-200 italic space-y-0.5">
+                        <span className="text-[9px] font-bold text-orange-300 not-italic uppercase">
+                          Traduction IA [{translation.lang}] :
+                        </span>
+                        <p>{translation.text}</p>
+                      </div>
+                    )}
+
+                    {/* Boutons d'action de traduction */}
+                    <div className="flex items-center gap-2 pt-1 border-t border-teal-900/60 text-[9px]">
+                      <span className="text-slate-400">Traduire :</span>
+                      <button
+                        type="button"
+                        onClick={() => handleTranslateMessage(c.id, c.text, 'en')}
+                        className="text-teal-300 hover:text-white transition-colors"
+                      >
+                        EN
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleTranslateMessage(c.id, c.text, 'ar')}
+                        className="text-teal-300 hover:text-white transition-colors"
+                      >
+                        AR
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleTranslateMessage(c.id, c.text, 'fr')}
+                        className="text-teal-300 hover:text-white transition-colors"
+                      >
+                        FR
+                      </button>
+                    </div>
                   </div>
-                  <p className="text-slate-100">{c.text}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <form
@@ -4303,7 +4621,7 @@ export const RoomLiveSessionPage: React.FC = () => {
           </div>
         </div>
 
-        {/* ControlBar (Composant 54) */}
+        {/* ControlBar Complète (Composant 54) */}
         <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-teal-800">
           <Button
             variant={myParticipant?.audioEnabled ? 'secondary' : 'danger'}
@@ -4312,6 +4630,7 @@ export const RoomLiveSessionPage: React.FC = () => {
             {myParticipant?.audioEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
             {myParticipant?.audioEnabled ? 'Micro Actif' : 'Micro Coupé'}
           </Button>
+
           <Button
             variant={myParticipant?.videoEnabled ? 'secondary' : 'danger'}
             onClick={() => toggleRoomMedia('video')}
@@ -4319,13 +4638,61 @@ export const RoomLiveSessionPage: React.FC = () => {
             {myParticipant?.videoEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
             {myParticipant?.videoEnabled ? 'Caméra Active' : 'Caméra Coupée'}
           </Button>
+
+          {/* Bouton Lever / Abaisser la Main */}
+          <Button
+            variant={myParticipant?.raisedHand ? 'danger' : 'secondary'}
+            onClick={() => toggleRaiseHand()}
+          >
+            <Hand className="w-4 h-4" />
+            {myParticipant?.raisedHand
+              ? `Main Levée (#${myParticipant.raisedHandOrder || 1})`
+              : 'Lever la Main'}
+          </Button>
+
+          {/* Menu Réactions Interactives */}
+          <div className="relative">
+            <Button
+              variant="secondary"
+              onClick={() => setReactionsOpen((prev) => !prev)}
+            >
+              <Smile className="w-4 h-4" />
+              Réactions
+            </Button>
+            {reactionsOpen && (
+              <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 p-2 rounded-2xl bg-[#092B2F] border border-teal-700 shadow-2xl flex items-center gap-2 z-40">
+                {['👍', '👏', '❤️', '🎉', '💡', '✋'].map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => {
+                      broadcastRoomReaction(emoji);
+                      setReactionsOpen(false);
+                    }}
+                    className="p-1.5 hover:scale-125 transition-transform text-lg"
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Partage de Documents / Écran */}
           <Button
             variant={activeRoomSession.screenShareActive ? 'primary' : 'secondary'}
-            onClick={() => toggleRoomMedia('screen')}
+            onClick={() => {
+              if (activeRoomSession.screenShareActive) {
+                stopSharingRoomDocument();
+              } else {
+                setShareDocModalOpen(true);
+              }
+            }}
           >
             <MonitorUp className="w-4 h-4" />
-            {activeRoomSession.screenShareActive ? 'Arrêter Partage d’écran' : 'Partager Document / CMR'}
+            {activeRoomSession.screenShareActive ? 'Arrêter Partage' : 'Partager Document / CMR'}
           </Button>
+
           <Link to="/client/dashboard">
             <Button variant="danger">
               <PhoneOff className="w-4 h-4" />
@@ -4335,7 +4702,7 @@ export const RoomLiveSessionPage: React.FC = () => {
         </div>
       </div>
 
-      {/* AISummaryModal (Composant 57) */}
+      {/* AISummaryModal Trilingue (Composant 57) */}
       <Modal
         open={summaryOpen}
         onClose={() => setSummaryOpen(false)}
@@ -4343,15 +4710,61 @@ export const RoomLiveSessionPage: React.FC = () => {
       >
         {activeRoomSession.aiSummary && (
           <div className="space-y-4 text-xs">
+            {/* Sélecteur de Langue de Traduction du Compte Rendu */}
+            <div className="flex items-center justify-between p-3 rounded-xl bg-teal-950/60 border border-teal-800">
+              <span className="font-bold text-teal-200 flex items-center gap-1.5">
+                <Globe className="w-4 h-4 text-[#E85D22]" />
+                Langue du Rapport IA :
+              </span>
+              <div className="flex gap-1.5">
+                {(['fr', 'en', 'ar'] as const).map((lang) => (
+                  <button
+                    key={lang}
+                    type="button"
+                    onClick={() => {
+                      setSummaryLocale(lang);
+                      generateRoomAiSummary(lang);
+                    }}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold uppercase transition-colors ${
+                      summaryLocale === lang
+                        ? 'bg-[#E85D22] text-white'
+                        : 'bg-black/40 text-teal-300 hover:text-white'
+                    }`}
+                  >
+                    {lang}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="font-bold text-sm">Synthèse Executive Générée par l'IA :</span>
-                <Badge variant="success">Généré par TradeLink AI</Badge>
+                <Badge variant="success">TradeLink AI Certified</Badge>
               </div>
               <p className="leading-relaxed text-slate-700 dark:text-slate-200">
                 {activeRoomSession.aiSummary.summary}
               </p>
             </div>
+
+            {/* Sujets Abordés */}
+            {activeRoomSession.aiSummary.topicsDiscussed && activeRoomSession.aiSummary.topicsDiscussed.length > 0 && (
+              <div>
+                <p className="font-bold mb-1.5 text-slate-900 dark:text-slate-100">
+                  Sujets Principaux Abordés en Séance :
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {activeRoomSession.aiSummary.topicsDiscussed.map((topic, idx) => (
+                    <span
+                      key={idx}
+                      className="px-2.5 py-1 rounded-lg bg-teal-500/10 border border-teal-500/30 text-teal-300 font-mono text-[11px]"
+                    >
+                      # {topic}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div>
               <p className="font-bold mb-1.5 text-slate-900 dark:text-slate-100">
@@ -4372,24 +4785,37 @@ export const RoomLiveSessionPage: React.FC = () => {
                 Actions à mener & Responsables :
               </p>
               <ul className="space-y-1.5">
-                {activeRoomSession.aiSummary.actionItems.map((a, idx) => (
-                  <li key={idx} className="flex items-center gap-2 p-2 rounded-xl bg-slate-100 dark:bg-[#0A292C] border border-slate-200 dark:border-teal-800">
-                    <span className="w-2 h-2 rounded-full bg-[#E85D22]" />
-                    <span>{a}</span>
-                  </li>
-                ))}
+                {activeRoomSession.aiSummary.actionItems.map((a, idx) => {
+                  const taskText = typeof a === 'string' ? a : `${a.task} (${a.assigneeName || a.assigneeRole} - Échéance : ${a.dueDate || 'J+3'})`;
+                  return (
+                    <li key={idx} className="flex items-center gap-2 p-2 rounded-xl bg-slate-100 dark:bg-[#0A292C] border border-slate-200 dark:border-teal-800">
+                      <span className="w-2 h-2 rounded-full bg-[#E85D22]" />
+                      <span>{taskText}</span>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
+
+            {/* Sceau Cryptographique SHA-256 */}
+            {(activeRoomSession.aiSummary.signatureSha256 || activeRoomSession.aiSummary.certifiedHashSha256) && (
+              <div className="p-3 rounded-xl bg-black/40 border border-teal-800/80 font-mono text-[10px] space-y-1">
+                <span className="text-slate-400">Empreinte Cryptographique SHA-256 du Compte Rendu :</span>
+                <p className="text-orange-300 break-all">
+                  {activeRoomSession.aiSummary.signatureSha256 || activeRoomSession.aiSummary.certifiedHashSha256}
+                </p>
+              </div>
+            )}
 
             <div className="p-3 rounded-xl bg-teal-50 dark:bg-[#062023] border border-teal-200 dark:border-teal-800 text-[11px] space-y-1 text-slate-600 dark:text-teal-300">
               <p className="font-bold text-teal-800 dark:text-teal-200">
                 🔒 Mentions Légales & Rétention Réglementaire :
               </p>
               <p>
-                - Enregistrement consenti et conforme au RGPD par tous les participants.
+                - Enregistrement consenti et conforme au RGPD (Art. 6 & 7) par l'ensemble des participants.
               </p>
               <p>
-                - Conservation stricte de 90 jours conformément à l'article L. 123-22 du Code de Commerce.
+                - Conservation stricte de 90 jours conformément à l'article L. 123-22 du Code de Commerce avec chiffrement KMS AES-256.
               </p>
             </div>
 
@@ -4416,6 +4842,35 @@ export const RoomLiveSessionPage: React.FC = () => {
           </div>
         )}
       </Modal>
+
+      {/* Modale de Partage de Documents Métier (e-CMR, Facture Pro-Forma, etc.) */}
+      <RoomLiveShareDocModal
+        open={shareDocModalOpen}
+        onClose={() => setShareDocModalOpen(false)}
+        onSelectDocument={(doc) => {
+          shareRoomDocument(doc);
+          setShareDocModalOpen(false);
+          notifyToast(`Document partagé à l'écran : ${doc.title}`, 'success');
+        }}
+      />
+
+      {/* Modale d'Invitation en Réunion (Lien signé HMAC-SHA256) */}
+      <RoomLiveInviteModal
+        open={inviteModalOpen}
+        onClose={() => setInviteModalOpen(false)}
+        roomCode={activeRoomSession.roomCode}
+        roomTitle={activeRoomSession.title}
+      />
+
+      {/* Modale de Création / Programmation de Réunion (Rôles habilités) */}
+      <RoomLiveCreateModal
+        open={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        onSuccess={() => {
+          setCreateModalOpen(false);
+          notifyToast('Nouvelle salle Room Live créée avec succès !', 'success');
+        }}
+      />
     </div>
   );
 };

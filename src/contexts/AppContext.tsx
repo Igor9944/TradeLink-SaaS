@@ -68,6 +68,14 @@ import {
   LiveSubtitleLine,
 } from '../services/aiIntelligenceEngine';
 import {
+  RoomLiveSfuEngine,
+  RoomSfuTokenManager,
+} from '../services/roomLiveSfuEngine';
+import {
+  RoomViewMode,
+  RoomLiveAiSummary,
+} from '../types';
+import {
   analyzeFileInIsolatedSandbox,
   buildAuditChainFromLogs,
   EnvelopeCipherResult,
@@ -1346,7 +1354,22 @@ interface AppContextValue {
     basis: DayCountBasis
   ) => CalculationResultRecord;
   rooms: RoomLiveRecord[];
-  createRoomLive: (title: string, scheduledAt: string) => { ok: boolean; message: string; room?: RoomLiveRecord };
+  createRoomLive: (
+    titleOrParams:
+      | string
+      | {
+          title: string;
+          scheduledAt: string;
+          description?: string;
+          isImmediate?: boolean;
+          isPrivate?: boolean;
+          hasWaitingRoom?: boolean;
+          allowedUserIds?: string[];
+          invitedEmails?: string[];
+          durationMinutes?: number;
+        },
+    scheduledAtFallback?: string
+  ) => { ok: boolean; message: string; room?: RoomLiveRecord };
   importJobs: ImportJobRecord[];
   addImportJob: (fileName: string) => void;
   backups: BackupRecord[];
@@ -1410,11 +1433,23 @@ interface AppContextValue {
 
   // Session Room Live WebRTC / SFU
   activeRoomSession: RoomLiveSessionState;
-  moderateRoomParticipant: (targetParticipantId: string, action: 'MUTE_MIC' | 'DISABLE_CAM' | 'EXPEL' | 'DELEGATE_HOST' | 'ADMIT' | 'DENY') => void;
+  roomViewMode: RoomViewMode;
+  setRoomViewMode: (mode: RoomViewMode) => void;
+  moderateRoomParticipant: (
+    targetParticipantId: string,
+    action: 'MUTE_MIC' | 'DISABLE_CAM' | 'EXPEL' | 'DELEGATE_HOST' | 'ADMIT' | 'DENY' | 'LOWER_HAND'
+  ) => void;
   toggleRoomMedia: (type: 'audio' | 'video' | 'screen') => void;
   sendRoomChatMessage: (text: string) => void;
   addRoomSubtitle: (text: string) => void;
   exportRoomCertifiedSummary: () => string;
+  toggleRaiseHand: (participantId?: string) => void;
+  broadcastRoomReaction: (emoji: string) => void;
+  startRoomRecording: () => { ok: boolean; message: string };
+  stopRoomRecording: () => { ok: boolean; message: string };
+  generateRoomAiSummary: (targetLocale?: 'fr' | 'en' | 'ar') => RoomLiveAiSummary;
+  shareRoomDocument: (document: { id: string; title: string; type: string; url?: string; previewUrl?: string }) => void;
+  stopSharingRoomDocument: () => void;
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -1588,6 +1623,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeRoomSession, setActiveRoomSession] = useState<RoomLiveSessionState>(() =>
     initializeRoomLiveSession('RM-LIVE-8821')
   );
+  const [roomViewMode, setRoomViewMode] = useState<RoomViewMode>('GRID');
 
   const notifyToast = (
     text: string,
@@ -2626,7 +2662,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return res;
   };
 
-  const createRoomLive = (title: string, scheduledAt: string) => {
+  const createRoomLive = (
+    titleOrParams:
+      | string
+      | {
+          title: string;
+          scheduledAt: string;
+          description?: string;
+          isImmediate?: boolean;
+          isPrivate?: boolean;
+          hasWaitingRoom?: boolean;
+          allowedUserIds?: string[];
+          invitedEmails?: string[];
+          durationMinutes?: number;
+        },
+    scheduledAtFallback: string = '2026-11-20 10:00'
+  ) => {
     if (currentUser.role === 'CLIENT' || currentUser.role === 'VISITEUR') {
       addAuditLog(
         'ROOM_CREATE_DENIED_RBAC',
@@ -2641,20 +2692,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
       return { ok: false, message: 'Création générale non autorisée pour le rôle Client.' };
     }
+
+    const title = typeof titleOrParams === 'string' ? titleOrParams : titleOrParams.title;
+    const scheduledAt = typeof titleOrParams === 'string' ? scheduledAtFallback : titleOrParams.scheduledAt;
+    const description = typeof titleOrParams === 'object' ? titleOrParams.description : undefined;
+    const isImmediate = typeof titleOrParams === 'object' ? titleOrParams.isImmediate ?? true : true;
+    const isPrivate = typeof titleOrParams === 'object' ? titleOrParams.isPrivate ?? false : false;
+    const hasWaitingRoom = typeof titleOrParams === 'object' ? titleOrParams.hasWaitingRoom ?? true : true;
+    const durationMinutes = typeof titleOrParams === 'object' ? titleOrParams.durationMinutes ?? 60 : 60;
+    const allowedUserIds =
+      typeof titleOrParams === 'object' && titleOrParams.allowedUserIds
+        ? titleOrParams.allowedUserIds
+        : ['usr-admin-01', 'usr-client-01', 'usr-supp-01', 'usr-trans-01', currentUser.id];
+    const invitedEmails = typeof titleOrParams === 'object' ? titleOrParams.invitedEmails || [] : [];
+
+    const roomCode = `RM-LIVE-${Math.floor(1000 + Math.random() * 8999)}`;
+    const securityToken = RoomSfuTokenManager.generateToken({
+      roomId: `room-${Date.now().toString().slice(-4)}`,
+      roomCode,
+      userId: currentUser.id,
+      userName: `${currentUser.firstName} ${currentUser.lastName}`,
+      userRole: currentUser.role,
+      isHost: true,
+      canPublishAudio: true,
+      canPublishVideo: true,
+      canPublishScreen: true,
+      canModerate: true,
+    });
+
     const newRoom: RoomLiveRecord = {
       id: `room-${Date.now().toString().slice(-4)}`,
-      roomCode: `RM-LIVE-${Math.floor(1000 + Math.random() * 8999)}`,
+      roomCode,
       title,
+      description,
       createdById: currentUser.id,
       creatorName: `${currentUser.firstName} ${currentUser.lastName} (${currentUser.role})`,
       creatorRole: currentUser.role,
-      status: 'LIVE',
+      status: isImmediate ? 'LIVE' : 'SCHEDULED',
       scheduledAt,
+      durationMinutes,
+      isImmediate,
+      isPrivate,
+      hasWaitingRoom,
       participantsCount: 1,
-      allowedUserIds: ['usr-admin-01', 'usr-client-01', 'usr-supp-01', 'usr-trans-01', currentUser.id],
+      allowedUserIds: Array.from(new Set([...allowedUserIds, currentUser.id])),
+      invitedEmails,
+      securityToken,
       recordingConsent: true,
+      isRecording: false,
       aiSummaryAvailable: false,
     };
+
     setRooms((prev) => [newRoom, ...prev]);
     addAuditLog('ROOM_LIVE_CREATED', 'Room', newRoom.roomCode, 'SUCCESS', `Salle ${newRoom.roomCode} ouverte par ${currentUser.role}.`);
     notifyToast(`Salle Room Live ${newRoom.roomCode} créée avec succès !`, 'success');
@@ -3243,7 +3331,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Room Live WebRTC / SFU
   const moderateRoomParticipant = (
     targetParticipantId: string,
-    action: 'MUTE_MIC' | 'DISABLE_CAM' | 'EXPEL' | 'DELEGATE_HOST' | 'ADMIT' | 'DENY'
+    action: 'MUTE_MIC' | 'DISABLE_CAM' | 'EXPEL' | 'DELEGATE_HOST' | 'ADMIT' | 'DENY' | 'LOWER_HAND'
   ) => {
     const result = moderateParticipantAction(activeRoomSession, targetParticipantId, action, currentUser.id);
     if (!result.success) {
@@ -3253,6 +3341,97 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveRoomSession(result.session);
     addAuditLog('ROOM_MODERATION_ACTION', 'RoomLive', activeRoomSession.roomCode, 'SUCCESS', result.message);
     notifyToast(result.message, 'info');
+  };
+
+  const toggleRaiseHand = (participantId?: string) => {
+    const targetId = participantId || activeRoomSession.participants.find((p) => p.userId === currentUser.id)?.id;
+    if (!targetId) return;
+    setActiveRoomSession((prev) => {
+      const updated = RoomLiveSfuEngine.toggleRaiseHand(prev, targetId);
+      const isRaised = updated.participants.find((p) => p.id === targetId)?.handRaised;
+      notifyToast(isRaised ? '✋ Main levée enregistrée !' : 'Main abaissée.', 'info');
+      return updated;
+    });
+  };
+
+  const broadcastRoomReaction = (emoji: string) => {
+    const myPart = activeRoomSession.participants.find((p) => p.userId === currentUser.id);
+    if (!myPart) return;
+    setActiveRoomSession((prev) => {
+      const { session } = RoomLiveSfuEngine.broadcastReaction(prev, myPart.id, emoji);
+      return session;
+    });
+  };
+
+  const startRoomRecording = (): { ok: boolean; message: string } => {
+    const result = RoomLiveSfuEngine.startRecordingWithConsent(activeRoomSession, currentUser.id);
+    if (!result.success) {
+      notifyToast(result.message, 'error');
+      return { ok: false, message: result.message };
+    }
+    setActiveRoomSession(result.session);
+    setRooms((prev) =>
+      prev.map((r) =>
+        r.id === activeRoomSession.roomId
+          ? { ...r, isRecording: true, recordingKey: result.recordingKey, recordingRetentionDays: 90 }
+          : r
+      )
+    );
+    addAuditLog('ROOM_RECORDING_STARTED', 'RoomLive', activeRoomSession.roomCode, 'SUCCESS', 'Enregistrement activé sous consentement RGPD Art. 6 & 7');
+    notifyToast(result.message, 'success');
+    return { ok: true, message: result.message };
+  };
+
+  const stopRoomRecording = (): { ok: boolean; message: string } => {
+    const result = RoomLiveSfuEngine.stopRecording(activeRoomSession, currentUser.id);
+    if (!result.success) {
+      notifyToast(result.message, 'error');
+      return { ok: false, message: result.message };
+    }
+    setActiveRoomSession(result.session);
+    setRooms((prev) =>
+      prev.map((r) =>
+        r.id === activeRoomSession.roomId ? { ...r, isRecording: false } : r
+      )
+    );
+    addAuditLog('ROOM_RECORDING_STOPPED', 'RoomLive', activeRoomSession.roomCode, 'SUCCESS', 'Enregistrement arrêté et chiffré KMS AES-256');
+    notifyToast(result.message, 'info');
+    return { ok: true, message: result.message };
+  };
+
+  const generateRoomAiSummary = (targetLocale: 'fr' | 'en' | 'ar' = 'fr'): RoomLiveAiSummary => {
+    const summary = RoomLiveSfuEngine.generateAiMeetingSummary(activeRoomSession, targetLocale);
+    setActiveRoomSession((prev) => ({ ...prev, aiSummary: summary }));
+    setRooms((prev) =>
+      prev.map((r) =>
+        r.id === activeRoomSession.roomId
+          ? {
+              ...r,
+              aiSummaryAvailable: true,
+              aiSummary: {
+                summary: summary.summary,
+                decisions: summary.decisions,
+                actionItems: summary.actionItems.map((a) => a.task),
+                topicsDiscussed: summary.topicsDiscussed,
+                generatedAt: summary.generatedAt,
+                certifiedHashSha256: summary.certifiedHashSha256,
+              },
+            }
+          : r
+      )
+    );
+    notifyToast('Procès-verbal IA & Synthèse certifiée générés avec succès !', 'success');
+    return summary;
+  };
+
+  const shareRoomDocument = (document: { id: string; title: string; type: string; url?: string; previewUrl?: string }) => {
+    setActiveRoomSession((prev) => RoomLiveSfuEngine.shareDocument(prev, document, currentUser.id));
+    notifyToast(`Document "${document.title}" partagé à l'écran.`, 'info');
+  };
+
+  const stopSharingRoomDocument = () => {
+    setActiveRoomSession((prev) => RoomLiveSfuEngine.stopSharingDocument(prev));
+    notifyToast('Partage de document arrêté.', 'info');
   };
 
   const toggleRoomMedia = (type: 'audio' | 'video' | 'screen') => {
@@ -3435,11 +3614,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         stopVoiceDictation,
         speakVoiceText,
         activeRoomSession,
+        roomViewMode,
+        setRoomViewMode,
         moderateRoomParticipant,
         toggleRoomMedia,
         sendRoomChatMessage,
         addRoomSubtitle,
         exportRoomCertifiedSummary,
+        toggleRaiseHand,
+        broadcastRoomReaction,
+        startRoomRecording,
+        stopRoomRecording,
+        generateRoomAiSummary,
+        shareRoomDocument,
+        stopSharingRoomDocument,
       }}
     >
       {children}

@@ -66,6 +66,7 @@ import {
   QuoteRecord,
   RagSourceCitation,
   RoomLiveRecord,
+  RoomLiveReaction,
   ShipmentRecord,
   ShipmentStatus,
   SmartRedirectInfo,
@@ -143,7 +144,19 @@ import {
 import {
   checkAndConsumeAiTokens,
   SUPPORTED_AI_MODELS,
+  RoomLiveSessionState,
+  RoomParticipantState,
+  initializeRoomLiveSession,
+  moderateParticipantAction,
 } from '../../services/aiIntelligenceEngine';
+import {
+  RoomLiveSfuEngine,
+  RoomSfuTokenManager,
+} from '../../services/roomLiveSfuEngine';
+import {
+  RoomParticipantModerationAction,
+  RoomLiveAiSummary,
+} from '../../types';
 
 export interface RegisteredAccountRecord {
   userId: string;
@@ -2424,6 +2437,13 @@ export class TradeLinkDomainServices {
     actor: NonNullable<ServerRequestContext['user']>;
     correlationId: string;
     ipAddress: string;
+    description?: string;
+    isImmediate?: boolean;
+    isPrivate?: boolean;
+    hasWaitingRoom?: boolean;
+    allowedUserIds?: string[];
+    invitedEmails?: string[];
+    durationMinutes?: number;
   }): RoomLiveRecord {
     if (!canCreateRoomLiveGeneral(params.actor.role)) {
       this.repo.executeTransaction((tx) => {
@@ -2449,23 +2469,357 @@ export class TradeLinkDomainServices {
     }
 
     return this.repo.executeTransaction((tx) => {
+      const roomId = `room-${Date.now()}`;
+      const roomCode = `RM-LIVE-${Math.floor(1000 + Math.random() * 8999)}`;
+      const allowed = Array.from(new Set([params.actor.id, ...(params.allowedUserIds || ['usr-client-01'])]));
+
+      const token = RoomSfuTokenManager.generateToken({
+        roomId,
+        roomCode,
+        userId: params.actor.id,
+        userName: params.actor.email,
+        userRole: params.actor.role,
+        isHost: true,
+        canPublishAudio: true,
+        canPublishVideo: true,
+        canPublishScreen: true,
+        canModerate: true,
+      });
+
       const room: RoomLiveRecord = {
-        id: `room-${Date.now()}`,
-        roomCode: `RM-LIVE-${Math.floor(1000 + Math.random() * 8999)}`,
+        id: roomId,
+        roomCode,
         title: params.title,
+        description: params.description,
         createdById: params.actor.id,
         creatorName: params.actor.email,
         creatorRole: params.actor.role,
-        status: 'LIVE',
+        status: params.isImmediate ? 'LIVE' : 'SCHEDULED',
         scheduledAt: params.scheduledAt,
+        durationMinutes: params.durationMinutes || 60,
+        isImmediate: params.isImmediate ?? true,
+        isScheduled: !params.isImmediate,
+        isPrivate: params.isPrivate ?? false,
+        hasWaitingRoom: params.hasWaitingRoom ?? true,
         participantsCount: 1,
-        allowedUserIds: [params.actor.id, 'usr-client-01'],
+        allowedUserIds: allowed,
+        invitedEmails: params.invitedEmails || [],
+        securityToken: token,
+        hostAccessToken: token,
         recordingConsent: true,
+        isRecording: false,
         aiSummaryAvailable: false,
       };
+
       tx.rooms.unshift(room);
+
+      // Enregistrer également la session dans le moteur SFU
+      const sessionState: RoomLiveSessionState = {
+        roomId: room.id,
+        roomCode: room.roomCode,
+        title: room.title,
+        description: room.description,
+        creatorId: room.createdById,
+        creatorName: room.creatorName,
+        creatorRole: room.creatorRole,
+        hostUserId: room.createdById,
+        status: room.status,
+        recordingConsent: true,
+        isRecording: false,
+        screenShareActive: false,
+        participants: [
+          {
+            id: `p-${params.actor.id}`,
+            userId: params.actor.id,
+            name: params.actor.email,
+            role: params.actor.role,
+            avatarUrl: '/images/warehouse-operations.jpg',
+            isHost: true,
+            status: 'CONNECTED',
+            audioEnabled: true,
+            videoEnabled: true,
+            screenSharing: false,
+            joinedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            connectionQuality: 'EXCELLENT',
+          },
+        ],
+        chatHistory: [],
+        subtitlesHistory: [],
+      };
+      RoomLiveSfuEngine.registerRoomSession(sessionState);
+
       return room;
     });
+  }
+
+  public listAccessibleRoomsService(userId: string, role: UserRoleCode): RoomLiveRecord[] {
+    const allRooms = this.repo.listRooms();
+    if (role === 'ADMIN') {
+      return allRooms;
+    }
+    return allRooms.filter((r) => {
+      if (r.createdById === userId) return true;
+      if (r.allowedUserIds && r.allowedUserIds.includes(userId)) return true;
+      if (!r.isPrivate) return true;
+      return false;
+    });
+  }
+
+  public getRoomDetailsService(
+    roomIdOrCode: string,
+    user?: NonNullable<ServerRequestContext['user']>
+  ): { room: RoomLiveRecord; session?: RoomLiveSessionState } {
+    const room = this.repo.getRoom(roomIdOrCode);
+    if (!room) {
+      throw new AppError(404, 'ROOM_NOT_FOUND', `La salle "${roomIdOrCode}" est introuvable ou a été clôturée.`);
+    }
+
+    if (user && room.isPrivate && user.role !== 'ADMIN' && room.createdById !== user.id && !room.allowedUserIds.includes(user.id)) {
+      throw new AppError(403, 'FORBIDDEN_ROOM_ACCESS', 'Accès refusé : vous ne figurez pas sur la liste des participants autorisés pour cette salle privée.');
+    }
+
+    let session = RoomLiveSfuEngine.getRoomSession(room.id);
+    if (!session) {
+      session = initializeRoomLiveSession(room.roomCode);
+      RoomLiveSfuEngine.registerRoomSession(session);
+    }
+
+    return { room, session };
+  }
+
+  public joinRoomLiveService(params: {
+    roomIdOrCode: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+    deviceInfo?: { audioInput?: string; videoInput?: string; audioOutput?: string };
+  }): {
+    room: RoomLiveRecord;
+    session: RoomLiveSessionState;
+    token: string;
+    participant: RoomParticipantState;
+    participantStatus: 'WAITING_ROOM' | 'CONNECTED';
+    status?: string;
+    message?: string;
+  } {
+    const { room, session } = this.getRoomDetailsService(params.roomIdOrCode, params.actor);
+    const isHost = params.actor.id === room.createdById || params.actor.role === 'ADMIN';
+
+    // Règle du Lobby : si la salle d'attente est active et que l'utilisateur n'est pas l'hôte
+    const requiresLobby = Boolean(room.hasWaitingRoom && !isHost);
+    const initialStatus: 'WAITING_ROOM' | 'CONNECTED' = requiresLobby ? 'WAITING_ROOM' : 'CONNECTED';
+
+    // Rechercher ou créer le participant
+    let existingPart = session!.participants.find((p) => p.userId === params.actor.id || p.id === params.actor.id);
+    if (!existingPart) {
+      existingPart = {
+        id: `p-${params.actor.id}-${Date.now().toString(36).slice(-4)}`,
+        userId: params.actor.id,
+        name: params.actor.email,
+        role: params.actor.role,
+        avatarUrl: '/images/warehouse-operations.jpg',
+        isHost,
+        status: initialStatus,
+        audioEnabled: initialStatus === 'CONNECTED',
+        videoEnabled: initialStatus === 'CONNECTED',
+        screenSharing: false,
+        joinedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        connectionQuality: 'EXCELLENT',
+      };
+      session!.participants.push(existingPart);
+    } else {
+      existingPart.status = initialStatus;
+    }
+
+    // Connecter le pair SFU
+    RoomLiveSfuEngine.connectPeer(existingPart.id);
+
+    // Émettre le jeton SFU signé
+    const token = RoomSfuTokenManager.generateToken({
+      roomId: room.id,
+      roomCode: room.roomCode,
+      userId: params.actor.id,
+      userName: params.actor.email,
+      userRole: params.actor.role,
+      isHost,
+      canPublishAudio: true,
+      canPublishVideo: true,
+      canPublishScreen: isHost || params.actor.role !== 'CLIENT',
+      canModerate: isHost,
+    });
+
+    // Mettre à jour le nombre de participants connectés
+    const connectedCount = session!.participants.filter((p) => p.status === 'CONNECTED').length;
+    this.repo.updateRoom(room.id, { participantsCount: connectedCount });
+
+    return {
+      room,
+      session: session!,
+      token,
+      participant: existingPart,
+      participantStatus: initialStatus,
+      status: initialStatus === 'WAITING_ROOM' ? 'WAITING_LOBBY' : 'CONNECTED',
+      message: initialStatus === 'WAITING_ROOM' ? 'Vous êtes dans la salle d attente...' : 'Connexion établie',
+    };
+  }
+
+  public admitLobbyParticipantService(
+    roomIdOrCode: string,
+    targetParticipantId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { success: boolean; admitted: boolean; session: RoomLiveSessionState; message: string } {
+    const { session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    const result = moderateParticipantAction(session!, targetParticipantId, 'ADMIT', actor.id);
+    if (result.success) {
+      RoomLiveSfuEngine.registerRoomSession(result.session);
+      const connectedCount = result.session.participants.filter((p) => p.status === 'CONNECTED').length;
+      this.repo.updateRoom(session!.roomId, { participantsCount: connectedCount });
+    }
+    return {
+      ...result,
+      admitted: true,
+    };
+  }
+
+  public rejectLobbyParticipantService(
+    roomIdOrCode: string,
+    targetParticipantId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { success: boolean; session: RoomLiveSessionState; message: string } {
+    const { session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    const result = moderateParticipantAction(session!, targetParticipantId, 'DENY', actor.id);
+    if (result.success) {
+      RoomLiveSfuEngine.registerRoomSession(result.session);
+    }
+    return result;
+  }
+
+  public moderateRoomParticipantService(
+    roomIdOrCode: string,
+    targetParticipantId: string,
+    action: RoomParticipantModerationAction,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { success: boolean; session: RoomLiveSessionState; message: string } {
+    const { session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    const result = moderateParticipantAction(session!, targetParticipantId, action, actor.id);
+    if (result.success) {
+      RoomLiveSfuEngine.registerRoomSession(result.session);
+    }
+    return result;
+  }
+
+  public startRoomRecordingService(
+    roomIdOrCode: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { success: boolean; session: RoomLiveSessionState; message: string; recordingKey?: string } {
+    const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    const result = RoomLiveSfuEngine.startRecordingWithConsent(session!, actor.id);
+    if (result.success) {
+      this.repo.updateRoom(room.id, {
+        isRecording: true,
+        recordingKey: result.recordingKey,
+        recordingRetentionDays: 90,
+      });
+    }
+    return result;
+  }
+
+  public stopRoomRecordingService(
+    roomIdOrCode: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { success: boolean; session: RoomLiveSessionState; message: string } {
+    const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    const result = RoomLiveSfuEngine.stopRecording(session!, actor.id);
+    if (result.success) {
+      this.repo.updateRoom(room.id, { isRecording: false });
+    }
+    return result;
+  }
+
+  public generateRoomAiSummaryService(
+    roomIdOrCode: string,
+    actor: NonNullable<ServerRequestContext['user']>,
+    targetLocale: 'fr' | 'en' | 'ar' = 'fr'
+  ): RoomLiveAiSummary {
+    const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    const summary = RoomLiveSfuEngine.generateAiMeetingSummary(session!, targetLocale);
+    session!.aiSummary = summary;
+    this.repo.updateRoom(room.id, {
+      aiSummaryAvailable: true,
+      aiSummary: {
+        summary: summary.summary,
+        decisions: summary.decisions,
+        actionItems: summary.actionItems.map((a) => a.task),
+        topicsDiscussed: summary.topicsDiscussed,
+        generatedAt: summary.generatedAt,
+        certifiedHashSha256: summary.certifiedHashSha256,
+      },
+    });
+    return summary;
+  }
+
+  public shareRoomDocumentService(
+    roomIdOrCode: string,
+    document: { id: string; title: string; type: string; url?: string; previewUrl?: string },
+    actor: NonNullable<ServerRequestContext['user']>
+  ): RoomLiveSessionState {
+    const { session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    return RoomLiveSfuEngine.shareDocument(session!, document, actor.id);
+  }
+
+  public raiseHandRoomService(
+    roomIdOrCode: string,
+    participantId: string,
+    isRaised?: boolean
+  ): RoomLiveSessionState {
+    const { session } = this.getRoomDetailsService(roomIdOrCode);
+    return RoomLiveSfuEngine.toggleRaiseHand(session!, participantId, isRaised);
+  }
+
+  public broadcastRoomReactionService(
+    roomIdOrCode: string,
+    participantId: string,
+    emoji: string
+  ): { session: RoomLiveSessionState; reaction: RoomLiveReaction } {
+    const { session } = this.getRoomDetailsService(roomIdOrCode);
+    return RoomLiveSfuEngine.broadcastReaction(session!, participantId, emoji);
+  }
+
+  public inviteToRoomService(
+    roomIdOrCode: string,
+    invitedUserIds: string[],
+    invitedEmails: string[],
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { room: RoomLiveRecord; inviteLinks: string[] } {
+    const { room } = this.getRoomDetailsService(roomIdOrCode, actor);
+    const isHost = actor.id === room.createdById || actor.role === 'ADMIN';
+    if (!isHost) {
+      throw new AppError(403, 'FORBIDDEN_INVITE', "Seul l'hôte ou l'administrateur peut inviter de nouveaux participants.");
+    }
+
+    const updatedAllowed = Array.from(new Set([...(room.allowedUserIds || []), ...invitedUserIds]));
+    const updatedEmails = Array.from(new Set([...(room.invitedEmails || []), ...invitedEmails]));
+
+    const updatedRoom = this.repo.updateRoom(room.id, {
+      allowedUserIds: updatedAllowed,
+      invitedEmails: updatedEmails,
+    });
+
+    const inviteLinks = invitedUserIds.map((uId) => {
+      const inviteToken = RoomSfuTokenManager.generateToken({
+        roomId: room.id,
+        roomCode: room.roomCode,
+        userId: uId,
+        userName: uId,
+        userRole: 'CLIENT',
+        isHost: false,
+        canPublishAudio: true,
+        canPublishVideo: true,
+        canPublishScreen: false,
+        canModerate: false,
+      });
+      return `https://app.tradelink-saas.com/room/${room.roomCode}?token=${inviteToken}`;
+    });
+
+    return { room: updatedRoom || room, inviteLinks };
   }
 
   // 5. CalculationEngine — Calcul financier déterministe Decimal.js
