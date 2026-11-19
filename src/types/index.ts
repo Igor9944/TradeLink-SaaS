@@ -1274,6 +1274,11 @@ export type {
 // ============================================================================
 // RÉ-EXPORTS ADMINISTRATION AVANCÉE, IMPORTS, KMS & SANDBOX (PROMPT 11)
 // ============================================================================
+import type {
+  ImportExportFormat,
+  SandboxDetectedTable,
+} from '../services/adminAdvancedEngine';
+
 export type {
   ImportExportFormat,
   FieldMappingDetail,
@@ -2072,4 +2077,312 @@ export interface TemporaryDownloadTokenPayload {
   expiresAt: number; // timestamp en secondes
   hmacSignature: string;
 }
+
+// ============================================================================
+// PROMPT 15 : IMPORTATION & EXPORTATION DES DONNÉES SÉCURISÉES
+// 1. Formats d'importation métier (CSV, XLSX, JSON) & avancés (SQL, BAK, DBF)
+// 2. Parcours d'importation en 12 étapes rigoureuses
+// 3. Sandbox isolée pour bases (SQL, BAK, DBF) sans réseau et sans secrets prod
+// 4. Exportations certifiées (CSV, Excel, JSON, PDF) avec protection anti-injection
+// 5. Double approbation Admin (anti auto-approbation) & rapports complets
+// ============================================================================
+
+export type ImportPipelineStep =
+  | 'UPLOAD'
+  | 'FORMAT_IDENTIFICATION'
+  | 'VALIDATION'
+  | 'CONTENT_ANALYSIS'
+  | 'PREVIEW'
+  | 'COLUMN_MAPPING'
+  | 'DUPLICATE_DETECTION'
+  | 'ERROR_REPORTING'
+  | 'SIMULATION'
+  | 'CONFIRMATION'
+  | 'EXECUTION'
+  | 'FINAL_REPORT';
+
+export type DuplicateStrategy = 'SKIP' | 'OVERWRITE' | 'REJECT';
+
+export type ImportTargetEntity =
+  | 'CATALOG_PRODUCTS'
+  | 'CLIENTS'
+  | 'SUPPLIERS'
+  | 'INVOICES'
+  | 'ACCOUNTING_ENTRIES'
+  | 'DATABASE_MIGRATION';
+
+export interface ImportFileValidation {
+  fileSize: number;
+  maxAllowedSize: number;
+  isSizeValid: boolean;
+  detectedMime: string;
+  detectedFormat: ImportExportFormat;
+  magicBytesHex: string;
+  antivirusScan: 'CLEAN' | 'INFECTED' | 'QUARANTINED';
+  encoding: string;
+  securitySanitized: boolean;
+  detectedVulnerabilities: string[];
+}
+
+export interface ImportColumnMapping {
+  sourceColumn: string;
+  targetField: string;
+  sourceSample: string;
+  targetType: string;
+  confidencePct: number;
+  isRequired: boolean;
+  transformRule?: string;
+  status: 'AUTO_MATCHED' | 'MANUAL_REVIEW' | 'IGNORED';
+}
+
+export interface ImportRowError {
+  rowNumber: number;
+  columnName: string;
+  receivedValue: string;
+  errorMessage: string;
+  severity: 'ERROR' | 'WARNING';
+}
+
+export interface ImportDuplicateDetail {
+  rowNumber: number;
+  uniqueKey: string;
+  existingId: string;
+  actionTaken: 'SKIPPED' | 'OVERWRITTEN' | 'REJECTED';
+}
+
+export interface ImportSimulationResult {
+  totalRows: number;
+  previewRows: any[];
+  wouldCreate: number;
+  wouldUpdate: number;
+  wouldSkip: number;
+  wouldReject: number;
+  errors: ImportRowError[];
+  duplicates: ImportDuplicateDetail[];
+  schemaChanges: string[];
+  estimatedExecutionDurationMs: number;
+  isSafeToExecute: boolean;
+}
+
+export interface ImportFinalReport {
+  jobId: string;
+  entity: ImportTargetEntity;
+  format: ImportExportFormat;
+  fileName: string;
+  fileSizeFormatted: string;
+  sha256: string;
+  totalRows: number;
+  importedRows: number;
+  ignoredRows: number;
+  rejectedRows: number;
+  errors: ImportRowError[];
+  duplicates: ImportDuplicateDetail[];
+  durationMs: number;
+  completedAt: string;
+  executedBy: string;
+  auditLogId: string;
+  requiresDualAdmin: boolean;
+  dualAdminApprovalId?: string;
+}
+
+export interface SecureImportPipelineJob {
+  id: string;
+  currentStep: ImportPipelineStep;
+  entity: ImportTargetEntity;
+  format: ImportExportFormat;
+  fileName: string;
+  fileSize: number;
+  fileContentRaw?: string;
+  sha256: string;
+  validation: ImportFileValidation;
+  detectedColumns: string[];
+  previewRows: any[];
+  columnMappings: ImportColumnMapping[];
+  duplicateStrategy: DuplicateStrategy;
+  simulationResult?: ImportSimulationResult;
+  finalReport?: ImportFinalReport;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+  requiresDualAdmin: boolean;
+  dualAdminApprovalId?: string;
+  status: 'IN_PROGRESS' | 'SIMULATED' | 'AWAITING_APPROVAL' | 'EXECUTED' | 'FAILED' | 'CANCELLED';
+  failureReason?: string;
+}
+
+export type ImportPipelineJob = SecureImportPipelineJob;
+
+export interface DatabaseSandboxSession {
+  sessionId: string;
+  fileName: string;
+  fileFormat: 'SQL' | 'BAK' | 'DBF' | 'CDX';
+  fileSize: number;
+  sha256: string;
+  sandboxContainerId: string;
+  isEgressBlocked: boolean;
+  productionSecretsIsolated: boolean;
+  cpuLimit: string;
+  memoryLimit: string;
+  timeoutMs: number;
+  antivirusStatus: 'CLEAN' | 'INFECTED';
+  compatibilityReport: {
+    engineType: 'POSTGRESQL' | 'MSSQL_SERVER' | 'DBASE_FOXPRO';
+    isCompatible: boolean;
+    versionDetected: string;
+    warnings: string[];
+    destructiveCommandsBlocked: string[];
+  };
+  migrationPlan: {
+    planHash: string;
+    tablesDetected: SandboxDetectedTable[];
+    rowsCount: number;
+    hasDestructiveOperations: boolean;
+    requiresPreBackup: boolean;
+    backupSnapshotId?: string;
+  };
+  dualAdminApproval: {
+    approvalId: string;
+    initiatedBy: string;
+    initiatedAt: string;
+    approvedBy?: string;
+    approvedAt?: string;
+    status: 'PENDING_SECOND_ADMIN' | 'APPROVED' | 'REJECTED' | 'EXECUTED';
+  };
+  createdAt: string;
+  status: 'ANALYZED' | 'AWAITING_APPROVAL' | 'MIGRATION_EXECUTED' | 'FAILED';
+  errorMessage?: string;
+}
+
+export type ExportDatasetType = 'PRODUCTS' | 'ORDERS' | 'INVOICES' | 'ENTRIES' | 'AUDIT_LOGS' | 'CUSTOM';
+export type ExportFormatType = 'CSV' | 'XLSX' | 'JSON' | 'PDF';
+
+export interface DataExportRequest {
+  entity: ExportDatasetType;
+  format: ExportFormatType;
+  selectedFields?: string[];
+  filterParams?: Record<string, any>;
+  dateRange?: { from: string; to: string };
+  preventFormulaInjection?: boolean;
+}
+
+export interface DataExportResult {
+  fileName: string;
+  content: string;
+  mimeType: string;
+  sha256: string;
+  rowsCount: number;
+  generatedAt: string;
+  preventedInjectionsCount: number;
+}
+
+// ============================================================================
+// PROMPT 16 : ADMINISTRATION AVANCÉE, SÉCURITÉ ET AUDIT
+// 1. Gestion des accès & sessions (MFA, Révocation, Rôles)
+// 2. Journal d'audit immuable & chaînage de hachage SHA-256
+// 3. Surveillance temps réel & Détection d'anomalies
+// 4. Gestionnaire cryptographique KMS (AES-256-GCM, KEK, DEK)
+// 5. Sauvegardes & Restauration Sandbox (Restore Drills, 4-Eyes Principle)
+// 6. Supervision Technique & APM (PostgreSQL, Redis, Queues, Latences)
+// ============================================================================
+
+export type SecurityAlertSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+
+export type SecurityAlertType =
+  | 'BRUTE_FORCE_ATTEMPT'
+  | 'SUSPICIOUS_LOGIN'
+  | 'IDOR_ATTEMPT'
+  | 'UNAUTHORIZED_ADMIN_ELEVATION'
+  | 'MALICIOUS_UPLOAD_BLOCKED'
+  | 'RATE_LIMIT_EXCEEDED'
+  | 'SECRET_ROTATION_DUE';
+
+export interface SecurityAlertRecord {
+  id: string;
+  timestamp: string;
+  severity: SecurityAlertSeverity;
+  type: SecurityAlertType;
+  actorId?: string;
+  actorIp: string;
+  details: string;
+  status: 'OPEN' | 'INVESTIGATING' | 'RESOLVED' | 'DISMISSED';
+  resolvedAt?: string;
+  resolvedBy?: string;
+  remediationAction?: string;
+}
+
+export interface SystemComponentHealth {
+  name: string;
+  status: 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY';
+  latencyMs: number;
+  details: string;
+  lastChecked: string;
+}
+
+export interface QueueMonitoringDetail {
+  queueName: string;
+  pendingCount: number;
+  processingCount: number;
+  failedCount: number;
+  avgProcessingTimeMs: number;
+  status: 'HEALTHY' | 'CONGESTED' | 'PAUSED';
+}
+
+export interface SystemSupervisionMetrics {
+  timestamp: string;
+  services: SystemComponentHealth[];
+  queues: QueueMonitoringDetail[];
+  database: {
+    connectionsActive: number;
+    connectionsMax: number;
+    poolUsagePct: number;
+    transactionsPerSec: number;
+    avgQueryDurationMs: number;
+    status: 'OPTIMAL' | 'DEGRADED';
+  };
+  redisCache: {
+    connected: boolean;
+    memoryUsedMb: number;
+    hitRatePct: number;
+    keysCount: number;
+    uptimeSeconds: number;
+  };
+  apiMetrics: {
+    requestsTotal: number;
+    p50LatencyMs: number;
+    p95LatencyMs: number;
+    p99LatencyMs: number;
+    errorRatePct: number;
+  };
+}
+
+export interface UserAccessSessionRecord {
+  sessionId: string;
+  userId: string;
+  userName: string;
+  userRole: UserRoleCode;
+  ipAddress: string;
+  userAgent: string;
+  country: string;
+  createdAt: string;
+  lastActiveAt: string;
+  isCurrentSession: boolean;
+  status: 'ACTIVE' | 'REVOKED' | 'EXPIRED';
+}
+
+export interface BackupRestoreDrillResult {
+  drillId: string;
+  backupCode: string;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  sha256Verified: boolean;
+  tablesRestoredCount: number;
+  rowsRestoredCount: number;
+  sandboxContainerId: string;
+  isIsolatedFromProduction: boolean;
+  status: 'DRILL_PASSED' | 'DRILL_FAILED';
+  summary: string;
+}
+
+
 

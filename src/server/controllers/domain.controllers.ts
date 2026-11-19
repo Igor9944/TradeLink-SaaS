@@ -3089,6 +3089,244 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, { document: doc }, 200);
     }
 
+    // =========================================================================
+    // 27. PROMPT 15 : IMPORTATION EN 12 ÉTAPES, SANDBOX BASES & EXPORTATIONS
+    // =========================================================================
+
+    // 27A. Upload fichier et initialisation parcours 12 étapes
+    if (method === 'POST' && path === '/api/v1/import/upload') {
+      const user = requireAuthenticatedSession(ctx);
+      const { fileName, fileSize, fileContentRaw, entity } = ctx.body || {};
+      const job = this.services.uploadImportJobService(user, {
+        fileName: fileName || 'import.csv',
+        fileSize: fileSize || (fileContentRaw?.length ?? 100),
+        fileContentRaw: fileContentRaw || '',
+        entity: entity || 'CATALOG_PRODUCTS',
+      });
+      return this.ok(ctx, job, 201);
+    }
+
+    // 27B. Étape 2 : Identification du format
+    if (method === 'POST' && path.startsWith('/api/v1/import/') && path.endsWith('/identify')) {
+      const user = requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/import/', '').replace('/identify', '');
+      const updated = this.services.identifyImportFormatService(user, jobId);
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 27C. Étape 3 : Validation
+    if (method === 'POST' && path.startsWith('/api/v1/import/') && path.endsWith('/validate')) {
+      const user = requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/import/', '').replace('/validate', '');
+      const updated = this.services.validateImportJobService(user, jobId);
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 27D. Étape 4 & 5 : Analyse du contenu & Prévisualisation
+    if (method === 'POST' && path.startsWith('/api/v1/import/') && path.endsWith('/analyze')) {
+      const user = requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/import/', '').replace('/analyze', '');
+      const res = this.services.analyzeImportContentService(user, jobId);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 27E. Étape 6 : Mapping des colonnes
+    if (method === 'POST' && path.startsWith('/api/v1/import/') && path.endsWith('/map')) {
+      const user = requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/import/', '').replace('/map', '');
+      const { customMappings } = ctx.body || {};
+      const updated = this.services.mapImportColumnsService(user, jobId, customMappings);
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 27F. Étape 7 : Détection des doublons
+    if (method === 'POST' && path.startsWith('/api/v1/import/') && path.endsWith('/duplicates')) {
+      const user = requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/import/', '').replace('/duplicates', '');
+      const { duplicateStrategy, uniqueKeyField } = ctx.body || {};
+      const res = this.services.checkImportDuplicatesService(user, jobId, duplicateStrategy, uniqueKeyField);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 27G. Étape 8 : Rapport des erreurs
+    if (method === 'POST' && path.startsWith('/api/v1/import/') && path.endsWith('/errors')) {
+      const user = requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/import/', '').replace('/errors', '');
+      const res = this.services.reportImportErrorsService(user, jobId);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 27H. Étape 9 : Simulation (Dry Run)
+    if (method === 'POST' && path.startsWith('/api/v1/import/') && path.endsWith('/simulate')) {
+      const user = requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/import/', '').replace('/simulate', '');
+      const updated = this.services.simulateImportService(user, jobId);
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 27I. Étape 10 : Confirmation préalable
+    if (method === 'POST' && path.startsWith('/api/v1/import/') && path.endsWith('/confirm')) {
+      const user = requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/import/', '').replace('/confirm', '');
+      const updated = this.services.confirmImportService(user, jobId);
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 27J. Étape 11 & 12 : Exécution réelle & Rapport final
+    if (method === 'POST' && path.startsWith('/api/v1/import/') && path.endsWith('/execute')) {
+      const user = requireAuthenticatedSession(ctx);
+      const jobId = path.replace('/api/v1/import/', '').replace('/execute', '');
+      const finalReport = this.services.executeImportService(user, jobId);
+      return this.ok(ctx, finalReport, 200);
+    }
+
+    // 27K. Analyse de bases en Sandbox isolée (SQL, BAK, DBF)
+    if (method === 'POST' && path === '/api/v1/import/sandbox/database') {
+      const user = requireAuthenticatedSession(ctx);
+      const { fileName, fileContentRaw } = ctx.body || {};
+      const session = this.services.createDatabaseSandboxSessionService(user, {
+        fileName: fileName || 'dump.sql',
+        fileContentRaw: fileContentRaw || '',
+      });
+      return this.ok(ctx, session, 201);
+    }
+
+    // 27L. Double approbation Admin pour migration en production
+    if (method === 'POST' && path.startsWith('/api/v1/import/sandbox/database/') && path.endsWith('/approve')) {
+      const user = requireAuthenticatedSession(ctx);
+      const sessionId = path.replace('/api/v1/import/sandbox/database/', '').replace('/approve', '');
+      const updated = this.services.approveDatabaseMigrationService(user, sessionId);
+      return this.ok(ctx, updated, 200);
+    }
+
+    // 27M. Exécution de la migration après double approbation
+    if (method === 'POST' && path.startsWith('/api/v1/import/sandbox/database/') && path.endsWith('/execute')) {
+      const user = requireAuthenticatedSession(ctx);
+      const sessionId = path.replace('/api/v1/import/sandbox/database/', '').replace('/execute', '');
+      const result = this.services.executeDatabaseMigrationService(user, sessionId);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 27N. Exportation certifiée multi-formats (CSV, XLSX, JSON, PDF)
+    if (method === 'POST' && path === '/api/v1/export') {
+      const user = requireAuthenticatedSession(ctx);
+      const { entity, format, selectedFields, preventFormulaInjection } = ctx.body || {};
+      const exportRes = this.services.exportDatasetService(user, {
+        entity: entity || 'PRODUCTS',
+        format: format || 'CSV',
+        selectedFields,
+        preventFormulaInjection,
+      });
+      return this.ok(ctx, exportRes, 200);
+    }
+
+    // =========================================================================
+    // 28. PROMPT 16 : ADMINISTRATION AVANCÉE, SÉCURITÉ, AUDIT, KMS & APM
+    // =========================================================================
+
+    // 28A. Centre des Alertes de Sécurité & Surveillance
+    if (method === 'GET' && path === '/api/v1/admin/security/alerts') {
+      const user = requireAuthenticatedSession(ctx);
+      const alerts = this.services.listSecurityAlertsService(user);
+      return this.ok(ctx, { alerts, total: alerts.length }, 200);
+    }
+
+    // 28B. Résolution d'une Alerte de Sécurité
+    if (method === 'POST' && path.startsWith('/api/v1/admin/security/alerts/') && path.endsWith('/resolve')) {
+      const user = requireAuthenticatedSession(ctx);
+      const alertId = path.replace('/api/v1/admin/security/alerts/', '').replace('/resolve', '');
+      const resolved = this.services.resolveSecurityAlertService(user, alertId);
+      return this.ok(ctx, resolved, 200);
+    }
+
+    // 28C. Gestion des Sessions Actives & Kill Session
+    if (method === 'GET' && path === '/api/v1/admin/security/sessions') {
+      const user = requireAuthenticatedSession(ctx);
+      const sessions = this.services.listActiveUserSessionsService(user);
+      return this.ok(ctx, { sessions, total: sessions.length }, 200);
+    }
+
+    // 28D. Révocation unitaire d'une session
+    if (method === 'POST' && path.startsWith('/api/v1/admin/security/sessions/') && path.endsWith('/revoke')) {
+      const user = requireAuthenticatedSession(ctx);
+      const sessionId = path.replace('/api/v1/admin/security/sessions/', '').replace('/revoke', '');
+      const res = this.services.revokeUserSessionService(user, sessionId);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 28E. Révocation globale de toutes les sessions d'un utilisateur
+    if (method === 'POST' && path.startsWith('/api/v1/admin/security/users/') && path.endsWith('/revoke-all-sessions')) {
+      const user = requireAuthenticatedSession(ctx);
+      const targetUserId = path.replace('/api/v1/admin/security/users/', '').replace('/revoke-all-sessions', '');
+      const res = this.services.revokeAllUserSessionsService(user, targetUserId);
+      return this.ok(ctx, res, 200);
+    }
+
+    // 28F. Gestionnaire KMS : Cycle de vie de la KEK
+    if (method === 'GET' && path === '/api/v1/admin/security/kms/key') {
+      const user = requireAuthenticatedSession(ctx);
+      const key = this.services.getKmsKeyLifecycleService(user);
+      return this.ok(ctx, key, 200);
+    }
+
+    // 28G. Gestionnaire KMS : Rotation HSM de la KEK
+    if (method === 'POST' && path === '/api/v1/admin/security/kms/rotate') {
+      const user = requireAuthenticatedSession(ctx);
+      const result = this.services.rotateKmsKeyService(user);
+      return this.ok(ctx, result, 200);
+    }
+
+    // 28H. Gestionnaire KMS : Test de chiffrement par enveloppe AES-256-GCM
+    if (method === 'POST' && path === '/api/v1/admin/security/kms/test-envelope') {
+      const user = requireAuthenticatedSession(ctx);
+      const { plainText } = ctx.body || {};
+      const cipherResult = this.services.testEnvelopeEncryptionService(user, plainText);
+      return this.ok(ctx, cipherResult, 200);
+    }
+
+    // 28I. Sauvegardes : Création d'une sauvegarde chiffrée
+    if (method === 'POST' && path === '/api/v1/admin/security/backups') {
+      const user = requireAuthenticatedSession(ctx);
+      const { type } = ctx.body || {};
+      const backup = this.services.createSystemBackupService(user, type);
+      return this.ok(ctx, backup, 201);
+    }
+
+    // 28J. Sauvegardes : Test de restauration en Sandbox (Restore Drill)
+    if (method === 'POST' && path.startsWith('/api/v1/admin/security/backups/') && path.endsWith('/drill')) {
+      const user = requireAuthenticatedSession(ctx);
+      const backupCode = path.replace('/api/v1/admin/security/backups/', '').replace('/drill', '');
+      const drill = this.services.performRestoreDrillService(user, backupCode);
+      return this.ok(ctx, drill, 200);
+    }
+
+    // 28K. Sauvegardes : Restauration en Production avec Double Approbation
+    if (method === 'POST' && path.startsWith('/api/v1/admin/security/backups/') && path.endsWith('/restore-prod')) {
+      const user = requireAuthenticatedSession(ctx);
+      const backupCode = path.replace('/api/v1/admin/security/backups/', '').replace('/restore-prod', '');
+      const { planHash, secondApproverId } = ctx.body || {};
+      const res = this.services.restoreBackupToProductionService(user, {
+        backupCode,
+        planHash: planHash || '',
+        secondApproverId: secondApproverId || '',
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    // 28L. Supervision Technique APM : Télémétrie temps réel
+    if (method === 'GET' && path === '/api/v1/admin/security/supervision') {
+      const user = requireAuthenticatedSession(ctx);
+      const metrics = this.services.getSystemSupervisionMetricsService(user);
+      return this.ok(ctx, metrics, 200);
+    }
+
+    // 28M. Journal d'Audit : Vérification de l'intégrité de la chaîne SHA-256
+    if (method === 'GET' && path === '/api/v1/admin/security/audit/verify-chain') {
+      const user = requireAuthenticatedSession(ctx);
+      const verification = this.services.verifyAuditLogChainService(user);
+      return this.ok(ctx, verification, 200);
+    }
+
     throw new AppError(404, 'ENDPOINT_NOT_FOUND', `Route API introuvable : ${method} ${path}`);
   }
 }

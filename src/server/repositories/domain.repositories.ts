@@ -55,6 +55,11 @@ import {
   FinancialEngineConfigRecord,
   FinancialConfigAuditRecord,
   FiscalPeriodRecord,
+  SecureImportPipelineJob,
+  DatabaseSandboxSession,
+  DataExportResult,
+  SecurityAlertRecord,
+  BackupRestoreDrillResult,
 } from '../../types';
 import { defaultCatalogEngine } from '../../services/catalogEngine';
 import { defaultStockEngine } from '../../services/stockEngine';
@@ -111,6 +116,11 @@ export interface DatabaseStateSnapshot {
   financialConfigAudits?: FinancialConfigAuditRecord[];
   benchmarkRates?: BenchmarkRateRecord[];
   fiscalPeriods?: FiscalPeriodRecord[];
+  secureImportJobs?: SecureImportPipelineJob[];
+  databaseSandboxSessions?: DatabaseSandboxSession[];
+  dataExports?: DataExportResult[];
+  securityAlerts?: SecurityAlertRecord[];
+  backupRestoreDrills?: BackupRestoreDrillResult[];
 }
 
 export class TradeLinkRepositoryStore {
@@ -196,6 +206,11 @@ export class TradeLinkRepositoryStore {
                 status: 'OPEN',
               },
             ],
+      secureImportJobs: initialState.secureImportJobs ?? [],
+      databaseSandboxSessions: initialState.databaseSandboxSessions ?? [],
+      dataExports: initialState.dataExports ?? [],
+      securityAlerts: initialState.securityAlerts ?? [],
+      backupRestoreDrills: initialState.backupRestoreDrills ?? [],
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
 
@@ -1397,5 +1412,97 @@ export class TradeLinkRepositoryStore {
       this.state.fiscalPeriods.unshift(newP);
       return structuredClone(newP);
     }
+  }
+
+  // ============================================================================
+  // PROMPT 15 : REPOSITORY MÉTHODES POUR IMPORT/EXPORT ET SANDBOX BASES
+  // ============================================================================
+
+  public saveSecureImportJob(job: SecureImportPipelineJob): SecureImportPipelineJob {
+    if (!this.state.secureImportJobs) this.state.secureImportJobs = [];
+    const existingIdx = this.state.secureImportJobs.findIndex((j) => j.id === job.id);
+    if (existingIdx >= 0) {
+      this.state.secureImportJobs[existingIdx] = structuredClone(job);
+    } else {
+      this.state.secureImportJobs.push(structuredClone(job));
+    }
+    return structuredClone(job);
+  }
+
+  public getSecureImportJob(jobId: string): SecureImportPipelineJob | undefined {
+    const found = (this.state.secureImportJobs || []).find((j) => j.id === jobId);
+    return found ? structuredClone(found) : undefined;
+  }
+
+  public listSecureImportJobs(): SecureImportPipelineJob[] {
+    return (this.state.secureImportJobs || []).map((j) => structuredClone(j));
+  }
+
+  public saveDatabaseSandboxSession(session: DatabaseSandboxSession): DatabaseSandboxSession {
+    if (!this.state.databaseSandboxSessions) this.state.databaseSandboxSessions = [];
+    const existingIdx = this.state.databaseSandboxSessions.findIndex((s) => s.sessionId === session.sessionId);
+    if (existingIdx >= 0) {
+      this.state.databaseSandboxSessions[existingIdx] = structuredClone(session);
+    } else {
+      this.state.databaseSandboxSessions.push(structuredClone(session));
+    }
+    return structuredClone(session);
+  }
+
+  public getDatabaseSandboxSession(sessionId: string): DatabaseSandboxSession | undefined {
+    const found = (this.state.databaseSandboxSessions || []).find((s) => s.sessionId === sessionId);
+    return found ? structuredClone(found) : undefined;
+  }
+
+  public listDatabaseSandboxSessions(): DatabaseSandboxSession[] {
+    return (this.state.databaseSandboxSessions || []).map((s) => structuredClone(s));
+  }
+
+  public saveDataExport(exportRes: DataExportResult): DataExportResult {
+    if (!this.state.dataExports) this.state.dataExports = [];
+    this.state.dataExports.unshift(structuredClone(exportRes));
+    return structuredClone(exportRes);
+  }
+
+  public listDataExports(): DataExportResult[] {
+    return (this.state.dataExports || []).map((e) => structuredClone(e));
+  }
+
+  // ============================================================================
+  // PROMPT 16 : SURVEILLANCE, ALERTES DE SÉCURITÉ, RESTORE DRILLS & SESSIONS
+  // ============================================================================
+
+  public listSecurityAlerts(): SecurityAlertRecord[] {
+    return (this.state.securityAlerts || []).map((a) => structuredClone(a));
+  }
+
+  public addSecurityAlert(alert: SecurityAlertRecord): SecurityAlertRecord {
+    if (!this.state.securityAlerts) this.state.securityAlerts = [];
+    this.state.securityAlerts.unshift(structuredClone(alert));
+    return structuredClone(alert);
+  }
+
+  public resolveSecurityAlert(alertId: string, resolvedBy: string): SecurityAlertRecord | undefined {
+    if (!this.state.securityAlerts) return undefined;
+    const alert = this.state.securityAlerts.find((a) => a.id === alertId);
+    if (!alert) return undefined;
+    alert.status = 'RESOLVED';
+    alert.resolvedAt = new Date().toISOString();
+    alert.resolvedBy = resolvedBy;
+    return structuredClone(alert);
+  }
+
+  public getAllActiveSessions(): AuthSessionDetail[] {
+    return Array.from(this.authSessionsStore.values()).map((s) => structuredClone(s));
+  }
+
+  public saveRestoreDrill(drill: BackupRestoreDrillResult): BackupRestoreDrillResult {
+    if (!this.state.backupRestoreDrills) this.state.backupRestoreDrills = [];
+    this.state.backupRestoreDrills.unshift(structuredClone(drill));
+    return structuredClone(drill);
+  }
+
+  public listRestoreDrills(): BackupRestoreDrillResult[] {
+    return (this.state.backupRestoreDrills || []).map((d) => structuredClone(d));
   }
 }

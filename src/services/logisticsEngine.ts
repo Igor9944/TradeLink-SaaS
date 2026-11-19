@@ -811,9 +811,7 @@ export class LogisticsEngine {
 
     // Détection d'anomalie de chaîne du froid
     let temperatureAnomalyDetected = false;
-    const isColdChain = Boolean(
-      shipment.icon3d === 'cold-chain' || (shipment.packages && shipment.packages.some((p) => p.isColdChainAtp))
-    );
+    const isColdChain = Boolean(shipment.icon3d === 'cold-chain' || shipment.packages?.some((p) => p.isColdChainAtp));
     if (isColdChain && typeof gpsData.ambientTempCelsius === 'number') {
       // Pour du surgelé FRC (-18°C), alerte si température > -12°C
       if (gpsData.ambientTempCelsius > -12) {
@@ -958,9 +956,7 @@ export class LogisticsEngine {
     const nowIso = new Date().toISOString().slice(0, 10);
     const trackingSuffix = shipment.trackingNumber.slice(-6);
 
-    const isColdChain = Boolean(
-      shipment.icon3d === 'cold-chain' || (shipment.packages && shipment.packages.some((p) => p.isColdChainAtp))
-    );
+    const isColdChain = Boolean(shipment.icon3d === 'cold-chain' || shipment.packages?.some((p) => p.isColdChainAtp));
 
     // 1. e-CMR International (Convention de Genève 2008)
     const cmrNumber = `CMR-INT-${trackingSuffix}`;
