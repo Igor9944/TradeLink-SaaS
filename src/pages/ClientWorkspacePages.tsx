@@ -32,12 +32,14 @@ import {
   ShieldAlert,
   ShieldCheck,
   RefreshCw,
+  FileText,
 } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import { formatCurrency, downloadDataExport } from '../i18n/translations';
 import { ActorKycWorkspaceView } from '../components/kyc/KycModuleViews';
 import { Icon3D } from '../components/ui/Icon3D';
 import { InteractiveLogisticsMap } from '../components/logistics/InteractiveLogisticsMap';
+import { CommercialDocumentViewerModal } from '../components/CommercialDocumentViewerModal';
 import { INITIAL_SHIPMENT_WAYPOINTS } from '../services/logisticsEngine';
 import {
   Badge,
@@ -127,6 +129,10 @@ export const ClientWorkspacePage: React.FC<{
     openOrderDispute,
     initiatePaymentMultiProvider,
     confirmPaymentTransaction,
+    commercialDocuments,
+    activeDocumentPreview,
+    setActiveDocumentPreview,
+    downloadCommercialDocumentPdfAction,
   } = useApp();
 
   const navigate = useNavigate();
@@ -138,6 +144,13 @@ export const ClientWorkspacePage: React.FC<{
   );
   const myInvoices = invoices.filter(
     (i) => i.clientId === currentUser.id || currentUser.role === 'ADMIN'
+  );
+  const myCommercialDocuments = commercialDocuments.filter(
+    (d) =>
+      d.recipient.id === currentUser.id ||
+      d.issuer.id === currentUser.id ||
+      d.createdByUserId === currentUser.id ||
+      currentUser.role === 'ADMIN'
   );
   const myQuotes = quotes.filter(
     (q) => q.clientId === currentUser.id || currentUser.role === 'ADMIN'
@@ -1987,95 +2000,227 @@ export const ClientWorkspacePage: React.FC<{
       {/* 5. FACTURES & HISTORIQUE DES PAIEMENTS (/client/factures)              */}
       {/* ===================================================================== */}
       {section === 'factures' && (
-        <Card
-          title="Mes Factures Commerciales & Règlements"
-          subtitle="Facturation conforme aux exigences comptables et fiscales de votre juridiction"
-          action={
-            <Link to="/client/paiements">
-              <Button size="sm" variant="secondary">Historique des Règlements →</Button>
-            </Link>
-          }
-        >
-          <DataTable
-            caption="Liste des factures du client"
-            keyExtractor={(inv) => inv.id}
-            data={myInvoices}
-            columns={[
-              {
-                key: 'num',
-                header: 'N° Facture',
-                isRowHeader: true,
-                render: (inv) => <span className="font-mono font-bold text-[#E85D22]">{inv.invoiceNumber}</span>,
-              },
-              {
-                key: 'ord',
-                header: 'Commande',
-                render: (inv) => <span className="font-mono text-xs">{inv.orderNumber}</span>,
-              },
-              {
-                key: 'due',
-                header: 'Échéance',
-                render: (inv) => <span className="font-mono text-xs text-slate-400">{inv.dueAt}</span>,
-              },
-              {
-                key: 'ht',
-                header: 'Montant HT',
-                render: (inv) => <span className="font-mono text-xs">{formatCurrency(parseFloat(inv.subtotal))}</span>,
-              },
-              {
-                key: 'tot',
-                header: 'Total TTC',
-                render: (inv) => (
-                  <span className="font-mono font-bold text-slate-900 dark:text-white">
-                    {formatCurrency(parseFloat(inv.totalAmount))}
-                  </span>
-                ),
-              },
-              {
-                key: 'status',
-                header: 'Statut',
-                render: (inv) => (
-                  <Badge variant={inv.status === 'PAID' ? 'success' : inv.status === 'OVERDUE' ? 'danger' : 'warning'}>
-                    {inv.status}
-                  </Badge>
-                ),
-              },
-              {
-                key: 'actions',
-                header: 'Actions',
-                render: (inv) => (
-                  <div className="flex items-center gap-1.5">
-                    {inv.status !== 'PAID' ? (
+        <div className="space-y-6">
+          {/* NOUVEAU : FACTURATION LÉGALE MULTI-JURIDICTIONS SCELLÉE SHA-256 */}
+          <Card
+            title="Facturation B2B Multi-Juridictions & Avoirs Scellés"
+            subtitle="Conforme aux exigences fiscales (FR/UE, Maroc, Tunisie, Émirats GCC, International) avec scellement SHA-256"
+            action={
+              <Link to="/client/paiements">
+                <Button size="sm" variant="secondary">Historique des Règlements →</Button>
+              </Link>
+            }
+          >
+            <DataTable
+              caption="Registre officiel des factures et avoirs scellés"
+              keyExtractor={(doc) => doc.id}
+              data={myCommercialDocuments.filter(
+                (d) => d.documentType === 'COMMERCIAL_INVOICE' || d.documentType === 'CREDIT_NOTE'
+              )}
+              columns={[
+                {
+                  key: 'num',
+                  header: 'N° Document',
+                  isRowHeader: true,
+                  render: (doc) => (
+                    <div className="space-y-0.5">
+                      <span className="font-mono font-bold text-[#E85D22] block">{doc.documentNumber}</span>
+                      <span className="text-[10px] text-slate-400 font-mono">v{doc.version}</span>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'type',
+                  header: 'Nature',
+                  render: (doc) => (
+                    <Badge variant={doc.documentType === 'CREDIT_NOTE' ? 'danger' : 'info'}>
+                      {doc.documentType === 'CREDIT_NOTE' ? 'AVOIR' : 'FACTURE'}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: 'jur',
+                  header: 'Juridiction',
+                  render: (doc) => (
+                    <span className="px-2 py-0.5 rounded font-mono text-[10px] font-bold bg-slate-100 dark:bg-[#0E3A3F] text-slate-700 dark:text-slate-200">
+                      {doc.jurisdiction}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'issuer',
+                  header: 'Émetteur',
+                  render: (doc) => <span className="text-xs font-semibold">{doc.issuer.companyName}</span>,
+                },
+                {
+                  key: 'dates',
+                  header: 'Émission / Échéance',
+                  render: (doc) => (
+                    <div className="text-[11px] font-mono text-slate-500">
+                      <div>Émis : {doc.issuedAt.slice(0, 10)}</div>
+                      {doc.dueAt && <div className="text-slate-400">Éch : {doc.dueAt.slice(0, 10)}</div>}
+                    </div>
+                  ),
+                },
+                {
+                  key: 'tot',
+                  header: 'Total TTC',
+                  render: (doc) => (
+                    <span
+                      className={`font-mono font-bold ${
+                        doc.documentType === 'CREDIT_NOTE'
+                          ? 'text-red-600 dark:text-red-400'
+                          : 'text-slate-900 dark:text-white'
+                      }`}
+                    >
+                      {doc.documentType === 'CREDIT_NOTE' ? '-' : ''}
+                      {doc.totalTtc} {doc.currency}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'seal',
+                  header: 'Sceau SHA-256',
+                  render: (doc) => (
+                    <div className="flex items-center gap-1.5 font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
+                      <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate max-w-[100px]">{doc.digitalSealSha256.slice(0, 10)}...</span>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'status',
+                  header: 'Statut',
+                  render: (doc) => (
+                    <Badge
+                      variant={
+                        doc.status === 'PAID'
+                          ? 'success'
+                          : doc.status === 'CANCELLED'
+                          ? 'danger'
+                          : doc.status === 'ISSUED'
+                          ? 'info'
+                          : 'neutral'
+                      }
+                    >
+                      {doc.status}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: 'actions',
+                  header: 'Actions',
+                  render: (doc) => (
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setActiveDocumentPreview(doc)}
+                      >
+                        <FileText className="w-3.5 h-3.5 text-teal-600" />
+                        Aperçu
+                      </Button>
                       <Button
                         size="sm"
                         variant="primary"
+                        onClick={() => downloadCommercialDocumentPdfAction(doc.id)}
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        PDF
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+
+          {/* FACTURES DU COMPTE HISTORIQUES */}
+          <Card
+            title="Mes Factures Commerciales & Règlements"
+            subtitle="Facturation conforme aux exigences comptables et fiscales de votre juridiction"
+          >
+            <DataTable
+              caption="Liste des factures du client"
+              keyExtractor={(inv) => inv.id}
+              data={myInvoices}
+              columns={[
+                {
+                  key: 'num',
+                  header: 'N° Facture',
+                  isRowHeader: true,
+                  render: (inv) => <span className="font-mono font-bold text-[#E85D22]">{inv.invoiceNumber}</span>,
+                },
+                {
+                  key: 'ord',
+                  header: 'Commande',
+                  render: (inv) => <span className="font-mono text-xs">{inv.orderNumber}</span>,
+                },
+                {
+                  key: 'due',
+                  header: 'Échéance',
+                  render: (inv) => <span className="font-mono text-xs text-slate-400">{inv.dueAt}</span>,
+                },
+                {
+                  key: 'ht',
+                  header: 'Montant HT',
+                  render: (inv) => <span className="font-mono text-xs">{formatCurrency(parseFloat(inv.subtotal))}</span>,
+                },
+                {
+                  key: 'tot',
+                  header: 'Total TTC',
+                  render: (inv) => (
+                    <span className="font-mono font-bold text-slate-900 dark:text-white">
+                      {formatCurrency(parseFloat(inv.totalAmount))}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'status',
+                  header: 'Statut',
+                  render: (inv) => (
+                    <Badge variant={inv.status === 'PAID' ? 'success' : inv.status === 'OVERDUE' ? 'danger' : 'warning'}>
+                      {inv.status}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: 'actions',
+                  header: 'Actions',
+                  render: (inv) => (
+                    <div className="flex items-center gap-1.5">
+                      {inv.status !== 'PAID' ? (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          onClick={() => {
+                            payInvoice(inv.id);
+                            notifyToast(`Facture ${inv.invoiceNumber} réglée via Stripe avec succès !`, 'success');
+                          }}
+                        >
+                          Payer via Stripe
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-emerald-600 font-bold">✓ Réglée</span>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="secondary"
                         onClick={() => {
-                          payInvoice(inv.id);
-                          notifyToast(`Facture ${inv.invoiceNumber} réglée via Stripe avec succès !`, 'success');
+                          downloadDataExport(`facture_${inv.invoiceNumber}.json`, JSON.stringify(inv, null, 2), 'application/json');
+                          notifyToast(`Facture ${inv.invoiceNumber} téléchargée !`, 'info');
                         }}
                       >
-                        Payer via Stripe
+                        <Download className="w-3.5 h-3.5" />
+                        JSON
                       </Button>
-                    ) : (
-                      <span className="text-xs text-emerald-600 font-bold">✓ Réglée</span>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => {
-                        downloadDataExport(`facture_${inv.invoiceNumber}.json`, JSON.stringify(inv, null, 2), 'application/json');
-                        notifyToast(`Facture ${inv.invoiceNumber} téléchargée !`, 'info');
-                      }}
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      PDF
-                    </Button>
-                  </div>
-                ),
-              },
-            ]}
-          />
-        </Card>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+        </div>
       )}
 
       {/* 5B. HISTORIQUE DES PAIEMENTS (/client/paiements) */}
@@ -2208,17 +2353,126 @@ export const ClientWorkspacePage: React.FC<{
       {/* ===================================================================== */}
       {section === 'documents' && (
         <div className="space-y-6">
+          {/* REGISTRE CENTRAL DES DOCUMENTS COMMERCIAUX SCELLÉS (7 TYPES B2B) */}
           <Card
-            title="Mes Documents GED, Contrats Cadres & Extraction OCR"
-            subtitle="Chiffrement KMS AES-256-GCM et contrôle antivirus ClamAV sur tous les fichiers"
+            title="Registre Central des Pièces Commerciales Scellées"
+            subtitle="Devis, Bons de commande, Confirmations, Factures, Avoirs, Reçus, BL et e-CMR avec sceau SHA-256"
             action={
               <Link to="/ocr-idp">
                 <Button size="sm" variant="primary">
                   <Sparkles className="w-3.5 h-3.5" />
-                  Ouvrir Studio OCR / IDP
+                  Studio OCR / IDP →
                 </Button>
               </Link>
             }
+          >
+            <DataTable
+              caption="Registre officiel des documents commerciaux du compte"
+              keyExtractor={(doc) => doc.id}
+              data={myCommercialDocuments}
+              columns={[
+                {
+                  key: 'num',
+                  header: 'N° Document',
+                  isRowHeader: true,
+                  render: (doc) => (
+                    <div className="space-y-0.5">
+                      <span className="font-mono font-bold text-[#E85D22] block">{doc.documentNumber}</span>
+                      <span className="text-[10px] text-slate-400 font-mono">v{doc.version}</span>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'type',
+                  header: 'Type de Pièce',
+                  render: (doc) => {
+                    const badgeVariants: Record<string, 'info' | 'success' | 'warning' | 'danger' | 'neutral'> = {
+                      QUOTE: 'warning',
+                      PURCHASE_ORDER: 'info',
+                      ORDER_CONFIRMATION: 'info',
+                      COMMERCIAL_INVOICE: 'neutral',
+                      CREDIT_NOTE: 'danger',
+                      PAYMENT_RECEIPT: 'success',
+                      DELIVERY_NOTE: 'info',
+                      TRANSPORT_DOCUMENT: 'info',
+                    };
+                    return (
+                      <Badge variant={badgeVariants[doc.documentType] || 'neutral'}>
+                        {doc.documentType.replace('_', ' ')}
+                      </Badge>
+                    );
+                  },
+                },
+                {
+                  key: 'jur',
+                  header: 'Juridiction',
+                  render: (doc) => (
+                    <span className="px-2 py-0.5 rounded font-mono text-[10px] font-bold bg-slate-100 dark:bg-[#0E3A3F] text-slate-700 dark:text-slate-200">
+                      {doc.jurisdiction}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'parties',
+                  header: 'Parties',
+                  render: (doc) => (
+                    <div className="text-[11px] space-y-0.5">
+                      <div>Émetteur : <strong>{doc.issuer.companyName}</strong></div>
+                      <div className="text-slate-400">Dest : {doc.recipient.companyName}</div>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'total',
+                  header: 'Montant TTC',
+                  render: (doc) => (
+                    <span className="font-mono font-bold text-slate-900 dark:text-white">
+                      {doc.totalTtc} {doc.currency}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'seal',
+                  header: 'Sceau SHA-256',
+                  render: (doc) => (
+                    <div className="flex items-center gap-1.5 font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
+                      <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate max-w-[120px]">{doc.digitalSealSha256.slice(0, 12)}...</span>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'actions',
+                  header: 'Actions',
+                  render: (doc) => (
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setActiveDocumentPreview(doc)}
+                      >
+                        <FileText className="w-3.5 h-3.5 text-teal-600" />
+                        Aperçu
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => downloadCommercialDocumentPdfAction(doc.id)}
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        PDF
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+
+          {/* FICHIERS ATTACHÉS GED & CLAMAV */}
+          <Card
+            title="Mes Documents GED, Contrats Cadres & Extraction OCR"
+            subtitle="Chiffrement KMS AES-256-GCM et contrôle antivirus ClamAV sur tous les fichiers"
           >
             <div className="grid sm:grid-cols-3 gap-4 text-xs">
               {[
@@ -2681,6 +2935,12 @@ export const ClientWorkspacePage: React.FC<{
           </div>
         </Modal>
       )}
+
+      {/* MODAL DE PRÉVISUALISATION ET GESTION DES DOCUMENTS COMMERCIAUX */}
+      <CommercialDocumentViewerModal
+        document={activeDocumentPreview}
+        onClose={() => setActiveDocumentPreview(null)}
+      />
     </div>
   );
 };

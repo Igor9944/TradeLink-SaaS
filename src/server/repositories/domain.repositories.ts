@@ -48,9 +48,12 @@ import {
   CommercialDisputeRecord,
   FinancialAnomalyRecord,
   PaymentReceiptRecord,
+  CommercialDocumentRecord,
+  DocumentSearchFilters,
 } from '../../types';
 import { defaultCatalogEngine } from '../../services/catalogEngine';
 import { defaultStockEngine } from '../../services/stockEngine';
+import { BillingDocumentEngine } from '../../services/billingDocumentEngine';
 import { PaginationAndFilterParams } from '../validators/schema.validator';
 import {
   INITIAL_CARRIER_VEHICLES,
@@ -94,6 +97,7 @@ export interface DatabaseStateSnapshot {
   voiceInteractions?: VoiceInteractionRecord[];
   ocrDocuments?: OcrDocumentDetail[];
   ocrQueueJobs?: OcrQueueJob[];
+  commercialDocuments?: CommercialDocumentRecord[];
 }
 
 export class TradeLinkRepositoryStore {
@@ -151,6 +155,7 @@ export class TradeLinkRepositoryStore {
       voiceInteractions: initialState.voiceInteractions ?? [],
       ocrDocuments: initialState.ocrDocuments ?? [],
       ocrQueueJobs: initialState.ocrQueueJobs ?? [],
+      commercialDocuments: initialState.commercialDocuments ?? [],
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
 
@@ -1123,5 +1128,31 @@ export class TradeLinkRepositoryStore {
       this.state.payments.unshift(structuredClone(payment));
     }
     return structuredClone(payment);
+  }
+
+  public saveCommercialDocument(doc: CommercialDocumentRecord): CommercialDocumentRecord {
+    if (!this.state.commercialDocuments) this.state.commercialDocuments = [];
+    const idx = this.state.commercialDocuments.findIndex((d) => d.id === doc.id || d.documentNumber === doc.documentNumber);
+    if (idx !== -1) {
+      this.state.commercialDocuments[idx] = structuredClone(doc);
+    } else {
+      this.state.commercialDocuments.unshift(structuredClone(doc));
+    }
+    return structuredClone(doc);
+  }
+
+  public findCommercialDocumentById(id: string): CommercialDocumentRecord | null {
+    if (!this.state.commercialDocuments) return null;
+    return this.state.commercialDocuments.find((d) => d.id === id) ?? null;
+  }
+
+  public findCommercialDocumentByNumber(docNumber: string): CommercialDocumentRecord | null {
+    if (!this.state.commercialDocuments) return null;
+    return this.state.commercialDocuments.find((d) => d.documentNumber === docNumber) ?? null;
+  }
+
+  public queryCommercialDocuments(filters: DocumentSearchFilters = {}): CommercialDocumentRecord[] {
+    const list = this.state.commercialDocuments || [];
+    return BillingDocumentEngine.filterDocuments(list, filters).map((d) => structuredClone(d));
   }
 }

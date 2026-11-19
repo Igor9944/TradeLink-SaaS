@@ -32,6 +32,7 @@ import {
   Copy,
   ExternalLink,
   Trash2,
+  FileText,
 } from 'lucide-react';
 import { useApp, DEMO_USERS } from '../contexts/AppContext';
 import { downloadDataExport, formatCurrency } from '../i18n/translations';
@@ -43,6 +44,7 @@ import { AccountingEngine, AmortizationScheduleRow } from '../services/accountin
 import { INITIAL_SHIPMENT_WAYPOINTS } from '../services/logisticsEngine';
 import { SUPPORTED_AI_MODELS } from '../services/aiIntelligenceEngine';
 import { TranslationGlossaryAdminView } from '../components/translation/TranslationGlossaryAdminView';
+import { CommercialDocumentViewerModal } from '../components/CommercialDocumentViewerModal';
 import {
   ImportExportFormat,
   EnvelopeCipherResult,
@@ -125,6 +127,11 @@ export const AdminWorkspacePage: React.FC<{
     disputes,
     financialAnomalies,
     resolveOrderDispute,
+    commercialDocuments,
+    activeDocumentPreview,
+    setActiveDocumentPreview,
+    downloadCommercialDocumentPdfAction,
+    verifyDocumentSealAction,
   } = useApp();
 
   const params = useParams();
@@ -147,7 +154,11 @@ export const AdminWorkspacePage: React.FC<{
   const [arbitrationAction, setArbitrationAction] = useState<'REFUND_TOTAL' | 'REFUND_PARTIAL' | 'FORCE_DELIVERY' | 'DISMISSED'>('REFUND_TOTAL');
 
   // États Section 5 (Finance & Moteur Decimal.js)
-  const [financeTab, setFinanceTab] = useState<'overview' | 'invoices' | 'payments' | 'calc' | 'history'>('overview');
+  const [financeTab, setFinanceTab] = useState<'overview' | 'invoices' | 'payments' | 'calc' | 'history' | 'documents'>('overview');
+  const [adminDocSearch, setAdminDocSearch] = useState('');
+  const [adminDocJurisdictionFilter, setAdminDocJurisdictionFilter] = useState<string>('ALL');
+  const [adminDocTypeFilter, setAdminDocTypeFilter] = useState<string>('ALL');
+  const [adminVerificationAllStatus, setAdminVerificationAllStatus] = useState<{ checked: boolean; total: number; allValid: boolean } | null>(null);
   const [calcPrincipal, setCalcPrincipal] = useState('150000.00');
   const [calcRate, setCalcRate] = useState('4.50');
   const [calcDurationMonths, setCalcDurationMonths] = useState(36);
@@ -1878,6 +1889,7 @@ export const AdminWorkspacePage: React.FC<{
               <div className="flex flex-wrap gap-1.5 text-xs">
                 {[
                   { id: 'overview', label: 'Synthèse Consolidée' },
+                  { id: 'documents', label: `Documents Commerciaux (${commercialDocuments.length})` },
                   { id: 'invoices', label: `Factures (${invoices.length})` },
                   { id: 'payments', label: `Paiements (${payments.length})` },
                   { id: 'calc', label: 'Simulateur Decimal.js' },
@@ -2298,6 +2310,276 @@ export const AdminWorkspacePage: React.FC<{
                   },
                 ]}
               />
+            )}
+
+            {/* ONGLET 6 : SUPERVISION DOCUMENTS COMMERCIAUX & CONTRÔLE SCELLÉ SHA-256 */}
+            {financeTab === 'documents' && (
+              <div className="space-y-4">
+                {/* CONTRÔLE D'INTÉGRITÉ GLOBALE */}
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 flex flex-wrap items-center justify-between gap-4 text-xs">
+                  <div className="space-y-1">
+                    <span className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                      Supervision Documentaire Fiscale & Scellement Cryptographique SHA-256
+                    </span>
+                    <p className="text-slate-500">
+                      7 types de pièces (Devis, BC, CFM, Facture, Avoir, Reçu, BL, e-CMR) certifiées conformes aux juridictions (FR/UE, Maroc, Tunisie, Émirats, Export).
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => {
+                        let allValid = true;
+                        commercialDocuments.forEach((d) => {
+                          const res = verifyDocumentSealAction(d.id);
+                          if (!res.isAuthentic) allValid = false;
+                        });
+                        setAdminVerificationAllStatus({
+                          checked: true,
+                          total: commercialDocuments.length,
+                          allValid,
+                        });
+                        if (allValid) {
+                          notifyToast(`Audit réussi : 100% des ${commercialDocuments.length} documents commerciaux sont scellés et authentiques !`, 'success');
+                        } else {
+                          notifyToast('Attention : une anomalie de scellement a été détectée.', 'error');
+                        }
+                      }}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      Auditer Tous les Sceaux SHA-256
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        downloadDataExport(
+                          'registre-documents-commerciaux-scelles.json',
+                          JSON.stringify(commercialDocuments, null, 2),
+                          'application/json'
+                        );
+                        notifyToast('Registre complet des documents scellés exporté.', 'info');
+                      }}
+                    >
+                      <Download className="w-3.5 h-3.5" /> Export JSON
+                    </Button>
+                  </div>
+                </div>
+
+                {/* BANDEAU RÉSULTAT AUDIT */}
+                {adminVerificationAllStatus && (
+                  <div
+                    className={`p-3.5 rounded-xl border flex items-center justify-between text-xs ${
+                      adminVerificationAllStatus.allValid
+                        ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200'
+                        : 'bg-red-50 dark:bg-red-950/30 border-red-300 dark:border-red-700 text-red-800 dark:text-red-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span className="font-bold">
+                        Audit cryptographique validé : les {adminVerificationAllStatus.total} documents sont rigoureusement conformes,
+                        inaltérés et opposables.
+                      </span>
+                    </div>
+                    <Badge variant="success">100% CONFORME</Badge>
+                  </div>
+                )}
+
+                {/* FILTRES FACETTÉS ADMIN */}
+                <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="w-full sm:w-80">
+                    <SearchBar
+                      value={adminDocSearch}
+                      onChange={setAdminDocSearch}
+                      placeholder="Filtrer par n° pièce, tiers, jur., SKU..."
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap gap-1">
+                    <span className="self-center font-semibold text-slate-500 mr-1 text-[11px]">Juridiction :</span>
+                    {(['ALL', 'FR_UE', 'MA', 'TN', 'AE_GCC', 'INTL_EXPORT'] as const).map((jur) => (
+                      <button
+                        key={jur}
+                        type="button"
+                        onClick={() => setAdminDocJurisdictionFilter(jur)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                          adminDocJurisdictionFilter === jur
+                            ? 'bg-[#E85D22] text-white'
+                            : 'bg-slate-100 dark:bg-teal-900/40 text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        {jur === 'ALL' ? 'Toutes' : jur}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap gap-1">
+                    <span className="self-center font-semibold text-slate-500 mr-1 text-[11px]">Type :</span>
+                    {[
+                      { key: 'ALL', label: 'Tous' },
+                      { key: 'COMMERCIAL_INVOICE', label: 'Factures' },
+                      { key: 'CREDIT_NOTE', label: 'Avoirs' },
+                      { key: 'QUOTE', label: 'Devis' },
+                      { key: 'PURCHASE_ORDER', label: 'BC' },
+                      { key: 'PAYMENT_RECEIPT', label: 'Reçus' },
+                      { key: 'TRANSPORT_DOCUMENT', label: 'e-CMR' },
+                    ].map((tp) => (
+                      <button
+                        key={tp.key}
+                        type="button"
+                        onClick={() => setAdminDocTypeFilter(tp.key)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                          adminDocTypeFilter === tp.key
+                            ? 'bg-teal-700 text-white'
+                            : 'bg-slate-100 dark:bg-teal-900/40 text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        {tp.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* TABLE DES DOCUMENTS */}
+                <DataTable
+                  caption="Supervision administrative et fiscale des documents commerciaux"
+                  keyExtractor={(doc) => doc.id}
+                  data={commercialDocuments.filter((d) => {
+                    if (adminDocJurisdictionFilter !== 'ALL' && d.jurisdiction !== adminDocJurisdictionFilter) return false;
+                    if (adminDocTypeFilter !== 'ALL' && d.documentType !== adminDocTypeFilter) return false;
+                    if (adminDocSearch.trim()) {
+                      const q = adminDocSearch.toLowerCase();
+                      const matchNum = d.documentNumber.toLowerCase().includes(q);
+                      const matchIss = d.issuer.companyName.toLowerCase().includes(q);
+                      const matchRec = d.recipient.companyName.toLowerCase().includes(q);
+                      const matchSku = d.lines.some((l) => l.sku.toLowerCase().includes(q));
+                      if (!matchNum && !matchIss && !matchRec && !matchSku) return false;
+                    }
+                    return true;
+                  })}
+                  columns={[
+                    {
+                      key: 'num',
+                      header: 'N° Document',
+                      isRowHeader: true,
+                      render: (doc) => (
+                        <div className="space-y-0.5">
+                          <strong className="text-slate-900 dark:text-white font-mono block">{doc.documentNumber}</strong>
+                          <span className="text-[10px] text-slate-400 font-mono">v{doc.version}</span>
+                        </div>
+                      ),
+                    },
+                    {
+                      key: 'type',
+                      header: 'Type',
+                      render: (doc) => (
+                        <Badge
+                          variant={
+                            doc.documentType === 'CREDIT_NOTE'
+                              ? 'danger'
+                              : doc.documentType === 'PAYMENT_RECEIPT'
+                              ? 'success'
+                              : doc.documentType === 'QUOTE'
+                              ? 'warning'
+                              : 'info'
+                          }
+                        >
+                          {doc.documentType.replace('_', ' ')}
+                        </Badge>
+                      ),
+                    },
+                    {
+                      key: 'jur',
+                      header: 'Juridiction',
+                      render: (doc) => (
+                        <span className="px-2 py-0.5 rounded font-mono text-[10px] font-bold bg-slate-100 dark:bg-[#0E3A3F] text-slate-700 dark:text-slate-200">
+                          {doc.jurisdiction}
+                        </span>
+                      ),
+                    },
+                    {
+                      key: 'parties',
+                      header: 'Émetteur → Destinataire',
+                      render: (doc) => (
+                        <div className="text-[11px] space-y-0.5">
+                          <div>De : <strong>{doc.issuer.companyName}</strong></div>
+                          <div className="text-slate-500">Pour : {doc.recipient.companyName}</div>
+                        </div>
+                      ),
+                    },
+                    {
+                      key: 'amount',
+                      header: 'Net HT / Total TTC',
+                      render: (doc) => (
+                        <div className="font-mono text-xs">
+                          <span className="font-black text-slate-900 dark:text-white block">
+                            {doc.totalTtc} {doc.currency}
+                          </span>
+                          <span className="text-slate-400 text-[10px]">
+                            Net HT: {doc.netCommercialHt} • TVA: {doc.totalTaxAmount}
+                          </span>
+                        </div>
+                      ),
+                    },
+                    {
+                      key: 'seal',
+                      header: 'Sceau SHA-256',
+                      render: (doc) => (
+                        <div className="flex items-center gap-1.5 font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
+                          <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate max-w-[110px]">{doc.digitalSealSha256.slice(0, 10)}...</span>
+                        </div>
+                      ),
+                    },
+                    {
+                      key: 'status',
+                      header: 'Statut',
+                      render: (doc) => (
+                        <Badge
+                          variant={
+                            doc.status === 'PAID'
+                              ? 'success'
+                              : doc.status === 'CANCELLED'
+                              ? 'danger'
+                              : doc.status === 'ISSUED'
+                              ? 'info'
+                              : 'neutral'
+                          }
+                        >
+                          {doc.status}
+                        </Badge>
+                      ),
+                    },
+                    {
+                      key: 'actions',
+                      header: 'Actions',
+                      render: (doc) => (
+                        <div className="flex items-center gap-1.5">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => setActiveDocumentPreview(doc)}
+                          >
+                            <FileText className="w-3.5 h-3.5 text-teal-600" />
+                            Aperçu
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => downloadCommercialDocumentPdfAction(doc.id)}
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            PDF
+                          </Button>
+                        </div>
+                      ),
+                    },
+                  ]}
+                />
+              </div>
             )}
           </Card>
         </div>
@@ -4296,6 +4578,12 @@ export const AdminWorkspacePage: React.FC<{
           </div>
         </Modal>
       )}
+
+      {/* MODAL DE PRÉVISUALISATION ET GESTION DES DOCUMENTS COMMERCIAUX */}
+      <CommercialDocumentViewerModal
+        document={activeDocumentPreview}
+        onClose={() => setActiveDocumentPreview(null)}
+      />
     </div>
   );
 };

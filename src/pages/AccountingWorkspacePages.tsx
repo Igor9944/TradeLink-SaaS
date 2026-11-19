@@ -33,7 +33,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
-import { formatCurrency, translateStatus, downloadDataExport } from '../i18n/translations';
+import { formatCurrency, downloadDataExport } from '../i18n/translations';
 import {
   Badge,
   Button,
@@ -42,7 +42,8 @@ import {
   Input,
   SearchBar,
 } from '../components/ui/DesignSystem';
-import { DayCountBasis, ThemeMode } from '../types';
+import { DayCountBasis, ThemeMode, TaxJurisdictionCode } from '../types';
+import { CommercialDocumentViewerModal } from '../components/CommercialDocumentViewerModal';
 import {
   AccountingEngine,
   AccountingEntryRecord,
@@ -79,6 +80,10 @@ export const AccountingWorkspacePage: React.FC<{
     stopVoiceDictation,
     voiceTranscript,
     notifyToast,
+    commercialDocuments,
+    activeDocumentPreview,
+    setActiveDocumentPreview,
+    downloadCommercialDocumentPdfAction,
   } = useApp();
 
   // --------------------------------------------------------------------------
@@ -125,6 +130,26 @@ export const AccountingWorkspacePage: React.FC<{
   // Filtres factures & documents
   const [invoiceSearch, setInvoiceSearch] = useState('');
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'ALL' | 'PAID' | 'ISSUED' | 'OVERDUE'>('ALL');
+  const [selectedJurisdictionFilter, setSelectedJurisdictionFilter] = useState<'ALL' | TaxJurisdictionCode>('ALL');
+  const [selectedDocTypeFilter, setSelectedDocTypeFilter] = useState<string>('ALL');
+
+  const filteredCommercialDocuments = useMemo(() => {
+    return commercialDocuments.filter((d) => {
+      if (selectedJurisdictionFilter !== 'ALL' && d.jurisdiction !== selectedJurisdictionFilter) return false;
+      if (selectedDocTypeFilter !== 'ALL' && d.documentType !== selectedDocTypeFilter) return false;
+      if (invoiceStatusFilter !== 'ALL' && d.status !== invoiceStatusFilter) return false;
+      if (invoiceSearch.trim()) {
+        const q = invoiceSearch.toLowerCase();
+        const matchNum = d.documentNumber.toLowerCase().includes(q);
+        const matchIssuer = d.issuer.companyName.toLowerCase().includes(q);
+        const matchRecipient = d.recipient.companyName.toLowerCase().includes(q);
+        const matchOrder = d.orderNumber?.toLowerCase().includes(q);
+        const matchSku = d.lines.some((l) => l.sku.toLowerCase().includes(q));
+        if (!matchNum && !matchIssuer && !matchRecipient && !matchOrder && !matchSku) return false;
+      }
+      return true;
+    });
+  }, [commercialDocuments, selectedJurisdictionFilter, selectedDocTypeFilter, invoiceStatusFilter, invoiceSearch]);
 
   // Alerte sécurité Stage 3 (Tentative de modification refusée)
   const [stage3AlertOpen, setStage3AlertOpen] = useState(false);
@@ -239,19 +264,6 @@ export const AccountingWorkspacePage: React.FC<{
   const financialStatements = useMemo(() => {
     return AccountingEngine.generateFinancialStatements(trialBalance.items, framework);
   }, [trialBalance, framework]);
-
-  // Filtrage des factures
-  const filteredInvoices = useMemo(() => {
-    return invoices.filter((inv) => {
-      const matchesSearch =
-        inv.invoiceNumber.toLowerCase().includes(invoiceSearch.toLowerCase()) ||
-        inv.clientName.toLowerCase().includes(invoiceSearch.toLowerCase()) ||
-        inv.orderNumber.toLowerCase().includes(invoiceSearch.toLowerCase());
-      const matchesStatus =
-        invoiceStatusFilter === 'ALL' || inv.status === invoiceStatusFilter;
-      return matchesSearch && matchesStatus;
-    });
-  }, [invoices, invoiceSearch, invoiceStatusFilter]);
 
   // Filtrage des écritures
   const filteredEntries = useMemo(() => {
@@ -499,134 +511,253 @@ export const AccountingWorkspacePage: React.FC<{
       {/* 2. GESTION DOCUMENTAIRE & FACTURES (/comptable/factures & documents)  */}
       {/* ===================================================================== */}
       {(section === 'factures' || section === 'documents') && (
-        <Card
-          title="Référentiel Documentaire & Factures Commerciales (Page 63)"
-          subtitle="Consultation des pièces comptables, factures, devis chiffrés et justificatifs fiscaux."
-          action={
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                downloadDataExport('factures-audit-comptable.json', JSON.stringify(invoices, null, 2), 'application/json');
-                notifyToast('Export des factures comptables téléchargé.', 'success');
-              }}
-            >
-              <Download className="w-4 h-4" /> Export Factures JSON
-            </Button>
-          }
-        >
-          {/* Recherche et filtres */}
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <div className="w-full sm:w-80">
-              <SearchBar
-                value={invoiceSearch}
-                onChange={setInvoiceSearch}
-                placeholder="Rechercher par numéro de facture, client, commande..."
-              />
+        <div className="space-y-6">
+          {/* BANDEAU GOUVERNANCE STAGE 3 */}
+          <div className="p-3.5 rounded-2xl bg-teal-50 dark:bg-teal-950/30 border border-teal-200 dark:border-teal-800 flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2 text-teal-800 dark:text-teal-200">
+              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>
+                <strong>Gouvernance Stage 3 Comptable :</strong> Accès exhaustif en consultation, audit et
+                téléchargement sur toutes les juridictions (FR/UE, Maroc, Tunisie, Émirats, Export).
+                Immutabilité garantie par sceau SHA-256.
+              </span>
             </div>
-
-            <div className="flex gap-1.5 text-xs">
-              {(['ALL', 'PAID', 'ISSUED', 'OVERDUE'] as const).map((st) => (
-                <button
-                  key={st}
-                  type="button"
-                  onClick={() => setInvoiceStatusFilter(st)}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition-all ${
-                    invoiceStatusFilter === st
-                      ? 'bg-[#E85D22] text-white shadow-sm'
-                      : 'bg-slate-100 dark:bg-teal-900/40 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  {st === 'ALL'
-                    ? 'Toutes'
-                    : st === 'PAID'
-                    ? 'Payées'
-                    : st === 'ISSUED'
-                    ? 'Émises'
-                    : 'En retard'}
-                </button>
-              ))}
-            </div>
+            <Badge variant="success">INVIOLABILITÉ SCELLÉE</Badge>
           </div>
 
-          <DataTable
-            caption="Factures commerciales enregistrées pour consultation et audit"
-            keyExtractor={(i) => i.id}
-            data={filteredInvoices}
-            columns={[
-              {
-                key: 'inv',
-                header: 'N° Facture & Pièce',
-                isRowHeader: true,
-                render: (i) => (
-                  <div>
-                    <strong className="text-slate-900 dark:text-white">{i.invoiceNumber}</strong>
-                    <p className="text-[10px] text-slate-400 font-mono">Commande : {i.orderNumber}</p>
-                  </div>
-                ),
-              },
-              {
-                key: 'client',
-                header: 'Client & Fournisseur',
-                render: (i) => (
-                  <div>
-                    <strong className="text-slate-900 dark:text-white block">{i.clientName}</strong>
-                    <span className="text-slate-500 text-[11px]">{i.supplierName}</span>
-                  </div>
-                ),
-              },
-              {
-                key: 'amount',
-                header: 'Montants HT / TTC',
-                render: (i) => (
-                  <div>
-                    <span className="font-extrabold text-sm block">
-                      {formatCurrency(i.totalAmount, i.currency, locale)}
+          <Card
+            title="Registre Fiscal & Pièces Commerciales Scellées (Page 63)"
+            subtitle="Devis, bons de commande, confirmations, factures, avoirs, reçus, BL et e-CMR avec contrôle de validité SHA-256"
+            action={
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  downloadDataExport(
+                    'audit-pieces-commerciales-scellees.json',
+                    JSON.stringify(filteredCommercialDocuments, null, 2),
+                    'application/json'
+                  );
+                  notifyToast('Export des pièces comptables scellées téléchargé.', 'success');
+                }}
+              >
+                <Download className="w-4 h-4" /> Exporter Registre Fiscal (JSON)
+              </Button>
+            }
+          >
+            {/* BARRE DE FILTRAGE FACETTÉ : RECHERCHE + JURIDICTION + NATURE + STATUT */}
+            <div className="space-y-3 mb-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="w-full sm:w-80">
+                  <SearchBar
+                    value={invoiceSearch}
+                    onChange={setInvoiceSearch}
+                    placeholder="Recherche par n° pièce, tiers, commande, SKU..."
+                  />
+                </div>
+
+                {/* FILTRES PAR JURIDICTION FISCALE */}
+                <div className="flex flex-wrap gap-1 text-xs">
+                  <span className="self-center font-semibold text-slate-500 mr-1 text-[11px]">Juridiction :</span>
+                  {(['ALL', 'FR_UE', 'MA', 'TN', 'AE_GCC', 'INTL_EXPORT'] as const).map((jur) => (
+                    <button
+                      key={jur}
+                      type="button"
+                      onClick={() => setSelectedJurisdictionFilter(jur)}
+                      className={`px-2.5 py-1 rounded-lg font-mono text-[11px] font-bold transition-all ${
+                        selectedJurisdictionFilter === jur
+                          ? 'bg-[#E85D22] text-white shadow-sm'
+                          : 'bg-slate-100 dark:bg-teal-900/40 text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                      }`}
+                    >
+                      {jur === 'ALL' ? 'Toutes' : jur}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* FILTRES PAR TYPE DE DOCUMENT */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-teal-800/40 text-xs">
+                <div className="flex flex-wrap gap-1">
+                  <span className="self-center font-semibold text-slate-500 mr-1 text-[11px]">Type de pièce :</span>
+                  {[
+                    { key: 'ALL', label: 'Tous' },
+                    { key: 'COMMERCIAL_INVOICE', label: 'Factures' },
+                    { key: 'CREDIT_NOTE', label: 'Avoirs' },
+                    { key: 'QUOTE', label: 'Devis' },
+                    { key: 'PURCHASE_ORDER', label: 'Bons de Commande' },
+                    { key: 'PAYMENT_RECEIPT', label: 'Reçus' },
+                    { key: 'TRANSPORT_DOCUMENT', label: 'e-CMR' },
+                    { key: 'DELIVERY_NOTE', label: 'Bons de Livraison' },
+                  ].map((tp) => (
+                    <button
+                      key={tp.key}
+                      type="button"
+                      onClick={() => setSelectedDocTypeFilter(tp.key)}
+                      className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
+                        selectedDocTypeFilter === tp.key
+                          ? 'bg-teal-700 text-white font-bold'
+                          : 'bg-slate-50 dark:bg-[#071E22] text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {tp.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* FILTRES STATUTS */}
+                <div className="flex gap-1">
+                  {(['ALL', 'ISSUED', 'PAID', 'CANCELLED'] as const).map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setInvoiceStatusFilter(st as any)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        invoiceStatusFilter === st
+                          ? 'bg-slate-800 dark:bg-white text-white dark:text-slate-900'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      {st === 'ALL' ? 'Tous Statuts' : st}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* TABLEAU CENTRAL DES DOCUMENTS COMMERCIAUX */}
+            <DataTable
+              caption="Registre fiscal et commercial multi-juridictions"
+              keyExtractor={(doc) => doc.id}
+              data={filteredCommercialDocuments}
+              columns={[
+                {
+                  key: 'num',
+                  header: 'N° Document',
+                  isRowHeader: true,
+                  render: (doc) => (
+                    <div className="space-y-0.5">
+                      <strong className="text-slate-900 dark:text-white font-mono">{doc.documentNumber}</strong>
+                      <span className="text-[10px] text-slate-400 font-mono block">v{doc.version}</span>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'type',
+                  header: 'Nature',
+                  render: (doc) => (
+                    <Badge
+                      variant={
+                        doc.documentType === 'CREDIT_NOTE'
+                          ? 'danger'
+                          : doc.documentType === 'PAYMENT_RECEIPT'
+                          ? 'success'
+                          : doc.documentType === 'QUOTE'
+                          ? 'warning'
+                          : 'info'
+                      }
+                    >
+                      {doc.documentType.replace('_', ' ')}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: 'jur',
+                  header: 'Juridiction',
+                  render: (doc) => (
+                    <span className="px-2 py-0.5 rounded font-mono text-[10px] font-bold bg-slate-100 dark:bg-[#0E3A3F] text-slate-700 dark:text-slate-200">
+                      {doc.jurisdiction}
                     </span>
-                    <span className="text-slate-400 text-[10px]">
-                      HT: {formatCurrency(i.subtotal, i.currency, locale)} • TVA: {formatCurrency(i.taxAmount, i.currency, locale)}
-                    </span>
-                  </div>
-                ),
-              },
-              {
-                key: 'dates',
-                header: 'Dates Émission / Échéance',
-                render: (i) => (
-                  <div className="font-mono text-[11px]">
-                    <p>Émise : {i.issuedAt}</p>
-                    <p className="text-slate-400">Échéance : {i.dueAt}</p>
-                  </div>
-                ),
-              },
-              {
-                key: 'status',
-                header: 'Statut',
-                render: (i) => (
-                  <Badge variant={i.status === 'PAID' ? 'success' : 'warning'}>
-                    {translateStatus(i.status, locale)}
-                  </Badge>
-                ),
-              },
-              {
-                key: 'actions',
-                header: 'Pièces',
-                render: (i) => (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      downloadDataExport(`facture-${i.invoiceNumber}.json`, JSON.stringify(i, null, 2), 'application/json');
-                      notifyToast(`Facture ${i.invoiceNumber} téléchargée.`, 'info');
-                    }}
-                  >
-                    <Download className="w-3.5 h-3.5" /> PDF / JSON
-                  </Button>
-                ),
-              },
-            ]}
-          />
-        </Card>
+                  ),
+                },
+                {
+                  key: 'parties',
+                  header: 'Tiers Émetteur / Destinataire',
+                  render: (doc) => (
+                    <div className="text-[11px] space-y-0.5">
+                      <div>Émetteur : <strong>{doc.issuer.companyName}</strong></div>
+                      <div className="text-slate-500">Dest : {doc.recipient.companyName}</div>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'amounts',
+                  header: 'Net HT / Total TTC',
+                  render: (doc) => (
+                    <div className="font-mono text-xs">
+                      <span
+                        className={`font-black block ${
+                          doc.documentType === 'CREDIT_NOTE'
+                            ? 'text-red-600 dark:text-red-400'
+                            : 'text-slate-900 dark:text-white'
+                        }`}
+                      >
+                        {doc.documentType === 'CREDIT_NOTE' ? '-' : ''}
+                        {doc.totalTtc} {doc.currency}
+                      </span>
+                      <span className="text-slate-400 text-[10px]">
+                        Net HT: {doc.netCommercialHt} • TVA: {doc.totalTaxAmount}
+                      </span>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'seal',
+                  header: 'Sceau SHA-256',
+                  render: (doc) => (
+                    <div className="flex items-center gap-1.5 font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
+                      <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate max-w-[100px]">{doc.digitalSealSha256.slice(0, 10)}...</span>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'status',
+                  header: 'Statut',
+                  render: (doc) => (
+                    <Badge
+                      variant={
+                        doc.status === 'PAID'
+                          ? 'success'
+                          : doc.status === 'CANCELLED'
+                          ? 'danger'
+                          : doc.status === 'ISSUED'
+                          ? 'info'
+                          : 'neutral'
+                      }
+                    >
+                      {doc.status}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: 'actions',
+                  header: 'Actions Audit',
+                  render: (doc) => (
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setActiveDocumentPreview(doc)}
+                      >
+                        <FileText className="w-3.5 h-3.5 text-teal-600" />
+                        Auditer & Aperçu
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => downloadCommercialDocumentPdfAction(doc.id)}
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        PDF
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+        </div>
       )}
 
       {/* ===================================================================== */}
@@ -1363,6 +1494,12 @@ export const AccountingWorkspacePage: React.FC<{
           </div>
         </div>
       )}
+
+      {/* MODAL DE PRÉVISUALISATION ET GESTION DES DOCUMENTS COMMERCIAUX */}
+      <CommercialDocumentViewerModal
+        document={activeDocumentPreview}
+        onClose={() => setActiveDocumentPreview(null)}
+      />
     </div>
   );
 };

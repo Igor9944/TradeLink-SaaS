@@ -109,7 +109,17 @@ import {
   DisputeReason,
   CartValidationResult,
   CartItem,
+  CommercialDocumentRecord,
+  CommercialDocumentType,
+  TaxJurisdictionCode,
+  DocumentSearchFilters,
+  DocumentPartyInfo,
+  TemporaryDownloadTokenPayload,
+  DocumentTransportDetails,
 } from '../../types';
+import {
+  BillingDocumentEngine,
+} from '../../services/billingDocumentEngine';
 import {
   defaultStockEngine,
   StockError,
@@ -7170,6 +7180,247 @@ export class TradeLinkDomainServices {
     }
     const effectiveSupplierId = actor?.role === 'FOURNISSEUR' ? actor.id : supplierId;
     return defaultStockEngine.getValuationReport(effectiveSupplierId);
+  }
+
+  // ============================================================================
+  // PROMPT 12 : GESTION DOCUMENTAIRE & FACTURATION MULTI-JURIDICTIONS
+  // ============================================================================
+
+  public createCommercialDocumentService(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    documentType: CommercialDocumentType;
+    jurisdiction: TaxJurisdictionCode;
+    issuer: DocumentPartyInfo;
+    recipient: DocumentPartyInfo;
+    carrier?: DocumentPartyInfo;
+    lines: {
+      sku: string;
+      description: Record<Locale, string>;
+      quantity: number;
+      unit: string;
+      unitPrice: string;
+      discountPct?: string;
+      taxRatePct?: string;
+      hsCode?: string;
+    }[];
+    orderId?: string;
+    orderNumber?: string;
+    quoteId?: string;
+    quoteNumber?: string;
+    originalInvoiceId?: string;
+    originalInvoiceNumber?: string;
+    creditNoteReason?: string;
+    paymentId?: string;
+    paymentReference?: string;
+    shipmentId?: string;
+    trackingNumber?: string;
+    shippingAmount?: string;
+    currency?: string;
+    validityDays?: number;
+    dueInDays?: number;
+    incoterm?: string;
+    incotermLocation?: string;
+    transportDetails?: DocumentTransportDetails;
+    correlationId: string;
+    ipAddress: string;
+  }): CommercialDocumentRecord {
+    // RBAC: Comptable en lecture seule (Stage 3)
+    if (params.actor.role === 'COMPTABLE') {
+      throw new AppError(403, 'COMPTABLE_STAGE3_READONLY_SOURCE_DATA', 'Le profil COMPTABLE est en lecture seule sur les documents légaux.');
+    }
+    // Client ne peut pas émettre de facture
+    if (params.actor.role === 'CLIENT' && (params.documentType === 'COMMERCIAL_INVOICE' || params.documentType === 'CREDIT_NOTE' || params.documentType === 'DELIVERY_NOTE')) {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_DOCUMENT_CREATION', 'Le Client ne peut pas émettre de facture, d’avoir ou de bon de livraison.');
+    }
+
+    const doc = BillingDocumentEngine.createCommercialDocument({
+      ...params,
+      createdByUserId: params.actor.id,
+      createdByUserName: params.actor.email,
+    });
+
+    this.repo.saveCommercialDocument(doc);
+
+    // Audit log
+    this.repo.addAuditLog({
+      id: `aud-doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      actorName: params.actor.email,
+      actorRole: params.actor.role,
+      action: `DOCUMENT_ISSUED_${params.documentType}`,
+      targetType: 'CommercialDocument',
+      targetId: doc.documentNumber,
+      result: 'SUCCESS',
+      correlationId: params.correlationId,
+      ipAddress: params.ipAddress,
+      details: `Document ${doc.documentNumber} (${doc.documentType}) émis sous juridiction ${doc.jurisdiction} pour un montant de ${doc.totalTtc} ${doc.currency}.`,
+    });
+
+    return doc;
+  }
+
+  public createCreditNoteService(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    invoiceId: string;
+    reason: string;
+    partialLines?: { sku: string; quantity: number }[];
+    correlationId: string;
+    ipAddress: string;
+  }): { creditNote: CommercialDocumentRecord; updatedOriginalInvoice: CommercialDocumentRecord } {
+    if (params.actor.role === 'COMPTABLE' || params.actor.role === 'CLIENT') {
+      throw new AppError(403, 'FORBIDDEN_CREDIT_NOTE_CREATION', 'Seul le Fournisseur émetteur ou l’Administrateur peut émettre une facture d’avoir.');
+    }
+
+    const originalInvoice = this.repo.findCommercialDocumentById(params.invoiceId);
+    if (!originalInvoice) {
+      throw new AppError(404, 'INVOICE_NOT_FOUND', 'Facture d’origine introuvable pour émettre un avoir.');
+    }
+
+    const actorInfo = {
+      id: params.actor.id,
+      name: (params.actor as any).companyName || params.actor.email,
+      email: params.actor.email,
+      role: params.actor.role,
+    };
+
+    BillingDocumentEngine.enforceDocumentAccess(actorInfo, originalInvoice, 'CREATE_CREDIT_NOTE');
+
+    const result = BillingDocumentEngine.createCreditNoteFromInvoice(
+      originalInvoice,
+      params.reason,
+      actorInfo,
+      params.partialLines
+    );
+
+    this.repo.saveCommercialDocument(result.creditNote);
+    this.repo.saveCommercialDocument(result.updatedOriginalInvoice);
+
+    // Audit log
+    this.repo.addAuditLog({
+      id: `aud-doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      actorName: params.actor.email,
+      actorRole: params.actor.role,
+      action: 'CREDIT_NOTE_ISSUED',
+      targetType: 'CommercialDocument',
+      targetId: result.creditNote.documentNumber,
+      result: 'SUCCESS',
+      correlationId: params.correlationId,
+      ipAddress: params.ipAddress,
+      details: `Avoir ${result.creditNote.documentNumber} émis en annulation/rectification de la facture ${originalInvoice.documentNumber} (Motif: ${params.reason}).`,
+    });
+
+    return result;
+  }
+
+  public getCommercialDocumentByIdService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    documentId: string
+  ): CommercialDocumentRecord {
+    const doc = this.repo.findCommercialDocumentById(documentId);
+    if (!doc) {
+      throw new AppError(404, 'DOCUMENT_NOT_FOUND', 'Document commercial introuvable.');
+    }
+    BillingDocumentEngine.enforceDocumentAccess(actor, doc, 'VIEW');
+    return doc;
+  }
+
+  public getCommercialDocumentPreviewService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    documentId: string,
+    targetLocale: Locale = 'fr'
+  ): { document: CommercialDocumentRecord; targetLocale: Locale; isSealValid: boolean } {
+    const doc = this.getCommercialDocumentByIdService(actor, documentId);
+    const isSealValid = BillingDocumentEngine.verifyDocumentSeal(doc);
+    return {
+      document: doc,
+      targetLocale,
+      isSealValid,
+    };
+  }
+
+  public generateCommercialDocumentPdfService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    documentId: string,
+    targetLocale: Locale = 'fr'
+  ): { pdfBuffer: Buffer; filename: string; mimeType: string } {
+    const doc = this.getCommercialDocumentByIdService(actor, documentId);
+    BillingDocumentEngine.enforceDocumentAccess(actor, doc, 'DOWNLOAD');
+    const pdfBuffer = BillingDocumentEngine.generateStandardPdfBuffer(doc, targetLocale);
+    return {
+      pdfBuffer,
+      filename: `${doc.documentNumber}.pdf`,
+      mimeType: 'application/pdf',
+    };
+  }
+
+  public createDocumentDownloadTokenService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    documentId: string,
+    secretKey = 'tradelink_doc_secret_key_9944'
+  ): TemporaryDownloadTokenPayload & { downloadUrl: string } {
+    const doc = this.getCommercialDocumentByIdService(actor, documentId);
+    BillingDocumentEngine.enforceDocumentAccess(actor, doc, 'DOWNLOAD');
+    const tokenPayload = BillingDocumentEngine.generateTemporaryDownloadToken(
+      doc.id,
+      doc.documentNumber,
+      actor.id,
+      secretKey,
+      900 // 15 min
+    );
+    const downloadUrl = `/api/v1/documents/${doc.id}/download?token=${tokenPayload.hmacSignature}&expires=${tokenPayload.expiresAt}&user=${actor.id}`;
+    return {
+      ...tokenPayload,
+      downloadUrl,
+    };
+  }
+
+  public verifyAndDownloadDocumentWithTokenService(
+    documentId: string,
+    token: string,
+    expiresAt: number,
+    userId: string,
+    secretKey = 'tradelink_doc_secret_key_9944',
+    targetLocale: Locale = 'fr'
+  ): { pdfBuffer: Buffer; filename: string; mimeType: string } {
+    const doc = this.repo.findCommercialDocumentById(documentId);
+    if (!doc) {
+      throw new AppError(404, 'DOCUMENT_NOT_FOUND', 'Document introuvable.');
+    }
+    const check = BillingDocumentEngine.verifyTemporaryDownloadToken(
+      documentId,
+      doc.documentNumber,
+      userId,
+      expiresAt,
+      token,
+      secretKey
+    );
+    if (!check.valid) {
+      throw new AppError(403, 'INVALID_OR_EXPIRED_DOWNLOAD_TOKEN', `Lien de téléchargement invalide ou expiré (${check.reason}).`);
+    }
+    const pdfBuffer = BillingDocumentEngine.generateStandardPdfBuffer(doc, targetLocale);
+    return {
+      pdfBuffer,
+      filename: `${doc.documentNumber}.pdf`,
+      mimeType: 'application/pdf',
+    };
+  }
+
+  public queryCommercialDocumentsService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    filters: DocumentSearchFilters
+  ): CommercialDocumentRecord[] {
+    const effectiveFilters = { ...filters };
+    const docs = this.repo.queryCommercialDocuments(effectiveFilters);
+    // Filtrage RBAC strict
+    return docs.filter((d) => {
+      try {
+        BillingDocumentEngine.enforceDocumentAccess(actor, d, 'VIEW');
+        return true;
+      } catch {
+        return false;
+      }
+    });
   }
 }
 

@@ -39,6 +39,7 @@ import {
   Check,
   X,
   FileSpreadsheet,
+  FileText,
 } from 'lucide-react';
 import { VoiceDictationButton } from '../components/voice/VoiceDictationButton';
 import { useApp } from '../contexts/AppContext';
@@ -46,6 +47,7 @@ import { formatCurrency, translateStatus, downloadDataExport } from '../i18n/tra
 import { ActorKycWorkspaceView } from '../components/kyc/KycModuleViews';
 import { ALL_3D_ICONS, Icon3D } from '../components/ui/Icon3D';
 import { InteractiveLogisticsMap } from '../components/logistics/InteractiveLogisticsMap';
+import { CommercialDocumentViewerModal } from '../components/CommercialDocumentViewerModal';
 import {
   Badge,
   Button,
@@ -112,6 +114,10 @@ export const SupplierWorkspacePage: React.FC<{
     stopVoiceDictation,
     voiceTranscript,
     notifyToast,
+    commercialDocuments,
+    activeDocumentPreview,
+    setActiveDocumentPreview,
+    downloadCommercialDocumentPdfAction,
   } = useApp();
 
   const navigate = useNavigate();
@@ -121,6 +127,15 @@ export const SupplierWorkspacePage: React.FC<{
   // ISOLATION STRICTE ANTI-IDOR (Chapitre 6.4)
   // Un fournisseur ne consulte et ne gère que les données qui lui appartiennent.
   // --------------------------------------------------------------------------
+  const myCommercialDocuments = useMemo(() => {
+    return commercialDocuments.filter(
+      (d) =>
+        d.issuer.id === currentUser.id ||
+        d.createdByUserId === currentUser.id ||
+        d.recipient.id === currentUser.id ||
+        currentUser.role === 'ADMIN'
+    );
+  }, [commercialDocuments, currentUser.id, currentUser.role]);
   const myProducts = useMemo(() => {
     return products.filter(
       (p) => p.supplierId === currentUser.id || currentUser.role === 'ADMIN'
@@ -1904,43 +1919,184 @@ export const SupplierWorkspacePage: React.FC<{
       {/* 5. DOCUMENTS / FACTURES ÉMISES (/fournisseur/documents)               */}
       {/* ===================================================================== */}
       {section === 'documents' && (
-        <Card
-          title="Factures Commerciales Émises & Archivées (Page 49)"
-          subtitle="Consultation des factures fournisseurs, états de paiement et rapprochements bancaires."
-        >
-          <div className="space-y-3 text-xs">
-            {myInvoices.map((inv) => (
-              <div
-                key={inv.id}
-                className="p-4 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 flex items-center justify-between"
-              >
-                <div>
-                  <p className="font-bold text-sm text-slate-900 dark:text-white">
-                    {inv.invoiceNumber} (Commande {inv.orderNumber})
-                  </p>
-                  <p className="text-slate-500">
-                    Acheteur : {inv.clientName} • Montant : {formatCurrency(inv.totalAmount, inv.currency, locale)}
-                  </p>
+        <div className="space-y-6">
+          {/* NOUVEAU : REGISTRE CENTRAL DES DOCUMENTS COMMERCIAUX SCELLÉS */}
+          <Card
+            title="Registre Officiel des Pièces Commerciales Scellées (Page 49)"
+            subtitle="Devis, bons de commande, confirmations, factures, avoirs et documents de transport certifiés SHA-256"
+          >
+            <DataTable
+              caption="Liste des documents commerciaux émis et reçus par le fournisseur"
+              keyExtractor={(doc) => doc.id}
+              data={myCommercialDocuments}
+              columns={[
+                {
+                  key: 'num',
+                  header: 'N° Document',
+                  isRowHeader: true,
+                  render: (doc) => (
+                    <div className="space-y-0.5">
+                      <span className="font-mono font-bold text-[#E85D22] block">{doc.documentNumber}</span>
+                      <span className="text-[10px] text-slate-400 font-mono">v{doc.version}</span>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'type',
+                  header: 'Nature',
+                  render: (doc) => {
+                    const badgeVariants: Record<string, 'info' | 'success' | 'warning' | 'danger' | 'neutral'> = {
+                      QUOTE: 'warning',
+                      PURCHASE_ORDER: 'info',
+                      ORDER_CONFIRMATION: 'info',
+                      COMMERCIAL_INVOICE: 'neutral',
+                      CREDIT_NOTE: 'danger',
+                      PAYMENT_RECEIPT: 'success',
+                      DELIVERY_NOTE: 'info',
+                      TRANSPORT_DOCUMENT: 'info',
+                    };
+                    return (
+                      <Badge variant={badgeVariants[doc.documentType] || 'neutral'}>
+                        {doc.documentType.replace('_', ' ')}
+                      </Badge>
+                    );
+                  },
+                },
+                {
+                  key: 'jur',
+                  header: 'Juridiction',
+                  render: (doc) => (
+                    <span className="px-2 py-0.5 rounded font-mono text-[10px] font-bold bg-slate-100 dark:bg-[#0E3A3F] text-slate-700 dark:text-slate-200">
+                      {doc.jurisdiction}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'client',
+                  header: 'Client / Destinataire',
+                  render: (doc) => <span className="text-xs font-semibold">{doc.recipient.companyName}</span>,
+                },
+                {
+                  key: 'due',
+                  header: 'Échéance',
+                  render: (doc) => (
+                    <span className="text-xs font-mono text-slate-500">
+                      {doc.dueAt ? doc.dueAt.slice(0, 10) : doc.issuedAt.slice(0, 10)}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'tot',
+                  header: 'Montant TTC',
+                  render: (doc) => (
+                    <span
+                      className={`font-mono font-bold ${
+                        doc.documentType === 'CREDIT_NOTE'
+                          ? 'text-red-600 dark:text-red-400'
+                          : 'text-slate-900 dark:text-white'
+                      }`}
+                    >
+                      {doc.documentType === 'CREDIT_NOTE' ? '-' : ''}
+                      {doc.totalTtc} {doc.currency}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'seal',
+                  header: 'Sceau SHA-256',
+                  render: (doc) => (
+                    <div className="flex items-center gap-1.5 font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
+                      <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate max-w-[100px]">{doc.digitalSealSha256.slice(0, 10)}...</span>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'status',
+                  header: 'Statut',
+                  render: (doc) => (
+                    <Badge
+                      variant={
+                        doc.status === 'PAID'
+                          ? 'success'
+                          : doc.status === 'CANCELLED'
+                          ? 'danger'
+                          : doc.status === 'ISSUED'
+                          ? 'info'
+                          : 'neutral'
+                      }
+                    >
+                      {doc.status}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: 'actions',
+                  header: 'Actions',
+                  render: (doc) => (
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setActiveDocumentPreview(doc)}
+                      >
+                        <FileText className="w-3.5 h-3.5 text-teal-600" />
+                        Gérer & Aperçu
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => downloadCommercialDocumentPdfAction(doc.id)}
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        PDF
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+
+          {/* HISTORIQUE FACTURES ERP */}
+          <Card
+            title="Historique des Factures Commerciales ERP"
+            subtitle="Consultation des factures fournisseurs, états de paiement et rapprochements bancaires."
+          >
+            <div className="space-y-3 text-xs">
+              {myInvoices.map((inv) => (
+                <div
+                  key={inv.id}
+                  className="p-4 rounded-xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 flex items-center justify-between"
+                >
+                  <div>
+                    <p className="font-bold text-sm text-slate-900 dark:text-white">
+                      {inv.invoiceNumber} (Commande {inv.orderNumber})
+                    </p>
+                    <p className="text-slate-500">
+                      Acheteur : {inv.clientName} • Montant : {formatCurrency(inv.totalAmount, inv.currency, locale)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Badge variant={inv.status === 'PAID' ? 'success' : 'warning'}>
+                      {translateStatus(inv.status, locale)}
+                    </Badge>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        downloadDataExport(`facture-${inv.invoiceNumber}.json`, JSON.stringify(inv, null, 2), 'application/json');
+                        notifyToast(`Facture ${inv.invoiceNumber} exportée.`, 'info');
+                      }}
+                    >
+                      <Download className="w-3.5 h-3.5" /> JSON
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <Badge variant={inv.status === 'PAID' ? 'success' : 'warning'}>
-                    {translateStatus(inv.status, locale)}
-                  </Badge>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      downloadDataExport(`facture-${inv.invoiceNumber}.json`, JSON.stringify(inv, null, 2), 'application/json');
-                      notifyToast(`Facture ${inv.invoiceNumber} exportée.`, 'info');
-                    }}
-                  >
-                    <Download className="w-3.5 h-3.5" /> PDF / JSON
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
+              ))}
+            </div>
+          </Card>
+        </div>
       )}
 
       {/* ===================================================================== */}
@@ -2727,6 +2883,12 @@ export const SupplierWorkspacePage: React.FC<{
         confirmLabel="Confirmer"
         onConfirm={handleExecuteDeleteOrArchive}
         onClose={() => setProductToDelete(null)}
+      />
+
+      {/* MODAL DE PRÉVISUALISATION ET GESTION DES DOCUMENTS COMMERCIAUX */}
+      <CommercialDocumentViewerModal
+        document={activeDocumentPreview}
+        onClose={() => setActiveDocumentPreview(null)}
       />
     </div>
   );

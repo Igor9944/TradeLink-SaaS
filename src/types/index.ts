@@ -1619,7 +1619,201 @@ export interface TypingIndicatorEvent {
   timestamp: string;
 }
 
+// ============================================================================
+// TYPES SYSTÈME DE FACTURATION ET GESTION DOCUMENTAIRE COMMERCIALE (PROMPT 12)
+// ============================================================================
 
+export type CommercialDocumentType =
+  | 'QUOTE'                   // Devis commercial
+  | 'PURCHASE_ORDER'          // Bon de commande acheteur
+  | 'ORDER_CONFIRMATION'      // Confirmation de commande fournisseur (Proforma)
+  | 'COMMERCIAL_INVOICE'      // Facture commerciale légale
+  | 'CREDIT_NOTE'             // Facture d'avoir (annulation / rectification légale)
+  | 'PAYMENT_RECEIPT'         // Quittance / Reçu de paiement certifié
+  | 'DELIVERY_NOTE'           // Bon de livraison / Bordereau de colisage
+  | 'TRANSPORT_DOCUMENT';     // Document de transport (e-CMR / Lettre de voiture)
 
+export type DocumentLifecycleStatus =
+  | 'DRAFT'
+  | 'ISSUED'
+  | 'PAID'
+  | 'CANCELLED'
+  | 'ARCHIVED';
 
+export type TaxJurisdictionCode =
+  | 'FR_UE'       // France / Union Européenne (TVA 20%, intracommunautaire)
+  | 'MA'          // Maroc (TVA 20%, ICE, IF, RC, exonération export art. 92)
+  | 'TN'          // Tunisie (TVA 19%, timbre fiscal 1.000 TND, Matricule Fiscal)
+  | 'AE_GCC'      // Émirats Arabes Unis / GCC (Tax Invoice, VAT 5%, TRN, bilingue EN/AR)
+  | 'INTL_EXPORT';// International hors juridiction (Exonération export, Incoterm, HS codes)
+
+export interface TaxRateConfig {
+  code: string;
+  label: Record<Locale, string>;
+  ratePct: string; // e.g. "20.00", "5.00", "0.00"
+  isDefault?: boolean;
+}
+
+export interface TaxJurisdictionConfig {
+  code: TaxJurisdictionCode;
+  countryCode: string;
+  name: Record<Locale, string>;
+  currency: string;
+  defaultTaxRate: string;
+  taxRates: TaxRateConfig[];
+  fiscalStampAmount?: string; // e.g. "1.000" pour la Tunisie
+  mandatoryMentions: Record<Locale, string[]>;
+  numberingPrefix: Record<CommercialDocumentType, string>;
+  requiresBilingualInvoice?: boolean;
+  legalIdentityFields: {
+    key: string;
+    label: Record<Locale, string>;
+    required: boolean;
+  }[];
+}
+
+export interface DocumentLineItem {
+  id: string;
+  sku: string;
+  description: Record<Locale, string>;
+  quantity: number;
+  unit: string;
+  unitPrice: string; // HT
+  discountPct: string; // e.g. "0.00" or "5.00"
+  taxRatePct: string; // e.g. "20.00"
+  taxAmount: string; // calculé déterministe
+  totalLineHt: string; // calculé déterministe
+  totalLineTtc: string; // calculé déterministe
+  hsCode?: string; // Code douanier international
+}
+
+export interface DocumentPartyInfo {
+  id?: string;
+  companyName: string;
+  legalForm?: string; // SARL, SAS, GmbH, etc.
+  address: string;
+  postalCode?: string;
+  city: string;
+  country: string;
+  email: string;
+  phone?: string;
+  taxId?: string; // N° TVA / ICE / Matricule Fiscal / TRN
+  registrationNumber?: string; // RCS / SIREN / RC / RNE
+  additionalLegalMentions?: Record<string, string>;
+  iban?: string;
+  swiftBic?: string;
+  bankName?: string;
+}
+
+export interface DocumentTransportDetails {
+  licensePlate: string;
+  driverName: string;
+  trailerNumber?: string;
+  atpCertificateNumber?: string;
+  temperatureSetpoint?: string;
+  carrierReservations?: string;
+  mode?: string;
+  carrierName?: string;
+  carrierRegistration?: string;
+  cmrNumber?: string;
+  senderCity?: string;
+  consigneeCity?: string;
+  grossWeightKg?: number;
+  volumeM3?: number;
+  temperatureControlled?: boolean;
+  targetTemperatureRange?: string;
+}
+
+export interface CommercialDocumentRecord {
+  id: string;
+  documentType: CommercialDocumentType;
+  documentNumber: string;
+  version: number;
+  status: DocumentLifecycleStatus;
+  jurisdiction: TaxJurisdictionCode;
+  issuedAt: string;
+  dueAt?: string;
+  validUntil?: string;
+  deliveryDate?: string;
+  
+  // Relations d'affaires
+  orderId?: string;
+  orderNumber?: string;
+  quoteId?: string;
+  quoteNumber?: string;
+  originalInvoiceId?: string; // Pour les avoirs (CREDIT_NOTE)
+  originalInvoiceNumber?: string;
+  creditNoteReason?: string;
+  paymentId?: string;
+  paymentReference?: string;
+  shipmentId?: string;
+  trackingNumber?: string;
+  
+  // Acteurs juridiques
+  issuer: DocumentPartyInfo;
+  recipient: DocumentPartyInfo;
+  carrier?: DocumentPartyInfo; // Pour CMR
+  
+  // Lignes & Totaux
+  lines: DocumentLineItem[];
+  subtotalHt: string;
+  totalDiscountAmount: string;
+  netCommercialHt: string;
+  shippingAmount: string;
+  taxBreakdown: {
+    ratePct: string;
+    taxableBase: string;
+    taxAmount: string;
+  }[];
+  totalTaxAmount: string;
+  fiscalStampAmount?: string;
+  totalTtc: string;
+  currency: string;
+  amountInWords: Record<Locale, string>;
+  
+  // Conditions commerciales & mentions légales
+  incoterm?: string;
+  incotermLocation?: string;
+  paymentTerms: Record<Locale, string>;
+  latePaymentPenalties: Record<Locale, string>;
+  legalNotice: Record<Locale, string>;
+  transportDetails?: DocumentTransportDetails;
+  
+  // Sécurité, scellement & immutabilité
+  digitalSealSha256: string;
+  qrPayload?: string;
+  pdfUri?: string;
+  isArchived: boolean;
+  archivedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string;
+  createdByUserName: string;
+  revisionHistory?: {
+    version: number;
+    modifiedAt: string;
+    modifiedBy: string;
+    changeNote: string;
+  }[];
+}
+
+export interface DocumentSearchFilters {
+  query?: string;
+  documentType?: CommercialDocumentType;
+  jurisdiction?: TaxJurisdictionCode;
+  status?: DocumentLifecycleStatus;
+  partyId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  currency?: string;
+  orderNumber?: string;
+}
+
+export interface TemporaryDownloadTokenPayload {
+  documentId: string;
+  documentNumber: string;
+  userId: string;
+  expiresAt: number; // timestamp en secondes
+  hmacSignature: string;
+}
 

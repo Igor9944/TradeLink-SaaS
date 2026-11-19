@@ -26,6 +26,7 @@ import { TradeLinkDomainServices } from '../services/domain.services';
 import { buildOpenApiSpecification } from '../openapi/openapi.spec';
 import { evaluateKYCDossierRule, APM_TELEMETRY } from '../../services/backendServices';
 import { CentralTranslationService } from '../../services/translationEngine';
+import { TAX_JURISDICTIONS } from '../../services/billingDocumentEngine';
 
 export class TradeLinkApiApplication {
   private readonly services: TradeLinkDomainServices;
@@ -2709,6 +2710,155 @@ export class TradeLinkApiApplication {
         magicBytesHeaderHex,
       });
       return this.ok(ctx, { attachment }, 201);
+    }
+
+    // ============================================================================
+    // 26. GESTION DES DOCUMENTS COMMERCIAUX & FACTURATION (PROMPT 12)
+    // ============================================================================
+
+    // 26A. Liste des juridictions fiscales configurables
+    if (method === 'GET' && path === '/api/v1/documents/jurisdictions') {
+      return this.ok(ctx, { jurisdictions: TAX_JURISDICTIONS }, 200);
+    }
+
+    // 26B. Création d'un document commercial
+    if (method === 'POST' && path === '/api/v1/documents') {
+      const user = requireAuthenticatedSession(ctx);
+      const b = ctx.body || {};
+      const doc = this.services.createCommercialDocumentService({
+        actor: user,
+        documentType: b.documentType,
+        jurisdiction: b.jurisdiction,
+        issuer: b.issuer,
+        recipient: b.recipient,
+        carrier: b.carrier,
+        lines: b.lines || [],
+        orderId: b.orderId,
+        orderNumber: b.orderNumber,
+        quoteId: b.quoteId,
+        quoteNumber: b.quoteNumber,
+        shippingAmount: b.shippingAmount,
+        currency: b.currency,
+        validityDays: b.validityDays,
+        dueInDays: b.dueInDays,
+        incoterm: b.incoterm,
+        incotermLocation: b.incotermLocation,
+        transportDetails: b.transportDetails,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, { document: doc }, 201);
+    }
+
+    // 26C. Recherche et filtrage des documents
+    if (method === 'GET' && path === '/api/v1/documents') {
+      const user = requireAuthenticatedSession(ctx);
+      const q = ctx.query || {};
+      const docs = this.services.queryCommercialDocumentsService(user, {
+        query: q.query,
+        documentType: q.documentType as any,
+        jurisdiction: q.jurisdiction as any,
+        status: q.status as any,
+        currency: q.currency,
+        orderNumber: q.orderNumber,
+        dateFrom: q.dateFrom,
+        dateTo: q.dateTo,
+      });
+      return this.ok(ctx, { documents: docs, total: docs.length }, 200);
+    }
+
+    // 26D. Téléchargement sécurisé via Token temporaire (Public / No session required if valid token)
+    if (method === 'GET' && path.startsWith('/api/v1/documents/') && path.endsWith('/download')) {
+      const docId = path.replace('/api/v1/documents/', '').replace('/download', '');
+      const token = ctx.query?.token || '';
+      const expires = parseInt(ctx.query?.expires || '0', 10);
+      const userId = ctx.query?.user || '';
+      const locale = (ctx.query?.locale as any) || 'fr';
+
+      const resPdf = this.services.verifyAndDownloadDocumentWithTokenService(
+        docId,
+        token,
+        expires,
+        userId,
+        'tradelink_doc_secret_key_9944',
+        locale
+      );
+
+      return this.ok(
+        ctx,
+        {
+          filename: resPdf.filename,
+          base64Pdf: resPdf.pdfBuffer.toString('base64'),
+        },
+        200,
+        undefined,
+        {
+          'Content-Type': resPdf.mimeType,
+          'Content-Disposition': `attachment; filename="${resPdf.filename}"`,
+        }
+      );
+    }
+
+    // 26E. Génération d'un token temporaire de téléchargement (15 min)
+    if (method === 'POST' && path.startsWith('/api/v1/documents/') && path.endsWith('/token')) {
+      const user = requireAuthenticatedSession(ctx);
+      const docId = path.replace('/api/v1/documents/', '').replace('/token', '');
+      const tokenInfo = this.services.createDocumentDownloadTokenService(user, docId);
+      return this.ok(ctx, tokenInfo, 200);
+    }
+
+    // 26F. Prévisualisation d'un document avec vérification du sceau et traduction informative
+    if (method === 'GET' && path.startsWith('/api/v1/documents/') && path.endsWith('/preview')) {
+      const user = requireAuthenticatedSession(ctx);
+      const docId = path.replace('/api/v1/documents/', '').replace('/preview', '');
+      const locale = (ctx.query?.locale as any) || 'fr';
+      const preview = this.services.getCommercialDocumentPreviewService(user, docId, locale);
+      return this.ok(ctx, preview, 200);
+    }
+
+    // 26G. Génération directe du PDF pour utilisateur authentifié
+    if (method === 'GET' && path.startsWith('/api/v1/documents/') && path.endsWith('/pdf')) {
+      const user = requireAuthenticatedSession(ctx);
+      const docId = path.replace('/api/v1/documents/', '').replace('/pdf', '');
+      const locale = (ctx.query?.locale as any) || 'fr';
+      const pdfRes = this.services.generateCommercialDocumentPdfService(user, docId, locale);
+      return this.ok(
+        ctx,
+        {
+          filename: pdfRes.filename,
+          base64Pdf: pdfRes.pdfBuffer.toString('base64'),
+        },
+        200,
+        undefined,
+        {
+          'Content-Type': pdfRes.mimeType,
+          'Content-Disposition': `inline; filename="${pdfRes.filename}"`,
+        }
+      );
+    }
+
+    // 26H. Émission d'une facture d'avoir (Credit Note)
+    if (method === 'POST' && path.startsWith('/api/v1/documents/') && path.endsWith('/credit-note')) {
+      const user = requireAuthenticatedSession(ctx);
+      const invoiceId = path.replace('/api/v1/documents/', '').replace('/credit-note', '');
+      const { reason, partialLines } = ctx.body || {};
+      const resAvoir = this.services.createCreditNoteService({
+        actor: user,
+        invoiceId,
+        reason: reason || '',
+        partialLines,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, resAvoir, 201);
+    }
+
+    // 26I. Consultation d'un document unique par ID
+    if (method === 'GET' && path.startsWith('/api/v1/documents/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const docId = path.replace('/api/v1/documents/', '');
+      const doc = this.services.getCommercialDocumentByIdService(user, docId);
+      return this.ok(ctx, { document: doc }, 200);
     }
 
     throw new AppError(404, 'ENDPOINT_NOT_FOUND', `Route API introuvable : ${method} ${path}`);

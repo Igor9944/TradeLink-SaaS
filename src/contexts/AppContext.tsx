@@ -44,7 +44,15 @@ import {
   PaymentReceiptRecord,
   CartValidationResult,
   PaymentProvider,
+  CommercialDocumentRecord,
+  CommercialDocumentType,
+  TaxJurisdictionCode,
+  DocumentPartyInfo,
+  DocumentTransportDetails,
 } from '../types';
+import {
+  BillingDocumentEngine,
+} from '../services/billingDocumentEngine';
 import {
   CommercialEngine,
   GenericPaymentSession,
@@ -1029,6 +1037,393 @@ const INITIAL_PAYMENTS: PaymentRecord[] = [
   },
 ];
 
+// ============================================================================
+// PROMPT 12 : RÉFÉRENTIEL DES DOCUMENTS COMMERCIAUX SCELLÉS INITIAL
+// 7 types de documents, juridictions FR_UE, MA, TN, AE_GCC, INTL_EXPORT
+// ============================================================================
+const initialPartyEuroTech: DocumentPartyInfo = {
+  id: 'usr-supp-01',
+  companyName: 'EuroTech Industrial Solutions SAS',
+  legalForm: 'SAS au capital de 500 000 €',
+  taxId: 'FR34891234567',
+  registrationNumber: 'RCS Paris 891 234 567',
+  address: '42 Avenue de l’Industrie',
+  city: 'Paris',
+  postalCode: '75012',
+  country: 'France',
+  email: 'contact@eurotech-solutions.fr',
+  phone: '+33 1 40 50 60 70',
+};
+
+const initialPartyClientAtlas: DocumentPartyInfo = {
+  id: 'usr-client-01',
+  companyName: 'SARL Atlas Import & Distribution',
+  legalForm: 'SARL',
+  taxId: 'MA18293041',
+  registrationNumber: 'RC Casablanca 456789 - ICE 001928374000091',
+  address: '15 Boulevard d’Anfa',
+  city: 'Casablanca',
+  postalCode: '20000',
+  country: 'Maroc',
+  email: 'direction@atlas-import.ma',
+  phone: '+212 5 22 30 40 50',
+};
+
+const initialPartyCarrierAtlas: DocumentPartyInfo = {
+  id: 'usr-trans-01',
+  companyName: 'Atlas Express Logistics SA',
+  legalForm: 'Société Anonyme',
+  taxId: 'FR77890123456',
+  address: 'Z.I. Paris-Nord 2',
+  city: 'Roissy',
+  postalCode: '95700',
+  country: 'France',
+  email: 'ops@atlas-express.com',
+};
+
+const initialPartyTunis: DocumentPartyInfo = {
+  id: 'usr-supp-02',
+  companyName: 'Comptoir Maghrébin de l’Industrie S.A.',
+  legalForm: 'Société Anonyme',
+  taxId: '1234567/A/M/000',
+  address: 'Zone Industrielle Charguia II',
+  city: 'Tunis',
+  postalCode: '2035',
+  country: 'Tunisie',
+  email: 'ventes@cmi-tunisie.tn',
+};
+
+const initialPartyDubai: DocumentPartyInfo = {
+  id: 'usr-supp-03',
+  companyName: 'Gulf ColdChain Trading FZ-LLC',
+  legalForm: 'Free Zone LLC',
+  taxId: 'TRN-100293847500003',
+  address: 'JAFZA One, Tower A, Level 14',
+  city: 'Dubai',
+  postalCode: 'PO Box 17000',
+  country: 'Émirats Arabes Unis',
+  email: 'sales@gulfcoldchain.ae',
+};
+
+function buildInitialCommercialDocuments(): CommercialDocumentRecord[] {
+  const docs: CommercialDocumentRecord[] = [];
+
+  // 1. Devis
+  const devis = BillingDocumentEngine.createCommercialDocument({
+    documentType: 'QUOTE',
+    jurisdiction: 'FR_UE',
+    issuer: initialPartyEuroTech,
+    recipient: initialPartyClientAtlas,
+    lines: [
+      {
+        sku: 'TL-COOL-40FT',
+        description: {
+          fr: 'Groupe Frigorifique Industriel Conteneur 40ft',
+          en: 'Industrial Refrigeration Unit 40ft Container',
+          ar: 'وحدة تبريد صناعية لحاوية 40 قدماً',
+        },
+        quantity: 2,
+        unit: 'unité',
+        unitPrice: '12000.00',
+        taxRatePct: '20.00',
+      },
+    ],
+    currency: 'EUR',
+    validityDays: 30,
+    createdByUserId: 'usr-supp-01',
+    createdByUserName: 'EuroTech Solutions SAS',
+  });
+  docs.push(devis);
+
+  // 2. Bon de commande (PURCHASE_ORDER)
+  const po = BillingDocumentEngine.createCommercialDocument({
+    documentType: 'PURCHASE_ORDER',
+    jurisdiction: 'FR_UE',
+    issuer: initialPartyClientAtlas,
+    recipient: initialPartyEuroTech,
+    orderId: 'ord-2026-8841',
+    orderNumber: 'CMD-2026-8841',
+    lines: [
+      {
+        sku: 'TL-COOL-40FT',
+        description: {
+          fr: 'Groupe Frigorifique Industriel Conteneur 40ft',
+          en: 'Industrial Refrigeration Unit 40ft Container',
+          ar: 'وحدة تبريد صناعية لحاوية 40 قدماً',
+        },
+        quantity: 2,
+        unit: 'unité',
+        unitPrice: '12000.00',
+        taxRatePct: '20.00',
+      },
+      {
+        sku: 'TL-IOT-CRYO',
+        description: {
+          fr: 'Sonde de Télémétrie Température Cryogénique IoT',
+          en: 'Cryogenic IoT Temperature Telemetry Probe',
+          ar: 'مجس قياس الحرارة عن بعد بتقنية إنترنت الأشياء',
+        },
+        quantity: 5,
+        unit: 'pack',
+        unitPrice: '200.00',
+        taxRatePct: '20.00',
+      },
+    ],
+    shippingAmount: '650.00',
+    currency: 'EUR',
+    createdByUserId: 'usr-client-01',
+    createdByUserName: 'SARL Atlas Import & Distribution',
+  });
+  docs.push(po);
+
+  // 3. Confirmation de commande (ORDER_CONFIRMATION)
+  const cfm = BillingDocumentEngine.createCommercialDocument({
+    documentType: 'ORDER_CONFIRMATION',
+    jurisdiction: 'FR_UE',
+    issuer: initialPartyEuroTech,
+    recipient: initialPartyClientAtlas,
+    orderId: 'ord-2026-8841',
+    orderNumber: 'CMD-2026-8841',
+    lines: po.lines.map((l) => ({
+      sku: l.sku,
+      description: l.description,
+      quantity: l.quantity,
+      unit: l.unit,
+      unitPrice: l.unitPrice,
+      taxRatePct: l.taxRatePct,
+    })),
+    shippingAmount: '650.00',
+    currency: 'EUR',
+    createdByUserId: 'usr-supp-01',
+    createdByUserName: 'EuroTech Solutions SAS',
+  });
+  docs.push(cfm);
+
+  // 4. Facture Commerciale (COMMERCIAL_INVOICE)
+  const invoice = BillingDocumentEngine.createCommercialDocument({
+    documentType: 'COMMERCIAL_INVOICE',
+    jurisdiction: 'FR_UE',
+    issuer: initialPartyEuroTech,
+    recipient: initialPartyClientAtlas,
+    orderId: 'ord-2026-8841',
+    orderNumber: 'CMD-2026-8841',
+    lines: [
+      {
+        sku: 'TL-COOL-40FT',
+        description: {
+          fr: 'Groupe Frigorifique Industriel Conteneur 40ft',
+          en: 'Industrial Refrigeration Unit 40ft Container',
+          ar: 'وحدة تبريد صناعية لحاوية 40 قدماً',
+        },
+        quantity: 2,
+        unit: 'unité',
+        unitPrice: '12000.00',
+        discountPct: '5.00',
+        taxRatePct: '20.00',
+      },
+      {
+        sku: 'TL-IOT-CRYO',
+        description: {
+          fr: 'Sonde de Télémétrie Température Cryogénique IoT',
+          en: 'Cryogenic IoT Temperature Telemetry Probe',
+          ar: 'مجس قياس الحرارة عن بعد بتقنية إنترنت الأشياء',
+        },
+        quantity: 5,
+        unit: 'pack',
+        unitPrice: '200.00',
+        taxRatePct: '20.00',
+      },
+    ],
+    shippingAmount: '650.00',
+    currency: 'EUR',
+    dueInDays: 30,
+    incoterm: 'DAP',
+    incotermLocation: 'Casablanca Zenata',
+    createdByUserId: 'usr-supp-01',
+    createdByUserName: 'EuroTech Solutions SAS',
+  });
+  docs.push(invoice);
+
+  // 5. Facture d'Avoir (CREDIT_NOTE)
+  try {
+    const creditRes = BillingDocumentEngine.createCreditNoteFromInvoice(
+      invoice,
+      'Avoir partiel accordé suite au délai de dédouanement portuaire',
+      { id: 'usr-supp-01', name: 'EuroTech Solutions SAS', role: 'FOURNISSEUR' },
+      [{ sku: 'TL-IOT-CRYO', quantity: 2 }]
+    );
+    docs.push(creditRes.creditNote);
+  } catch {}
+
+  // 6. Reçu de paiement (PAYMENT_RECEIPT)
+  const receipt = BillingDocumentEngine.createCommercialDocument({
+    documentType: 'PAYMENT_RECEIPT',
+    jurisdiction: 'FR_UE',
+    issuer: initialPartyEuroTech,
+    recipient: initialPartyClientAtlas,
+    orderId: 'ord-2026-8841',
+    orderNumber: 'CMD-2026-8841',
+    paymentId: 'pay-01',
+    paymentReference: 'PAY-STRP-2026-7719A',
+    lines: [
+      {
+        sku: 'TL-SETTLEMENT-ORD',
+        description: {
+          fr: 'Règlement global commande CMD-2026-8841 via Stripe B2B',
+          en: 'Global settlement for order CMD-2026-8841 via Stripe B2B',
+          ar: 'تسوية أمر الشراء CMD-2026-8841 عبر منصة سترايب',
+        },
+        quantity: 1,
+        unit: 'forfait',
+        unitPrice: '28010.00',
+        taxRatePct: '0.00',
+      },
+    ],
+    currency: 'EUR',
+    status: 'PAID',
+    createdByUserId: 'usr-supp-01',
+    createdByUserName: 'EuroTech Solutions SAS',
+  });
+  docs.push(receipt);
+
+  // 7. Bon de livraison (DELIVERY_NOTE)
+  const bl = BillingDocumentEngine.createCommercialDocument({
+    documentType: 'DELIVERY_NOTE',
+    jurisdiction: 'FR_UE',
+    issuer: initialPartyEuroTech,
+    recipient: initialPartyClientAtlas,
+    carrier: initialPartyCarrierAtlas,
+    orderId: 'ord-2026-8841',
+    orderNumber: 'CMD-2026-8841',
+    lines: [
+      {
+        sku: 'TL-COOL-40FT',
+        description: {
+          fr: 'Groupe Frigorifique Industriel Conteneur 40ft',
+          en: 'Industrial Refrigeration Unit 40ft Container',
+          ar: 'وحدة تبريد صناعية لحاوية 40 قدماً',
+        },
+        quantity: 2,
+        unit: 'unité',
+        unitPrice: '0.00',
+        taxRatePct: '0.00',
+      },
+    ],
+    currency: 'EUR',
+    status: 'ISSUED',
+    createdByUserId: 'usr-supp-01',
+    createdByUserName: 'EuroTech Solutions SAS',
+  });
+  docs.push(bl);
+
+  // 8. Document de transport e-CMR (TRANSPORT_DOCUMENT)
+  const cmr = BillingDocumentEngine.createCommercialDocument({
+    documentType: 'TRANSPORT_DOCUMENT',
+    jurisdiction: 'FR_UE',
+    issuer: initialPartyEuroTech,
+    recipient: initialPartyClientAtlas,
+    carrier: initialPartyCarrierAtlas,
+    orderId: 'ord-2026-8841',
+    orderNumber: 'CMD-2026-8841',
+    lines: [
+      {
+        sku: 'TL-COOL-40FT',
+        description: {
+          fr: 'Groupe Frigorifique Industriel Conteneur 40ft (Colis scellé ATP)',
+          en: 'Industrial Refrigeration Unit 40ft Container (Sealed ATP)',
+          ar: 'وحدة تبريد صناعية مشمعة وفق اتفاقية نقل المواد القابلة للتلف',
+        },
+        quantity: 2,
+        unit: 'colis',
+        unitPrice: '0.00',
+        taxRatePct: '0.00',
+      },
+    ],
+    currency: 'EUR',
+    transportDetails: {
+      licensePlate: 'EV-884-TL',
+      driverName: 'Hassan Benali',
+      trailerNumber: 'F-990-FR',
+      mode: 'ROAD',
+      carrierName: 'Atlas Express Logistics SA',
+      carrierRegistration: 'FR77890123456',
+      cmrNumber: 'CMR-GENEVE-2026-0044',
+      senderCity: 'Paris / Roissy CDG (France)',
+      consigneeCity: 'Casablanca Zenata Logistique (Maroc)',
+      grossWeightKg: 4200,
+      volumeM3: 48,
+      temperatureControlled: true,
+      targetTemperatureRange: '-20°C à -18°C',
+    },
+    status: 'ISSUED',
+    createdByUserId: 'usr-trans-01',
+    createdByUserName: 'Atlas Express Logistics SA',
+  });
+  docs.push(cmr);
+
+  // 9. Facture Tunisie (FAC-TN) avec droit de timbre fiscal 1.000 TND
+  const invoiceTn = BillingDocumentEngine.createCommercialDocument({
+    documentType: 'COMMERCIAL_INVOICE',
+    jurisdiction: 'TN',
+    issuer: initialPartyTunis,
+    recipient: initialPartyClientAtlas,
+    lines: [
+      {
+        sku: 'TL-VALV-IND',
+        description: {
+          fr: 'Électrovannes Industrielles Haute Pression 16 Bar',
+          en: 'High Pressure 16 Bar Industrial Solenoid Valves',
+          ar: 'صمامات كهرومغناطيسية صناعية ذات ضغط عالي 16 بار',
+        },
+        quantity: 10,
+        unit: 'pièce',
+        unitPrice: '450.000',
+        taxRatePct: '19.00',
+      },
+    ],
+    shippingAmount: '120.000',
+    currency: 'TND',
+    dueInDays: 30,
+    createdByUserId: 'usr-supp-02',
+    createdByUserName: 'Comptoir Maghrébin de l’Industrie S.A.',
+  });
+  docs.push(invoiceTn);
+
+  // 10. Facture Émirats EAU (FAC-AE) avec TVA 5% et mentions EN/AR
+  const invoiceAe = BillingDocumentEngine.createCommercialDocument({
+    documentType: 'COMMERCIAL_INVOICE',
+    jurisdiction: 'AE_GCC',
+    issuer: initialPartyDubai,
+    recipient: initialPartyClientAtlas,
+    lines: [
+      {
+        sku: 'TL-CHILL-DXB',
+        description: {
+          fr: 'Système Chiller Inverter 50kW Climatisation Sévère',
+          en: 'Inverter Chiller System 50kW Extreme Climate',
+          ar: 'نظام مبرد عاكس 50 كيلوواط للمناخ الصحراوي القاسي',
+        },
+        quantity: 1,
+        unit: 'unité',
+        unitPrice: '65000.00',
+        taxRatePct: '5.00',
+      },
+    ],
+    shippingAmount: '3500.00',
+    currency: 'AED',
+    dueInDays: 45,
+    incoterm: 'CIF',
+    incotermLocation: 'Casablanca Port',
+    createdByUserId: 'usr-supp-03',
+    createdByUserName: 'Gulf ColdChain Trading FZ-LLC',
+  });
+  docs.push(invoiceAe);
+
+  return docs;
+}
+
+const INITIAL_COMMERCIAL_DOCUMENTS: CommercialDocumentRecord[] = buildInitialCommercialDocuments();
+
 const INITIAL_DISPUTES: CommercialDisputeRecord[] = [
   {
     id: 'disp-01',
@@ -1698,6 +2093,43 @@ interface AppContextValue {
     relatedId?: string,
     relatedType?: 'ORDER' | 'SHIPMENT' | 'QUOTE' | 'TICKET' | 'OTHER'
   ) => Promise<ConversationRecord>;
+
+  // PROMPT 12 : Facturation & Documents Commerciaux Multi-Juridictions
+  commercialDocuments: CommercialDocumentRecord[];
+  activeDocumentPreview: CommercialDocumentRecord | null;
+  setActiveDocumentPreview: (doc: CommercialDocumentRecord | null) => void;
+  createCommercialDocumentAction: (
+    docType: CommercialDocumentType,
+    jurisdiction: TaxJurisdictionCode,
+    recipient: DocumentPartyInfo,
+    items: {
+      productId?: string;
+      sku: string;
+      designation: string;
+      quantity: number;
+      unitPrice: string;
+      taxRatePct?: string;
+      discountPct?: string;
+      unit?: string;
+    }[],
+    options?: {
+      orderId?: string;
+      quoteId?: string;
+      currency?: string;
+      shippingAmount?: string;
+      customNotes?: string;
+      transportDetails?: DocumentTransportDetails;
+      paymentTermsDays?: number;
+    }
+  ) => { ok: boolean; document?: CommercialDocumentRecord; error?: string };
+  createCreditNoteAction: (
+    invoiceId: string,
+    reason: string,
+    partialLines?: { sku: string; quantity: number }[]
+  ) => { ok: boolean; creditNote?: CommercialDocumentRecord; error?: string };
+  downloadCommercialDocumentPdfAction: (docId: string, targetLocale?: Locale) => { ok: boolean; fileName?: string; error?: string };
+  generateDocumentDownloadLinkAction: (docId: string) => { ok: boolean; url?: string; expiresAt?: string; error?: string };
+  verifyDocumentSealAction: (docId: string) => { ok: boolean; isAuthentic: boolean; storedHash: string; computedHash: string };
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -1775,6 +2207,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [backups, setBackups] = useState<BackupRecord[]>(INITIAL_BACKUPS);
   const [kmsKeys, setKmsKeys] = useState<KMSKeyRecord[]>(INITIAL_KMS_KEYS);
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>(INITIAL_AUDIT_LOGS);
+
+  // PROMPT 12 : Documents commerciaux & Factures multi-juridictions
+  const [commercialDocuments, setCommercialDocuments] = useState<CommercialDocumentRecord[]>(INITIAL_COMMERCIAL_DOCUMENTS);
+  const [activeDocumentPreview, setActiveDocumentPreview] = useState<CommercialDocumentRecord | null>(null);
 
   // PROMPT 11 : État Sandbox, Rapports et KMS
   const [sandboxReports, setSandboxReports] = useState<Record<string, SandboxAnalysisReport>>(() => {
@@ -4732,6 +5168,203 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return report;
   };
 
+  // ============================================================================
+  // PROMPT 12 : ACTIONS DE GESTION DOCUMENTAIRE & FACTURATION MULTI-JURIDICTIONS
+  // ============================================================================
+
+  const createCommercialDocumentAction = (
+    docType: CommercialDocumentType,
+    jurisdiction: TaxJurisdictionCode,
+    recipient: DocumentPartyInfo,
+    items: {
+      productId?: string;
+      sku: string;
+      designation: string;
+      quantity: number;
+      unitPrice: string;
+      taxRatePct?: string;
+      discountPct?: string;
+      unit?: string;
+    }[],
+    options?: {
+      orderId?: string;
+      quoteId?: string;
+      currency?: string;
+      shippingAmount?: string;
+      customNotes?: string;
+      transportDetails?: DocumentTransportDetails;
+      paymentTermsDays?: number;
+    }
+  ) => {
+    try {
+      const issuer: DocumentPartyInfo = {
+        id: currentUser.id,
+        companyName: currentUser.companyName || `${currentUser.firstName} ${currentUser.lastName}`,
+        legalForm: 'SAS / Société Commerciale',
+        taxId: 'FR34891234567',
+        registrationNumber: 'RCS Paris 891 234 567',
+        address: '42 Avenue de l’Industrie',
+        city: 'Paris',
+        postalCode: '75012',
+        country: 'France',
+        email: currentUser.email,
+        phone: currentUser.phone,
+      };
+
+      const doc = BillingDocumentEngine.createCommercialDocument({
+        documentType: docType,
+        jurisdiction,
+        issuer,
+        recipient,
+        orderId: options?.orderId,
+        orderNumber: options?.orderId ? `CMD-${options.orderId.toUpperCase()}` : undefined,
+        quoteId: options?.quoteId,
+        lines: items.map((it) => ({
+          sku: it.sku,
+          description: { fr: it.designation, en: it.designation, ar: it.designation },
+          quantity: it.quantity,
+          unit: it.unit || 'unité',
+          unitPrice: it.unitPrice,
+          taxRatePct: it.taxRatePct,
+          discountPct: it.discountPct,
+        })),
+        shippingAmount: options?.shippingAmount,
+        currency: options?.currency,
+        transportDetails: options?.transportDetails,
+        dueInDays: options?.paymentTermsDays || 30,
+        createdByUserId: currentUser.id,
+        createdByUserName: currentUser.companyName || `${currentUser.firstName} ${currentUser.lastName}`,
+      });
+
+      setCommercialDocuments((prev) => [doc, ...prev]);
+      addAuditLog(
+        `Génération Document ${doc.documentType}`,
+        'COMMERCIAL_DOCUMENT',
+        doc.id,
+        'SUCCESS',
+        `Émission de ${doc.documentNumber} (${doc.jurisdiction}) scellé SHA-256: ${doc.digitalSealSha256.substring(0, 16)}...`
+      );
+      notifyToast(`Document ${doc.documentNumber} généré et scellé avec succès !`, 'success');
+      return { ok: true, document: doc };
+    } catch (err: any) {
+      notifyToast(err.message || 'Erreur lors de la génération du document', 'error');
+      return { ok: false, error: err.message };
+    }
+  };
+
+  const createCreditNoteAction = (
+    invoiceId: string,
+    reason: string,
+    partialLines?: { sku: string; quantity: number }[]
+  ) => {
+    try {
+      if (currentUser.role === 'CLIENT' || currentUser.role === 'COMPTABLE') {
+        notifyToast('Seul le fournisseur émetteur ou l’administrateur peut émettre une facture d’avoir.', 'error');
+        return { ok: false, error: 'FORBIDDEN' };
+      }
+      const targetInvoice = commercialDocuments.find((d) => d.id === invoiceId);
+      if (!targetInvoice) {
+        notifyToast('Facture d’origine introuvable pour émettre l’avoir.', 'error');
+        return { ok: false, error: 'NOT_FOUND' };
+      }
+
+      const res = BillingDocumentEngine.createCreditNoteFromInvoice(
+        targetInvoice,
+        reason,
+        {
+          id: currentUser.id,
+          name: currentUser.companyName || `${currentUser.firstName} ${currentUser.lastName}`,
+          role: currentUser.role,
+        },
+        partialLines
+      );
+
+      setCommercialDocuments((prev) => [
+        res.creditNote,
+        ...prev.map((d) => (d.id === res.updatedOriginalInvoice.id ? res.updatedOriginalInvoice : d)),
+      ]);
+
+      addAuditLog(
+        'Émission Facture d’Avoir',
+        'CREDIT_NOTE',
+        res.creditNote.id,
+        'SUCCESS',
+        `Avoir ${res.creditNote.documentNumber} émis sur facture ${targetInvoice.documentNumber}. Motif: ${reason}`
+      );
+      notifyToast(`Avoir ${res.creditNote.documentNumber} émis avec succès ! Facture originale annulée/rectifiée.`, 'success');
+      return { ok: true, creditNote: res.creditNote };
+    } catch (err: any) {
+      notifyToast(err.message || 'Erreur lors de l’émission de l’avoir', 'error');
+      return { ok: false, error: err.message };
+    }
+  };
+
+  const downloadCommercialDocumentPdfAction = (docId: string, targetLocale?: Locale) => {
+    try {
+      const doc = commercialDocuments.find((d) => d.id === docId);
+      if (!doc) {
+        notifyToast('Document introuvable pour téléchargement', 'error');
+        return { ok: false, error: 'NOT_FOUND' };
+      }
+      const l = targetLocale || locale || 'fr';
+      const pdfBuffer = BillingDocumentEngine.generateStandardPdfBuffer(doc, l);
+      const blob = new Blob([new Uint8Array(pdfBuffer)], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${doc.documentNumber}_${l.toUpperCase()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      notifyToast(`Document ${doc.documentNumber} (%PDF-1.4) téléchargé !`, 'info');
+      return { ok: true, fileName: `${doc.documentNumber}_${l.toUpperCase()}.pdf` };
+    } catch (err: any) {
+      notifyToast(err.message || 'Erreur lors de la génération PDF', 'error');
+      return { ok: false, error: err.message };
+    }
+  };
+
+  const generateDocumentDownloadLinkAction = (docId: string) => {
+    try {
+      const doc = commercialDocuments.find((d) => d.id === docId);
+      if (!doc) {
+        return { ok: false, error: 'NOT_FOUND' };
+      }
+      const token = BillingDocumentEngine.generateTemporaryDownloadToken(
+        doc.id,
+        doc.documentNumber,
+        currentUser.id,
+        'tradelink_super_secure_document_signing_key_2026_prod'
+      );
+      const origin = window.location.origin;
+      const downloadUrl = `${origin}/api/v1/documents/${doc.id}/download?token=${token.hmacSignature}&expires=${token.expiresAt}&user=${currentUser.id}&locale=${locale}`;
+      return {
+        ok: true,
+        url: downloadUrl,
+        expiresAt: new Date(token.expiresAt * 1000).toLocaleTimeString(),
+      };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  };
+
+  const verifyDocumentSealAction = (docId: string) => {
+    const doc = commercialDocuments.find((d) => d.id === docId);
+    if (!doc) {
+      return { ok: false, isAuthentic: false, storedHash: '', computedHash: '' };
+    }
+    const computed = BillingDocumentEngine.computeDigitalSealSha256(doc);
+    const isAuthentic = BillingDocumentEngine.verifyDocumentSeal(doc);
+    return {
+      ok: true,
+      isAuthentic,
+      storedHash: doc.digitalSealSha256,
+      computedHash: computed,
+    };
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -4906,6 +5539,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         sendB2BMessage,
         uploadB2BAttachment,
         createB2BConversation,
+        commercialDocuments,
+        activeDocumentPreview,
+        setActiveDocumentPreview,
+        createCommercialDocumentAction,
+        createCreditNoteAction,
+        downloadCommercialDocumentPdfAction,
+        generateDocumentDownloadLinkAction,
+        verifyDocumentSealAction,
       }}
     >
       {children}
