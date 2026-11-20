@@ -2183,6 +2183,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
     return 'light';
   });
+  const [systemDark, setSystemDark] = useState<boolean>(() =>
+    typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : false
+  );
 
   const [currentUser, setCurrentUser] = useState<UserProfile>(DEMO_USERS.ADMIN_1);
   const [products, setProducts] = useState<ProductItem[]>(INITIAL_PRODUCTS);
@@ -2533,14 +2538,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener('change', onChange);
+
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'color-scheme') {
         const val = e.newValue;
         if (val === 'light' || val === 'dark') setThemeState(val);
+        else setThemeState('system');
       }
     };
     window.addEventListener('storage', onStorage);
     return () => {
+      mq.removeEventListener('change', onChange);
       window.removeEventListener('storage', onStorage);
     };
   }, []);

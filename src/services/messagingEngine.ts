@@ -28,7 +28,9 @@ export interface AttachmentUploadRequest {
 
 export class SecureAttachmentManager {
   private static readonly MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 Mo
-  private static readonly HMAC_SECRET = process.env.ATTACHMENT_SECRET || 'tradelink-b2b-attachment-kms-key-2026';
+  private static readonly HMAC_SECRET =
+    (typeof process !== 'undefined' && process.env.ATTACHMENT_SECRET) ||
+    'tradelink-b2b-attachment-kms-key-2026';
 
   private static readonly ALLOWED_MIME_TYPES = new Set([
     'application/pdf',
