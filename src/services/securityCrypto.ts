@@ -8,12 +8,27 @@
 import { UserRoleCode } from '../types';
 
 // ============================================================================
-// 1. PRIMITIVES CRYPTOGRAPHIQUES UNIVERSELLES
+// 1. PRIMITIVES CRYPTOGRAPHIQUES UNIVERSELLES & ARGON2ID AUTHENTIQUE (RFC 9106)
 // ============================================================================
 
-// Import standard de crypto (Node.js & Vite bundle)
 import * as nodeCryptoModule from 'crypto';
+import { argon2id as nobleArgon2id } from '@noble/hashes/argon2.js';
+
 const nodeCrypto: any = nodeCryptoModule;
+
+// Chargement dynamique optionnel de @node-rs/argon2 (accélération native Rust en Node.js)
+// En cas d'exécution navigateur/Vite, bascule transparente sur @noble/hashes/argon2.js (RFC 9106 bit-à-bit identique)
+let nativeNodeRsArgon2: any = null;
+try {
+  if (typeof process !== 'undefined' && process.versions?.node) {
+    const dynamicReq = typeof require === 'function' ? require : null;
+    if (dynamicReq) {
+      nativeNodeRsArgon2 = dynamicReq('@node-rs/argon2');
+    }
+  }
+} catch {
+  nativeNodeRsArgon2 = null;
+}
 
 /**
  * Génère N octets cryptographiquement aléatoires
@@ -276,13 +291,25 @@ export function validateProductionSecurityEnv(
 }
 
 // ============================================================================
-// 3. HACHAGE DE MOT DE PASSE SÉCURISÉ & STRATÉGIE DE MIGRATION
-// Format PHC conforme : $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
+// 3. HACHAGE DE MOT DE PASSE ARGON2ID AUTHENTIQUE (RFC 9106) & MIGRATION
+// Format PHC standard : $argon2id$v=19$m=<memory>,t=<time>,p=<parallelism>$<salt_b64>$<tag_b64>
+// Interdiction absolue de substituer SHA-512 ou FNV à Argon2id.
 // ============================================================================
 
-const PBKDF2_ITERATIONS = 100000;
-const PBKDF2_KEYLEN = 64; // 64 octets = 128 caractères hex (distinction stricte avec les anciens faux hashes 64 chars)
-const LEGACY_MOCK_SALTS = new Set(['s1a2l3t4', 'tradelink_salt', 'mock_salt', 'default_salt']);
+export interface Argon2idCostOptions {
+  memoryCost?: number;  // m en KiB (défaut: 65536 = 64 MiB, min: 4096)
+  timeCost?: number;    // t en itérations (défaut: 3, min: 2)
+  parallelism?: number; // p en degrés de parallélisme (défaut: 4, min: 1)
+  outputLen?: number;   // longueur du tag en octets (défaut: 32 octets = 256 bits)
+}
+
+const LEGACY_MOCK_SALTS = new Set([
+  's1a2l3t4',
+  'tradelink_salt',
+  'mock_salt',
+  'default_salt',
+  'czFhMmwzdDQ', // 's1a2l3t4' en base64
+]);
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -290,61 +317,161 @@ function bytesToHex(bytes: Uint8Array): string {
     .join('');
 }
 
-function deriveCryptographicKey(password: string, salt: string): string {
-  if (nodeCrypto && typeof nodeCrypto.pbkdf2Sync === 'function') {
-    const derivedBuf = nodeCrypto.pbkdf2Sync(
-      password,
-      salt,
-      PBKDF2_ITERATIONS,
-      PBKDF2_KEYLEN,
-      'sha512'
-    );
-    return derivedBuf.toString('hex');
+function bytesToBase64NoPad(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64').replace(/=+$/, '');
   }
-  // Pure JS fallback via SHA-256 rounds (128 hex chars = 2 x 64)
-  let currentA = password + ':A:' + salt;
-  let currentB = password + ':B:' + salt;
-  for (let i = 0; i < 1000; i++) {
-    currentA = pureSha256Hex(currentA + ':' + i);
-    currentB = pureSha256Hex(currentB + ':' + i);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
   }
-  return currentA + currentB;
+  return btoa(binary).replace(/=+$/, '');
+}
+
+function base64NoPadToBytes(b64: string): Uint8Array {
+  const padLen = (4 - (b64.length % 4)) % 4;
+  const padded = b64 + '='.repeat(padLen);
+  if (typeof Buffer !== 'undefined') {
+    return new Uint8Array(Buffer.from(padded, 'base64'));
+  }
+  const binary = atob(padded);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    out[i] = binary.charCodeAt(i);
+  }
+  return out;
+}
+
+export function getArgon2idDefaultCost(): Required<Argon2idCostOptions> {
+  const envMem = typeof process !== 'undefined' ? Number(process.env?.ARGON2_MEMORY_COST) : NaN;
+  const envTime = typeof process !== 'undefined' ? Number(process.env?.ARGON2_TIME_COST) : NaN;
+  const envPar = typeof process !== 'undefined' ? Number(process.env?.ARGON2_PARALLELISM) : NaN;
+
+  return {
+    memoryCost: !Number.isNaN(envMem) && envMem >= 4096 ? envMem : 65536,
+    timeCost: !Number.isNaN(envTime) && envTime >= 2 ? envTime : 3,
+    parallelism: !Number.isNaN(envPar) && envPar >= 1 ? envPar : 4,
+    outputLen: 32,
+  };
+}
+
+function resolveSaltBytes(customSalt?: string | Uint8Array): Uint8Array {
+  if (!customSalt) {
+    return getSecureRandomBytes(16);
+  }
+  if (customSalt instanceof Uint8Array) {
+    if (customSalt.length < 8) {
+      throw new Error('INSECURE_OR_LEGACY_SALT_REJECTED');
+    }
+    return customSalt;
+  }
+  const trimmed = customSalt.trim();
+  if (trimmed.length < 8 || LEGACY_MOCK_SALTS.has(trimmed)) {
+    throw new Error('INSECURE_OR_LEGACY_SALT_REJECTED');
+  }
+  return new TextEncoder().encode(trimmed);
 }
 
 /**
- * Hache un mot de passe en utilisant un sel aléatoire cryptographique fort (16 octets = 32 chars hex)
- * et une dérivation résistante conforme au format PHC Argon2id (digest 128 chars hex)
+ * Hache un mot de passe avec le véritable algorithme Argon2id (RFC 9106)
+ * via @node-rs/argon2 (Rust N-API) ou @noble/hashes/argon2.js (audit Cure53).
+ * Génère une chaîne PHC authentique : $argon2id$v=19$m=<m>,t=<t>,p=<p>$<salt_b64>$<tag_b64>
  */
-export function hashPasswordArgon2id(plainPassword: string, customSalt?: string): string {
+export function hashPasswordArgon2id(
+  plainPassword: string,
+  customSalt?: string,
+  costOptions?: Argon2idCostOptions
+): string {
   if (!plainPassword || plainPassword.length < 8) {
     throw new Error('PASSWORD_TOO_SHORT');
   }
-  if (customSalt && (customSalt.length < 8 || LEGACY_MOCK_SALTS.has(customSalt))) {
-    throw new Error('INSECURE_OR_LEGACY_SALT_REJECTED');
+
+  const defaults = getArgon2idDefaultCost();
+  const m = costOptions?.memoryCost ?? defaults.memoryCost;
+  const t = costOptions?.timeCost ?? defaults.timeCost;
+  const p = costOptions?.parallelism ?? defaults.parallelism;
+  const dkLen = costOptions?.outputLen ?? defaults.outputLen;
+
+  if (m < 4096 || t < 2 || p < 1 || dkLen < 16) {
+    throw new Error('ARGON2ID_INVALID_COST_PARAMETERS');
   }
-  const salt = customSalt ?? bytesToHex(getSecureRandomBytes(16));
-  const derived = deriveCryptographicKey(plainPassword, salt);
-  return `$argon2id$v=19$m=65536,t=3,p=4$${salt}$${derived}`;
+
+  const saltBytes = resolveSaltBytes(customSalt);
+
+  if (nativeNodeRsArgon2 && typeof nativeNodeRsArgon2.hashSync === 'function') {
+    return nativeNodeRsArgon2.hashSync(plainPassword, {
+      algorithm: 2, // Argon2id
+      memoryCost: m,
+      timeCost: t,
+      parallelism: p,
+      outputLen: dkLen,
+      salt: Buffer.from(saltBytes),
+    });
+  }
+
+  const tagBytes = nobleArgon2id(plainPassword, saltBytes, {
+    m,
+    t,
+    p,
+    dkLen,
+  });
+
+  const saltB64 = bytesToBase64NoPad(saltBytes);
+  const tagB64 = bytesToBase64NoPad(tagBytes);
+  return `$argon2id$v=19$m=${m},t=${t},p=${p}$${saltB64}$${tagB64}`;
 }
 
 /**
- * Détecte si un hash provient de l'ancienne implémentation factice (fnv1a64Hex).
- * Ne considère JAMAIS un ancien hash simulé (64 chars hex ou sel fixe) comme un véritable hash Argon2id.
+ * Détecte si un hash provient d'une ancienne implémentation factice (FNV 64 chars hex)
+ * ou d'une dérivation intermédiaire SHA-512 (128 chars hex) non-Argon2id.
+ * Un véritable hash Argon2id RFC 9106 (32 octets) possède un tag Base64 sans padding de 43 caractères
+ * (et ne doit pas être exclusivement composé d'un condensat hexadécimal 64/128 chars).
  */
 export function isLegacyMockHash(phcHash: string): boolean {
-  if (!phcHash || typeof phcHash !== 'string' || !phcHash.startsWith('$argon2id$v=19$m=65536,t=3,p=4$')) {
+  if (!phcHash || typeof phcHash !== 'string' || !phcHash.startsWith('$argon2id$v=19$')) {
     return true;
   }
-  const parts = phcHash.split('$');
-  if (parts.length !== 6) return true;
-  const saltPart = parts[4];
-  const hashPart = parts[5];
-  if (!saltPart || saltPart.length < 8 || LEGACY_MOCK_SALTS.has(saltPart)) {
+  const match = phcHash.match(
+    /^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9+/]+)\$([A-Za-z0-9+/]+)$/
+  );
+  if (!match) {
     return true;
   }
-  // Les anciens faux hashes issus de fnv1a64Hex avaient une longueur de 64 chars hex (ou moins).
-  // Les nouveaux hashes réels ont exactement 128 caractères hexadécimaux (512 bits).
-  return !hashPart || hashPart.length !== 128 || !/^[0-9a-f]{128}$/i.test(hashPart);
+
+  const m = Number(match[1]);
+  const t = Number(match[2]);
+  const p = Number(match[3]);
+  const saltB64 = match[4];
+  const tagB64 = match[5];
+
+  if (m < 4096 || t < 2 || p < 1) {
+    return true;
+  }
+
+  if (saltB64.length < 11 || LEGACY_MOCK_SALTS.has(saltB64)) {
+    return true;
+  }
+
+  // Rejet formel des anciens condensats hexadécimaux FNV (64 chars) et PBKDF2-SHA512 (128 chars)
+  if (tagB64.length === 64 || tagB64.length === 128) {
+    return true;
+  }
+
+  // Un tag Argon2id standard de 32 octets (256 bits) en Base64 sans padding fait exactement 43 caractères
+  if (tagB64.length !== 43) {
+    return true;
+  }
+
+  try {
+    const decodedSalt = new TextDecoder().decode(base64NoPadToBytes(saltB64));
+    if (LEGACY_MOCK_SALTS.has(decodedSalt)) {
+      return true;
+    }
+  } catch {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -355,24 +482,28 @@ export function needsPasswordReset(phcHash: string): boolean {
 }
 
 /**
- * Stratégie de migration sécurisée des anciens hashes simulés incompatibles :
- * - Rejette tout hash simulé
+ * Stratégie de migration sécurisée des anciens hashes (FNV ou SHA-512) incompatibles :
+ * - Ne convertit JAMAIS artificiellement un hash SHA-512 ou FNV en hash Argon2id
  * - Invalide immédiatement les sessions et jetons actifs de l'utilisateur
- * - Exige une réinitialisation sécurisée ou re-hache le mot de passe vérifié par OTP
+ * - Force la réinitialisation du mot de passe avant toute nouvelle connexion
  */
 export function enforceLegacyHashMigration(params: {
   storedHash: string;
+  userId?: string;
   onInvalidateUserSessions?: () => void;
 }): { isLegacy: boolean; requiresPasswordReset: boolean; sessionsInvalidated: boolean } {
   const legacy = isLegacyMockHash(params.storedHash);
   if (legacy) {
+    if (params.userId) {
+      invalidateAllUserJwtTokens(params.userId);
+    }
     if (params.onInvalidateUserSessions) {
       params.onInvalidateUserSessions();
     }
     return {
       isLegacy: true,
       requiresPasswordReset: true,
-      sessionsInvalidated: Boolean(params.onInvalidateUserSessions),
+      sessionsInvalidated: Boolean(params.onInvalidateUserSessions || params.userId),
     };
   }
   return {
@@ -383,21 +514,44 @@ export function enforceLegacyHashMigration(params: {
 }
 
 /**
- * Vérifie un mot de passe avec comparaison en temps constant et rejet strict des anciens faux hachages
+ * Vérifie un mot de passe avec le véritable algorithme Argon2id (RFC 9106)
+ * et rejette catégoriquement tout ancien hash simulé ou SHA-512.
  */
 export function verifyPasswordArgon2id(plainPassword: string, phcHash: string): boolean {
-  // Interdiction absolue de valider un ancien hash simulé
-  if (isLegacyMockHash(phcHash)) {
+  if (!plainPassword || isLegacyMockHash(phcHash)) {
     return false;
   }
-  const parts = phcHash.split('$');
-  // parts: ['', 'argon2id', 'v=19', 'm=65536,t=3,p=4', '<salt>', '<hash>']
-  const salt = parts[4];
-  if (!salt) return false;
+
+  if (nativeNodeRsArgon2 && typeof nativeNodeRsArgon2.verifySync === 'function') {
+    try {
+      return Boolean(nativeNodeRsArgon2.verifySync(phcHash, plainPassword));
+    } catch {
+      return false;
+    }
+  }
+
+  const match = phcHash.match(
+    /^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9+/]+)\$([A-Za-z0-9+/]+)$/
+  );
+  if (!match) return false;
+
+  const m = Number(match[1]);
+  const t = Number(match[2]);
+  const p = Number(match[3]);
+  const saltB64 = match[4];
+  const expectedTagB64 = match[5];
 
   try {
-    const recomputed = hashPasswordArgon2id(plainPassword, salt);
-    return constantTimeEqual(recomputed, phcHash);
+    const saltBytes = base64NoPadToBytes(saltB64);
+    const expectedTagBytes = base64NoPadToBytes(expectedTagB64);
+    const computedBytes = nobleArgon2id(plainPassword, saltBytes, {
+      m,
+      t,
+      p,
+      dkLen: expectedTagBytes.length,
+    });
+    const computedTagB64 = bytesToBase64NoPad(computedBytes);
+    return constantTimeEqual(computedTagB64, expectedTagB64);
   } catch {
     return false;
   }
@@ -417,8 +571,28 @@ export interface JwtAccessPayload {
   mfaVerified: boolean;
   deviceId?: string;
   ttlSeconds?: number;
+  iss?: string;
+  aud?: string;
+  jti?: string;
   iat: number;
   exp: number;
+}
+
+const JWT_ISSUER = 'urn:tradelink:auth:v6';
+const JWT_AUDIENCE = 'urn:tradelink:api:v6';
+const revokedJwtJtis = new Set<string>();
+const userTokensInvalidatedAtSec = new Map<string, number>();
+
+export function revokeJwtAccessTokenByJti(jti: string): void {
+  if (jti) {
+    revokedJwtJtis.add(jti);
+  }
+}
+
+export function invalidateAllUserJwtTokens(userId: string): void {
+  if (userId) {
+    userTokensInvalidatedAtSec.set(userId, Math.floor(Date.now() / 1000));
+  }
 }
 
 // Secret maître sécurisé récupéré depuis l'environnement ou généré aléatoirement
@@ -474,8 +648,12 @@ export function signJwtAccessToken(
   ttlSeconds = 900 // 15 minutes
 ): string {
   const nowSec = Math.floor(Date.now() / 1000);
+  const jti = payload.jti ?? `jti-${nowSec}-${bytesToHex(getSecureRandomBytes(8))}`;
   const fullPayload: JwtAccessPayload = {
     ...payload,
+    iss: payload.iss ?? JWT_ISSUER,
+    aud: payload.aud ?? JWT_AUDIENCE,
+    jti,
     iat: nowSec,
     exp: nowSec + ttlSeconds,
   };
@@ -486,7 +664,8 @@ export function signJwtAccessToken(
 }
 
 /**
- * Vérifie l'authenticité et la validité temporelle d'un JWT avec comparaison en temps constant
+ * Vérifie l'authenticité, l'algorithme (anti-alg:none), l'émetteur, l'audience, la révocation
+ * et la validité temporelle d'un JWT avec comparaison en temps constant
  */
 export function verifyJwtAccessToken(token: string): JwtAccessPayload | null {
   if (!token || typeof token !== 'string') return null;
@@ -494,13 +673,32 @@ export function verifyJwtAccessToken(token: string): JwtAccessPayload | null {
   if (parts.length !== 3) return null;
 
   const [headerB64, payloadB64, sig] = parts;
+
+  try {
+    const header = JSON.parse(fromBase64Url(headerB64)) as { alg?: string; typ?: string };
+    if (header.alg !== 'HS256' || header.typ !== 'JWT') {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
   const expectedSig = hmacSha256Base64Url(`${headerB64}.${payloadB64}`, getJwtSecret());
   if (!constantTimeEqual(sig, expectedSig)) return null;
 
   try {
     const decoded = JSON.parse(fromBase64Url(payloadB64)) as JwtAccessPayload;
     const nowSec = Math.floor(Date.now() / 1000);
-    if (decoded.exp < nowSec) return null;
+    if (typeof decoded.exp !== 'number' || decoded.exp < nowSec) return null;
+    if (decoded.iss && decoded.iss !== JWT_ISSUER) return null;
+    if (decoded.aud && decoded.aud !== JWT_AUDIENCE) return null;
+    if (decoded.jti && revokedJwtJtis.has(decoded.jti)) return null;
+
+    const invalidatedBefore = userTokensInvalidatedAtSec.get(decoded.sub);
+    if (invalidatedBefore !== undefined && decoded.iat < invalidatedBefore) {
+      return null;
+    }
+
     return decoded;
   } catch {
     return null;

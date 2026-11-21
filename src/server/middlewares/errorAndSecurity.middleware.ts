@@ -98,7 +98,35 @@ export function markSessionMfaVerified(sessionId: string): void {
 }
 
 export function isSessionMfaVerified(sessionId: string): boolean {
-  return sessionMfaRegistry.get(sessionId) ?? true;
+  return sessionMfaRegistry.get(sessionId) ?? false;
+}
+
+export interface SecurityEventLogEntry {
+  timestamp: string;
+  event: string;
+  severity: 'INFO' | 'WARN' | 'CRITICAL';
+  correlationId: string;
+  ipAddress: string;
+  actorId?: string;
+  actorRole?: string;
+  path: string;
+  details: string;
+}
+
+const securityEventLogs: SecurityEventLogEntry[] = [];
+
+export function recordSecurityEventLog(entry: Omit<SecurityEventLogEntry, 'timestamp'>): void {
+  // Redaction préventive contre toute fuite de secret ou token dans les logs
+  const safeDetails = entry.details.replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, '$1[REDACTED]');
+  securityEventLogs.push({
+    ...entry,
+    details: safeDetails,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+export function getSecurityEventLogs(): SecurityEventLogEntry[] {
+  return [...securityEventLogs];
 }
 
 export function verifySingleActiveSession(userId: string, sessionId: string): boolean {
@@ -136,12 +164,26 @@ export function requireAuthenticatedSession(
   }
 
   // Vérification MFA obligatoire pour l'Administrateur (Chapitre 2.2 & PROMPT 5)
+  // Si la session en registre est explicitement marquée non vérifiée (false), bloquer même si le payload non élevé tente de passer
+  const registryMfa = sessionMfaRegistry.get(ctx.user.sessionId);
   const mfaOk =
-    ctx.user.mfaVerified !== undefined
-      ? ctx.user.mfaVerified
-      : isSessionMfaVerified(ctx.user.sessionId);
+    registryMfa === false
+      ? false
+      : registryMfa === true
+      ? (ctx.user.mfaVerified ?? true)
+      : Boolean(ctx.user.mfaVerified);
 
   if (ctx.user.role === 'ADMIN' && !mfaOk && !ctx.path.startsWith('/api/v1/auth/mfa')) {
+    recordSecurityEventLog({
+      event: 'ADMIN_MFA_BYPASS_ATTEMPT_BLOCKED',
+      severity: 'CRITICAL',
+      correlationId: ctx.correlationId,
+      ipAddress: ctx.ipAddress,
+      actorId: ctx.user.id,
+      actorRole: ctx.user.role,
+      path: ctx.path,
+      details: 'Tentative d’accès administrateur sans validation MFA TOTP.',
+    });
     throw new AppError(
       403,
       'ADMIN_MFA_MANDATORY',

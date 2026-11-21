@@ -114,6 +114,24 @@ export const TARGET_SCHEMAS: Record<ImportTargetEntity, { field: string; label: 
 // ============================================================================
 
 export class ImportExportEngine {
+  private static scannerUnavailable = false;
+  private static readonly importScanAuditLogs: {
+    scanId: string;
+    fileName: string;
+    stage: 'QUARANTINED_ON_INGEST' | 'AV_SCAN_COMPLETED' | 'SCANNER_UNAVAILABLE_QUARANTINED' | 'MALWARE_REJECTED';
+    status: 'CLEAN' | 'QUARANTINED' | 'INFECTED';
+    timestamp: string;
+    details: string;
+  }[] = [];
+
+  public static setScannerAvailabilityForTest(available: boolean): void {
+    this.scannerUnavailable = !available;
+  }
+
+  public static getImportScanAuditLogs() {
+    return [...this.importScanAuditLogs];
+  }
+
   /**
    * Sécurisation anti-injection de formule CSV (CWE-1236 / CSV Formula Injection)
    * Si une cellule commence par =, +, -, @, \t ou \r, on la préfixe d'une apostrophe pour forcer l'interprétation texte
@@ -135,12 +153,32 @@ export class ImportExportEngine {
     fileName: string;
     fileSize: number;
     fileContentRaw: string;
+    simulateScannerUnavailable?: boolean;
   }): ImportFileValidation {
     const ext = params.fileName.split('.').pop()?.toUpperCase() ?? '';
     const isDangerous = DANGEROUS_EXTENSIONS.includes(ext);
+    const nowIso = new Date().toISOString();
+
+    // 0. Mise en quarantaine initiale systématique avant validation antivirus
+    this.importScanAuditLogs.push({
+      scanId: `imp-av-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      fileName: params.fileName,
+      stage: 'QUARANTINED_ON_INGEST',
+      status: 'QUARANTINED',
+      timestamp: nowIso,
+      details: `Mise en quarantaine systématique à l'ingestion (${params.fileSize} octets).`,
+    });
 
     // 1. Contrôle Antivirus & Extension
     if (isDangerous) {
+      this.importScanAuditLogs.push({
+        scanId: `imp-av-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        fileName: params.fileName,
+        stage: 'MALWARE_REJECTED',
+        status: 'INFECTED',
+        timestamp: nowIso,
+        details: `Extension exécutable interdite rejetée (.${ext}).`,
+      });
       return {
         fileSize: params.fileSize,
         maxAllowedSize: 0,
@@ -205,6 +243,14 @@ export class ImportExportEngine {
       params.fileContentRaw.startsWith('\x7FELF');
 
     if (hasEicarOrBinaryMalware) {
+      this.importScanAuditLogs.push({
+        scanId: `imp-av-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        fileName: params.fileName,
+        stage: 'MALWARE_REJECTED',
+        status: 'INFECTED',
+        timestamp: nowIso,
+        details: 'Signature virale EICAR ou binaire exécutable camouflé détecté.',
+      });
       return {
         fileSize: params.fileSize,
         maxAllowedSize: maxAllowed,
@@ -216,6 +262,35 @@ export class ImportExportEngine {
         encoding: 'BINARY',
         securitySanitized: false,
         detectedVulnerabilities: ['Signature virale EICAR ou binaire exécutable camouflé détecté par le moteur antivirus.'],
+      };
+    }
+
+    // Si le démon antivirus ClamAV est indisponible ou en erreur : JAMAIS de statut CLEAN (maintien strict en QUARANTINED)
+    const isScannerDown =
+      params.simulateScannerUnavailable ||
+      this.scannerUnavailable ||
+      (typeof process !== 'undefined' && process.env?.AV_SIMULATE_UNAVAILABLE === 'true');
+
+    if (isScannerDown) {
+      this.importScanAuditLogs.push({
+        scanId: `imp-av-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        fileName: params.fileName,
+        stage: 'SCANNER_UNAVAILABLE_QUARANTINED',
+        status: 'QUARANTINED',
+        timestamp: nowIso,
+        details: 'Démon ClamAV (clamd) indisponible : maintien strict en QUARANTINED (aucune validation CLEAN).',
+      });
+      return {
+        fileSize: params.fileSize,
+        maxAllowedSize: maxAllowed,
+        isSizeValid,
+        detectedMime,
+        detectedFormat,
+        magicBytesHex: magicHex,
+        antivirusScan: 'QUARANTINED',
+        encoding: 'UTF-8',
+        securitySanitized: false,
+        detectedVulnerabilities: ['Scanner antivirus ClamAV indisponible : fichier maintenu en quarantaine de sécurité.'],
       };
     }
 

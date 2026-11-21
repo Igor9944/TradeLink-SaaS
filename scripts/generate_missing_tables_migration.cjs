@@ -1,14 +1,56 @@
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
-const fullSql = fs.readFileSync('prisma/full_schema_generated.sql', 'utf8');
+const fullSql = execSync('npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script', {
+  encoding: 'utf8',
+});
 const initSql = fs.readFileSync('prisma/migrations/20261118000000_init_tradelink_v6/migration.sql', 'utf8');
+
+function parseTableColumns(sql) {
+  const tables = new Map();
+  const regex = /CREATE TABLE\s+(?:IF NOT EXISTS\s+)?"(\w+)"\s*\(([\s\S]*?)\);/g;
+  let match;
+  while ((match = regex.exec(sql)) !== null) {
+    const tableName = match[1];
+    const body = match[2];
+    const cols = new Map();
+    for (const line of body.split('\n')) {
+      const trimmed = line.trim().replace(/,$/, '');
+      if (!trimmed || trimmed.startsWith('CONSTRAINT') || trimmed.startsWith('--')) continue;
+      const colMatch = trimmed.match(/^"(\w+)"\s+(.+)$/);
+      if (colMatch) {
+        cols.set(colMatch[1], colMatch[2]);
+      }
+    }
+    tables.set(tableName, cols);
+  }
+  return tables;
+}
+
+const fullTableCols = parseTableColumns(fullSql);
+const initTableCols = parseTableColumns(initSql);
 
 // Find all tables in init migration
 const initTables = new Set(
   [...initSql.matchAll(/CREATE TABLE\s+(?:IF NOT EXISTS\s+)?["']?(\w+)["']?/gi)].map(m => m[1])
 );
 console.log('Init tables count:', initTables.size);
+
+// Find missing columns in the 17 initial tables
+const alterInitialTableStatements = [];
+for (const [tableName, initCols] of initTableCols.entries()) {
+  const fullCols = fullTableCols.get(tableName);
+  if (!fullCols) continue;
+  for (const [colName, colDef] of fullCols.entries()) {
+    if (!initCols.has(colName)) {
+      alterInitialTableStatements.push(
+        `ALTER TABLE "${tableName}" ADD COLUMN IF NOT EXISTS "${colName}" ${colDef};`
+      );
+    }
+  }
+}
+console.log('Missing columns added to initial 17 tables:', alterInitialTableStatements.length);
 
 // Split fullSql into statements or sections
 // In Prisma migrate diff, statements are separated by semicolons
@@ -69,6 +111,9 @@ const migrationSqlHeader = `-- =================================================
 
 const migrationContent = [
   migrationSqlHeader,
+  '-- 0. AJOUT DES COLONNES COMPLÉMENTAIRES SUR LES 17 TABLES INITIALES (USER & KYC)',
+  ...alterInitialTableStatements,
+  '',
   '-- 1. CRÉATION DES 51 TABLES MANQUANTES',
   ...missingTableStatements,
   '',

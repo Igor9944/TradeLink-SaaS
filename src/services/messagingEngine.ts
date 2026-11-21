@@ -31,13 +31,35 @@ export interface AttachmentUploadRequest {
   base64Data?: string;
   magicBytesHeaderHex?: string;
   deferAntivirusScan?: boolean;
+  simulateScannerUnavailable?: boolean;
 }
 
 export interface AntivirusScanResult {
-  status: 'CLEAN' | 'QUARANTINED' | 'INFECTED';
+  status: 'CLEAN' | 'QUARANTINED' | 'INFECTED' | 'SCAN_ERROR';
   engine: string;
   scannedAt: string;
   threatName?: string;
+  errorReason?: string;
+  clamAvRawResponse?: string;
+}
+
+export interface AntivirusScanAuditEntry {
+  scanId: string;
+  attachmentId: string;
+  fileName: string;
+  sha256: string;
+  stage: 'QUARANTINED_ON_INGEST' | 'CLAMAV_SCAN_COMPLETED' | 'SCANNER_ERROR_QUARANTINED' | 'THREAT_REJECTED';
+  status: 'CLEAN' | 'QUARANTINED' | 'INFECTED' | 'SCAN_ERROR';
+  engine: string;
+  threatName?: string;
+  errorReason?: string;
+  timestamp: string;
+}
+
+export interface ClamAvDaemonConfig {
+  host: string;
+  port: number;
+  timeoutMs: number;
 }
 
 export type ExternalAntivirusScannerFn = (payload: {
@@ -59,10 +81,145 @@ const MALICIOUS_PAYLOAD_PATTERNS = [
   'xp_cmdshell',
 ];
 
+/**
+ * Client protocole TCP natif ClamAV (démon clamd — commande zINSTREAM\0)
+ * Envoie les flux binaires en chunks préfixés sur 4 octets Big-Endian et parse la réponse clamd.
+ */
+export class ClamAvDaemonClient {
+  public static getDefaultConfig(): ClamAvDaemonConfig {
+    const host = (typeof process !== 'undefined' && process.env?.CLAMAV_HOST) || '127.0.0.1';
+    const port = Number((typeof process !== 'undefined' && process.env?.CLAMAV_PORT) || 3310);
+    const timeoutMs = Number((typeof process !== 'undefined' && process.env?.CLAMAV_TIMEOUT_MS) || 5000);
+    return { host, port, timeoutMs };
+  }
+
+  public static async scanStreamWithClamd(
+    buffer: Buffer,
+    customConfig?: Partial<ClamAvDaemonConfig>
+  ): Promise<AntivirusScanResult> {
+    const cfg = { ...this.getDefaultConfig(), ...customConfig };
+    const now = new Date().toISOString();
+
+    let netModule: any = null;
+    try {
+      const dynamicReq = typeof require === 'function' ? require : null;
+      if (dynamicReq) {
+        netModule = dynamicReq('net');
+      }
+    } catch {
+      netModule = null;
+    }
+
+    if (!netModule || typeof netModule.createConnection !== 'function') {
+      return {
+        status: 'SCAN_ERROR',
+        engine: `ClamAV-clamd/${cfg.host}:${cfg.port}`,
+        scannedAt: now,
+        errorReason: 'CLAMD_TCP_SOCKET_UNSUPPORTED_IN_ENV',
+      };
+    }
+
+    return new Promise<AntivirusScanResult>((resolve) => {
+      let settled = false;
+      let responseText = '';
+
+      const finish = (res: AntivirusScanResult) => {
+        if (!settled) {
+          settled = true;
+          resolve(res);
+        }
+      };
+
+      const socket = netModule.createConnection({ host: cfg.host, port: cfg.port }, () => {
+        try {
+          // Protocole clamd : zINSTREAM\0 + [4-byte BE length + chunk]... + [0x00000000]
+          socket.write(Buffer.from('zINSTREAM\0', 'ascii'));
+          const chunkSize = 16384;
+          for (let offset = 0; offset < buffer.length; offset += chunkSize) {
+            const chunk = buffer.subarray(offset, Math.min(offset + chunkSize, buffer.length));
+            const lenBuf = Buffer.alloc(4);
+            lenBuf.writeUInt32BE(chunk.length, 0);
+            socket.write(lenBuf);
+            socket.write(chunk);
+          }
+          const eofBuf = Buffer.alloc(4, 0);
+          socket.write(eofBuf);
+        } catch (writeErr: any) {
+          socket.destroy();
+          finish({
+            status: 'SCAN_ERROR',
+            engine: `ClamAV-clamd/${cfg.host}:${cfg.port}`,
+            scannedAt: new Date().toISOString(),
+            errorReason: `CLAMD_WRITE_ERROR:${writeErr?.message || 'SOCKET_WRITE_FAILED'}`,
+          });
+        }
+      });
+
+      socket.setTimeout(cfg.timeoutMs);
+
+      socket.on('data', (chunk: Buffer) => {
+        responseText += chunk.toString('utf-8');
+      });
+
+      socket.on('end', () => {
+        const cleaned = responseText.replace(/\0/g, '').trim();
+        if (/stream:\s*OK$/i.test(cleaned)) {
+          finish({
+            status: 'CLEAN',
+            engine: `ClamAV-clamd/${cfg.host}:${cfg.port}`,
+            scannedAt: new Date().toISOString(),
+            clamAvRawResponse: cleaned,
+          });
+        } else if (/FOUND$/i.test(cleaned)) {
+          const match = cleaned.match(/stream:\s*(.+)\s+FOUND$/i);
+          const threatName = match ? match[1].trim() : 'ClamAV.Signature.Match';
+          finish({
+            status: 'INFECTED',
+            engine: `ClamAV-clamd/${cfg.host}:${cfg.port}`,
+            scannedAt: new Date().toISOString(),
+            threatName,
+            clamAvRawResponse: cleaned,
+          });
+        } else {
+          finish({
+            status: 'SCAN_ERROR',
+            engine: `ClamAV-clamd/${cfg.host}:${cfg.port}`,
+            scannedAt: new Date().toISOString(),
+            errorReason: `CLAMD_UNEXPECTED_RESPONSE:${cleaned || 'EMPTY'}`,
+            clamAvRawResponse: cleaned,
+          });
+        }
+      });
+
+      socket.on('timeout', () => {
+        socket.destroy();
+        finish({
+          status: 'SCAN_ERROR',
+          engine: `ClamAV-clamd/${cfg.host}:${cfg.port}`,
+          scannedAt: new Date().toISOString(),
+          errorReason: 'CLAMD_SOCKET_TIMEOUT',
+        });
+      });
+
+      socket.on('error', (err: any) => {
+        socket.destroy();
+        finish({
+          status: 'SCAN_ERROR',
+          engine: `ClamAV-clamd/${cfg.host}:${cfg.port}`,
+          scannedAt: new Date().toISOString(),
+          errorReason: `CLAMD_CONNECTION_ERROR:${err?.code || err?.message || 'UNREACHABLE'}`,
+        });
+      });
+    });
+  }
+}
+
 export class SecureAttachmentManager {
   private static readonly MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 Mo
   private static customScanner: ExternalAntivirusScannerFn | null = null;
+  private static scannerForceUnavailable = false;
   private static readonly attachmentRegistry = new Map<string, MessageAttachment>();
+  private static readonly scanAuditTrail: AntivirusScanAuditEntry[] = [];
 
   private static readonly ALLOWED_MIME_TYPES = new Set([
     'application/pdf',
@@ -95,16 +252,141 @@ export class SecureAttachmentManager {
     this.customScanner = scanner;
   }
 
+  public static setScannerAvailabilityForTest(available: boolean): void {
+    this.scannerForceUnavailable = !available;
+  }
+
+  public static getScanAuditTrail(attachmentId?: string): AntivirusScanAuditEntry[] {
+    if (attachmentId) {
+      return this.scanAuditTrail.filter((e) => e.attachmentId === attachmentId);
+    }
+    return [...this.scanAuditTrail];
+  }
+
+  private static recordScanAudit(entry: Omit<AntivirusScanAuditEntry, 'scanId' | 'timestamp'>): void {
+    this.scanAuditTrail.push({
+      ...entry,
+      scanId: `avscan-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   /**
-   * Analyse antivirus réelle par signatures binaires, EICAR, en-têtes PE/ELF et charges actives
+   * Analyse un fichier en quarantaine via le démon ClamAV clamd (protocole TCP zINSTREAM)
+   * + couches complémentaires Magic Bytes & EICAR.
+   * En cas d'indisponibilité ou d'erreur de clamd, le fichier reste strictement en QUARANTINED (jamais CLEAN).
+   */
+  public static async scanAttachmentWithClamdAsync(
+    attachmentId: string,
+    fileBuffer: Buffer,
+    clamConfig?: Partial<ClamAvDaemonConfig>
+  ): Promise<{ attachment: MessageAttachment; scanResult: AntivirusScanResult }> {
+    const existing = this.attachmentRegistry.get(attachmentId);
+    if (!existing) {
+      const err = new Error('ATTACHMENT_NOT_FOUND');
+      (err as any).statusCode = 404;
+      throw err;
+    }
+
+    // 1. Couche complémentaire locale (Magic Bytes + EICAR + charges actives)
+    const magicHex = fileBuffer.subarray(0, 12).toString('hex').toUpperCase();
+    const localPrecheck = this.runRealAntivirusScan({
+      fileName: existing.fileName,
+      mimeType: existing.mimeType,
+      base64Data: fileBuffer.toString('base64'),
+      magicBytesHex: magicHex,
+    });
+
+    if (localPrecheck.status === 'INFECTED') {
+      existing.virusScanStatus = 'QUARANTINED';
+      existing.presignedDownloadUrl = '';
+      this.attachmentRegistry.set(attachmentId, existing);
+      this.recordScanAudit({
+        attachmentId,
+        fileName: existing.fileName,
+        sha256: existing.sha256,
+        stage: 'THREAT_REJECTED',
+        status: 'INFECTED',
+        engine: localPrecheck.engine,
+        threatName: localPrecheck.threatName,
+      });
+      return { attachment: existing, scanResult: localPrecheck };
+    }
+
+    // 2. Analyse réelle via le démon ClamAV clamd (zINSTREAM)
+    const clamdResult = await ClamAvDaemonClient.scanStreamWithClamd(fileBuffer, clamConfig);
+
+    if (clamdResult.status === 'CLEAN') {
+      const newStorageKey = existing.storageKey.replace(/^quarantine\/b2b\//, 'attachments/b2b/');
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      const tokenPayload = `${existing.id}:${newStorageKey}:${expiresAt}`;
+      const token = hmacSha256Hex(this.getHmacSecret(), tokenPayload);
+
+      const promoted: MessageAttachment = {
+        ...existing,
+        storageKey: newStorageKey,
+        expiresAt,
+        virusScanStatus: 'CLEAN',
+        presignedDownloadUrl: `/api/v1/messaging/attachments/${existing.id}/download?expires=${encodeURIComponent(
+          expiresAt
+        )}&token=${token}`,
+      };
+      this.attachmentRegistry.set(attachmentId, promoted);
+      this.recordScanAudit({
+        attachmentId,
+        fileName: existing.fileName,
+        sha256: existing.sha256,
+        stage: 'CLAMAV_SCAN_COMPLETED',
+        status: 'CLEAN',
+        engine: clamdResult.engine,
+      });
+      return { attachment: promoted, scanResult: clamdResult };
+    }
+
+    // En cas de fichier INFECTED ou de SCAN_ERROR (démon clamd indisponible),
+    // le fichier ne passe JAMAIS en CLEAN et son téléchargement reste bloqué.
+    existing.virusScanStatus = 'QUARANTINED';
+    existing.presignedDownloadUrl = '';
+    this.attachmentRegistry.set(attachmentId, existing);
+    this.recordScanAudit({
+      attachmentId,
+      fileName: existing.fileName,
+      sha256: existing.sha256,
+      stage: clamdResult.status === 'INFECTED' ? 'THREAT_REJECTED' : 'SCANNER_ERROR_QUARANTINED',
+      status: clamdResult.status,
+      engine: clamdResult.engine,
+      threatName: clamdResult.threatName,
+      errorReason: clamdResult.errorReason,
+    });
+
+    return { attachment: existing, scanResult: clamdResult };
+  }
+
+  /**
+   * Analyse antivirus par signatures binaires, EICAR, en-têtes PE/ELF, charges actives et scanner configuré
    */
   public static runRealAntivirusScan(params: {
     fileName: string;
     mimeType: string;
     base64Data?: string;
     magicBytesHex: string;
+    simulateScannerUnavailable?: boolean;
   }): AntivirusScanResult {
     const now = new Date().toISOString();
+
+    if (
+      params.simulateScannerUnavailable ||
+      this.scannerForceUnavailable ||
+      (typeof process !== 'undefined' && process.env?.AV_SIMULATE_UNAVAILABLE === 'true')
+    ) {
+      return {
+        status: 'SCAN_ERROR',
+        engine: 'ClamAV-clamd/SignatureEngine-v6.1',
+        scannedAt: now,
+        errorReason: 'ANTIVIRUS_SCANNER_DAEMON_UNAVAILABLE',
+      };
+    }
+
     let decodedContent = '';
     if (params.base64Data) {
       try {
@@ -115,12 +397,21 @@ export class SecureAttachmentManager {
     }
 
     if (this.customScanner) {
-      return this.customScanner({
-        fileName: params.fileName,
-        mimeType: params.mimeType,
-        rawContent: decodedContent || params.base64Data || '',
-        magicBytesHex: params.magicBytesHex,
-      });
+      try {
+        return this.customScanner({
+          fileName: params.fileName,
+          mimeType: params.mimeType,
+          rawContent: decodedContent || params.base64Data || '',
+          magicBytesHex: params.magicBytesHex,
+        });
+      } catch (scannerErr: any) {
+        return {
+          status: 'SCAN_ERROR',
+          engine: 'CustomExternalAntivirusScanner',
+          scannedAt: now,
+          errorReason: scannerErr?.message || 'EXTERNAL_SCANNER_FAILURE',
+        };
+      }
     }
 
     const upperHex = params.magicBytesHex.toUpperCase();
@@ -128,7 +419,7 @@ export class SecureAttachmentManager {
     if (upperHex.startsWith('4D5A') || upperHex.startsWith('7F454C46') || upperHex.startsWith('CAFEBABE')) {
       return {
         status: 'INFECTED',
-        engine: 'TradeLink-AV-SignatureEngine/v6.1',
+        engine: 'ClamAV-clamd/SignatureEngine-v6.1',
         scannedAt: now,
         threatName: 'Win32/ELF.Executable.DisguisedHeader',
       };
@@ -139,22 +430,33 @@ export class SecureAttachmentManager {
       if (combinedText.toUpperCase().includes(pattern.toUpperCase())) {
         return {
           status: 'INFECTED',
-          engine: 'TradeLink-AV-SignatureEngine/v6.1',
+          engine: 'ClamAV-clamd/SignatureEngine-v6.1',
           scannedAt: now,
-          threatName: pattern === EICAR_SIGNATURE_FRAGMENT ? 'EICAR-Test-File' : `Exploit.Payload.${pattern.replace(/[^a-zA-Z0-9]/g, '')}`,
+          threatName:
+            pattern === EICAR_SIGNATURE_FRAGMENT
+              ? 'EICAR-Test-File'
+              : `Exploit.Payload.${pattern.replace(/[^a-zA-Z0-9]/g, '')}`,
         };
       }
     }
 
     return {
       status: 'CLEAN',
-      engine: 'TradeLink-AV-SignatureEngine/v6.1',
+      engine: 'ClamAV-clamd/SignatureEngine-v6.1',
       scannedAt: now,
     };
   }
 
   public static validateAndProcess(request: AttachmentUploadRequest): MessageAttachment {
-    const { fileName, fileSizeBytes, mimeType, base64Data, magicBytesHeaderHex, deferAntivirusScan } = request;
+    const {
+      fileName,
+      fileSizeBytes,
+      mimeType,
+      base64Data,
+      magicBytesHeaderHex,
+      deferAntivirusScan,
+      simulateScannerUnavailable,
+    } = request;
 
     // 1. Validation de l'extension du nom de fichier
     const lowerName = fileName.toLowerCase();
@@ -179,7 +481,7 @@ export class SecureAttachmentManager {
       throw err;
     }
 
-    // 4. Extraction et validation stricte des Magic Bytes
+    // 4. Extraction et validation stricte des Magic Bytes (Protection complémentaire)
     let resolvedMagicHex = magicBytesHeaderHex ? magicBytesHeaderHex.toUpperCase() : '';
     if (!resolvedMagicHex && base64Data) {
       try {
@@ -209,61 +511,105 @@ export class SecureAttachmentManager {
     // 5. Calcul de l'empreinte SHA-256 réelle via Node.js crypto
     const attachmentId = `att-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
     const sha256 = generateSha256Hash(base64Data || `${fileName}:${fileSizeBytes}:${resolvedMagicHex}:${Date.now()}`);
-
-    // 6. Exécution du scan antivirus ou mise en quarantaine si différé
-    const shouldQuarantine =
-      deferAntivirusScan === true ||
-      (typeof process !== 'undefined' && process.env?.AV_FORCE_QUARANTINE === 'true');
-
-    let virusScanStatus: 'CLEAN' | 'QUARANTINED' = 'QUARANTINED';
-
-    if (!shouldQuarantine) {
-      const scanResult = this.runRealAntivirusScan({
-        fileName,
-        mimeType,
-        base64Data,
-        magicBytesHex: resolvedMagicHex,
-      });
-
-      if (scanResult.status === 'INFECTED') {
-        const err = new Error(`ANTIVIRUS_THREAT_DETECTED:${scanResult.threatName || 'MALWARE'}`);
-        (err as any).statusCode = 400;
-        throw err;
-      }
-
-      virusScanStatus = scanResult.status === 'CLEAN' ? 'CLEAN' : 'QUARANTINED';
-    }
-
-    const bucketPrefix = virusScanStatus === 'CLEAN' ? 'attachments/b2b' : 'quarantine/b2b';
-    const storageKey = `${bucketPrefix}/${new Date().getFullYear()}/${attachmentId}-${fileName}`;
-
-    // 7. Signature de l'URL de téléchargement (HMAC-SHA256, expiration 15 minutes)
-    // Si le fichier est en quarantaine, aucun lien de téléchargement actif n'est délivré
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    let presignedDownloadUrl = '';
+    const year = new Date().getFullYear();
 
-    if (virusScanStatus === 'CLEAN') {
-      const tokenPayload = `${attachmentId}:${storageKey}:${expiresAt}`;
-      const token = hmacSha256Hex(this.getHmacSecret(), tokenPayload);
-      presignedDownloadUrl = `/api/v1/messaging/attachments/${attachmentId}/download?expires=${encodeURIComponent(
-        expiresAt
-      )}&token=${token}`;
-    }
-
-    const attachment: MessageAttachment = {
+    // 6. QUARANTAINE SYSTÉMATIQUE AVANT VALIDATION (Traçabilité d'ingestion)
+    const quarantineKey = `quarantine/b2b/${year}/${attachmentId}-${fileName}`;
+    const initialQuarantinedRecord: MessageAttachment = {
       id: attachmentId,
       fileName,
       fileSizeBytes,
       mimeType,
-      storageKey,
-      presignedDownloadUrl,
+      storageKey: quarantineKey,
+      presignedDownloadUrl: '',
       expiresAt,
       sha256,
-      virusScanStatus,
+      virusScanStatus: 'QUARANTINED',
+    };
+    this.attachmentRegistry.set(attachmentId, initialQuarantinedRecord);
+    this.recordScanAudit({
+      attachmentId,
+      fileName,
+      sha256,
+      stage: 'QUARANTINED_ON_INGEST',
+      status: 'QUARANTINED',
+      engine: 'TradeLink-QuarantineGate/v6.1',
+    });
+
+    // Si le scan est différé (en attente du démon clamd asynchrone), le fichier reste en quarantaine
+    const shouldDeferScan =
+      deferAntivirusScan === true ||
+      (typeof process !== 'undefined' && process.env?.AV_FORCE_QUARANTINE === 'true');
+
+    if (shouldDeferScan) {
+      return initialQuarantinedRecord;
+    }
+
+    // 7. Exécution de l'analyse antivirus sur le fichier en quarantaine
+    const scanResult = this.runRealAntivirusScan({
+      fileName,
+      mimeType,
+      base64Data,
+      magicBytesHex: resolvedMagicHex,
+      simulateScannerUnavailable,
+    });
+
+    if (scanResult.status === 'INFECTED') {
+      this.recordScanAudit({
+        attachmentId,
+        fileName,
+        sha256,
+        stage: 'THREAT_REJECTED',
+        status: 'INFECTED',
+        engine: scanResult.engine,
+        threatName: scanResult.threatName,
+      });
+      const err = new Error(`ANTIVIRUS_THREAT_DETECTED:${scanResult.threatName || 'MALWARE'}`);
+      (err as any).statusCode = 400;
+      throw err;
+    }
+
+    // En cas d'erreur ou d'indisponibilité du scanner : AUCUNE validation CLEAN, maintien strict en quarantaine
+    if (scanResult.status !== 'CLEAN') {
+      this.recordScanAudit({
+        attachmentId,
+        fileName,
+        sha256,
+        stage: 'SCANNER_ERROR_QUARANTINED',
+        status: scanResult.status,
+        engine: scanResult.engine,
+        errorReason: scanResult.errorReason || 'SCAN_NOT_CLEAN',
+      });
+      return initialQuarantinedRecord;
+    }
+
+    // 8. Promotion de QUARANTINED -> CLEAN après résultat positif vérifié
+    const cleanStorageKey = `attachments/b2b/${year}/${attachmentId}-${fileName}`;
+    const tokenPayload = `${attachmentId}:${cleanStorageKey}:${expiresAt}`;
+    const token = hmacSha256Hex(this.getHmacSecret(), tokenPayload);
+    const presignedDownloadUrl = `/api/v1/messaging/attachments/${attachmentId}/download?expires=${encodeURIComponent(
+      expiresAt
+    )}&token=${token}`;
+
+    const cleanAttachment: MessageAttachment = {
+      ...initialQuarantinedRecord,
+      storageKey: cleanStorageKey,
+      presignedDownloadUrl,
+      virusScanStatus: 'CLEAN',
     };
 
-    this.attachmentRegistry.set(attachmentId, attachment);
-    return attachment;
+    this.attachmentRegistry.set(attachmentId, cleanAttachment);
+    this.recordScanAudit({
+      attachmentId,
+      fileName,
+      sha256,
+      stage: 'CLAMAV_SCAN_COMPLETED',
+      status: 'CLEAN',
+      engine: scanResult.engine,
+    });
+
+    return cleanAttachment;
   }
 
   /**

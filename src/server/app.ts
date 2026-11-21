@@ -37,13 +37,90 @@ export function createApp(options: AppOptions = {}): Application {
   const repository = options.repositoryStore ?? new TradeLinkRepositoryStore(defaultSnapshot, true);
   const domainApp = new TradeLinkApiApplication(repository);
 
-  // 2. Middlewares de sécurité essentiels
+  // 2. Middlewares de sécurité essentiels (Helmet CSP durci, HSTS & HTTPS Enforcement en production)
+  const isProd = process.env.NODE_ENV === 'production';
+
   app.use(
     helmet({
-      contentSecurityPolicy: false, // Permet le rendu SPA / graphiques React
+      contentSecurityPolicy: isProd
+        ? {
+            directives: {
+              defaultSrc: ["'self'"],
+              scriptSrc: ["'self'"],
+              styleSrc: ["'self'", "'unsafe-inline'"],
+              imgSrc: ["'self'", 'data:', 'https:'],
+              connectSrc: ["'self'", 'https://app.tradelink.ma'],
+              frameAncestors: ["'none'"],
+              objectSrc: ["'none'"],
+              upgradeInsecureRequests: [],
+            },
+          }
+        : false,
       crossOriginEmbedderPolicy: false,
+      hsts: {
+        maxAge: 63072000,
+        includeSubDomains: true,
+        preload: true,
+      },
+      frameguard: { action: 'deny' },
+      noSniff: true,
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     })
   );
+
+  // Redirection / Obligation HTTPS en production
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (isProd && req.headers['x-forwarded-proto'] === 'http') {
+      res.status(426).json({
+        success: false,
+        error: {
+          code: 'HTTPS_TLS_REQUIRED',
+          message: 'Sécurité TRADELINK : Toutes les communications de production exigent HTTPS/TLS 1.3.',
+        },
+      });
+      return;
+    }
+    next();
+  });
+
+  // Rate Limiting HTTP par IP et par route (Anti-DDoS & Anti-Brute-Force API)
+  const rateLimitBuckets = new Map<string, { count: number; resetAtMs: number }>();
+  const authWindowLimit = Number(process.env.RATE_LIMIT_AUTH_MAX || 40);
+  const apiWindowLimit = Number(process.env.RATE_LIMIT_API_MAX || 400);
+  const windowDurationMs = 60 * 1000;
+
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const clientIp = req.ip || req.socket.remoteAddress || '127.0.0.1';
+    const isAuthRoute = req.path.startsWith('/api/v1/auth');
+    const bucketKey = `${clientIp}:${isAuthRoute ? 'AUTH' : 'API'}`;
+    const maxLimit = isAuthRoute ? authWindowLimit : apiWindowLimit;
+    const now = Date.now();
+
+    let bucket = rateLimitBuckets.get(bucketKey);
+    if (!bucket || now > bucket.resetAtMs) {
+      bucket = { count: 0, resetAtMs: now + windowDurationMs };
+      rateLimitBuckets.set(bucketKey, bucket);
+    }
+
+    bucket.count += 1;
+    const remaining = Math.max(0, maxLimit - bucket.count);
+    res.setHeader('X-RateLimit-Limit', String(maxLimit));
+    res.setHeader('X-RateLimit-Remaining', String(remaining));
+
+    if (bucket.count > maxLimit) {
+      const retryAfterSec = Math.ceil((bucket.resetAtMs - now) / 1000);
+      res.setHeader('Retry-After', String(retryAfterSec));
+      res.status(429).json({
+        success: false,
+        error: {
+          code: 'HTTP_RATE_LIMIT_EXCEEDED',
+          message: `Limite de requêtes atteinte (${maxLimit}/min). Veuillez réessayer dans ${retryAfterSec}s.`,
+        },
+      });
+      return;
+    }
+    next();
+  });
 
   const allowedOrigins = options.allowedOrigins ?? [
     'http://localhost:5173',

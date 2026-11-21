@@ -3,8 +3,27 @@
 // ============================================================================
 
 import Decimal from 'decimal.js';
+import { z } from 'zod';
 import { AppError } from '../middlewares/errorAndSecurity.middleware';
 import { DayCountBasis } from '../../types';
+
+// Schémas Zod de validation stricte côté serveur
+export const OrderLineZodSchema = z.object({
+  productId: z.string().trim().min(1),
+  quantity: z.number().int().positive(),
+});
+
+export const OrderCreateZodSchema = z.object({
+  shippingAddress: z.string().trim().min(5),
+  lines: z.array(OrderLineZodSchema).min(1),
+});
+
+export const KycDecisionZodSchema = z.object({
+  decision: z.enum(['VALIDATED', 'REJECTED', 'COMPLEMENT_REQUESTED', 'REACTIVATE']),
+  reason: z.string().trim().optional(),
+});
+
+export const DayCountBasisZodSchema = z.enum(['ACT/365', 'ACT/360', 'ACT/ACT']);
 
 export interface PaginationAndFilterParams {
   page: number;

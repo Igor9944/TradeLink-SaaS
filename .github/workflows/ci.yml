@@ -78,6 +78,9 @@ jobs:
       - name: 1. Express HTTP Server Tests
         run: npm run test:express
 
+      - name: 1B. Lot 1.1 Final Security & PostgreSQL 16 Migration Audit
+        run: npm run test:lot1-audit
+
       - name: 2. Backend Integration Tests
         run: npm run test:backend
 

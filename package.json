@@ -8,10 +8,11 @@
     "dev": "vite --port 5173",
     "dev:backend": "tsx src/server/server.ts",
     "build": "vite build",
-    "build:backend": "node -e \"require('esbuild').buildSync({ entryPoints: ['src/server/server.ts'], bundle: true, platform: 'node', target: 'node20', outfile: 'dist/server.cjs' })\"",
+    "build:backend": "node -e \"require('esbuild').buildSync({ entryPoints: ['src/server/server.ts'], bundle: true, platform: 'node', target: 'node20', external: ['@node-rs/argon2'], outfile: 'dist/server.cjs' })\"",
     "start:backend": "node dist/server.cjs",
     "preview": "vite preview --port 5173",
     "typecheck": "tsc --noEmit",
+    "test:lot1-audit": "node scripts/run-test.cjs src/server/tests/lot1.security.final.audit.test.ts",
     "test:express": "node scripts/run-test.cjs src/server/tests/express.server.test.ts",
     "test:backend": "node scripts/run-test.cjs src/server/tests/backend.integration.test.ts",
     "test:security": "node scripts/run-test.cjs src/server/tests/security.auth.test.ts",
@@ -47,6 +48,8 @@
     "test:all": "npm run test:backend && npm run test:security && npm run test:kyc && npm run test:commercial && npm run test:logistics && npm run test:logistics-advanced && npm run test:accounting && npm run test:financial-engine && npm run test:ai && npm run test:copilot && npm run test:voice && npm run test:ocr && npm run test:admin && npm run test:admin-security && npm run test:support && npm run test:search-analytics && npm run test:i18n && npm run test:translation && npm run test:room-live && npm run test:notifications && npm run test:catalog && npm run test:stock && npm run test:commercial-cycle && npm run test:billing-documents && npm run test:auth-lifecycle && npm run test:e2e && npm run test:security-audit && npm run test:performance && npm run test:harmonisation && npm run test:global-validation"
   },
   "dependencies": {
+    "@noble/hashes": "^2.4.0",
+    "@node-rs/argon2": "^2.2.2",
     "@prisma/client": "6.4.1",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
@@ -64,6 +67,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.17",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",

@@ -21,8 +21,10 @@ import {
 } from '../../services/backendServices';
 import {
   buildOtpAuthUri,
+  enforceLegacyHashMigration,
   generateTotpSecretBase32,
   hashPasswordArgon2id,
+  isLegacyMockHash,
   signJwtAccessToken,
   verifyPasswordArgon2id,
   verifyTotpCode,
@@ -354,6 +356,25 @@ export class TradeLinkDomainServices {
     this.seedProvisionedAccounts();
   }
 
+  private static readonly seededArgon2idCache = new Map<string, string>();
+
+  private static getSeededAccountHash(plainPassword: string, salt: string): string {
+    const cacheKey = `${plainPassword}:${salt}`;
+    let cached = this.seededArgon2idCache.get(cacheKey);
+    if (!cached) {
+      cached = hashPasswordArgon2id(plainPassword, salt);
+      this.seededArgon2idCache.set(cacheKey, cached);
+    }
+    return cached;
+  }
+
+  public setAccountHashForMigrationAudit(email: string, rawHash: string): void {
+    const acc = this.accountsByEmail.get(email.trim().toLowerCase());
+    if (acc) {
+      acc.passwordHashArgon2id = rawHash;
+    }
+  }
+
   private seedProvisionedAccounts(): void {
     const adminSecret = generateTotpSecretBase32('usr-admin-01-tradelink-v6');
     this.accountsByEmail.set('k.benali@tradelink-global.com', {
@@ -367,7 +388,7 @@ export class TradeLinkDomainServices {
       country: 'France',
       role: 'ADMIN',
       requestedRole: 'ADMIN',
-      passwordHashArgon2id: hashPasswordArgon2id('AdminTradeLink!2026', 'salt-admin-01'),
+      passwordHashArgon2id: TradeLinkDomainServices.getSeededAccountHash('AdminTradeLink!2026', 'salt-admin-01'),
       emailVerified: true,
       emailVerifiedAt: '2026-01-01T00:00:00Z',
       termsAcceptedAt: '2026-01-01T00:00:00Z',
@@ -393,7 +414,7 @@ export class TradeLinkDomainServices {
       phoneVerifiedAt: '2026-02-10T00:00:00Z',
       role: 'CLIENT',
       requestedRole: 'CLIENT',
-      passwordHashArgon2id: hashPasswordArgon2id('ClientAtlas!2026', 'salt-client-01'),
+      passwordHashArgon2id: TradeLinkDomainServices.getSeededAccountHash('ClientAtlas!2026', 'salt-client-01'),
       emailVerified: true,
       emailVerifiedAt: '2026-02-10T00:00:00Z',
       termsAcceptedAt: '2026-02-10T00:00:00Z',
@@ -415,7 +436,7 @@ export class TradeLinkDomainServices {
       country: 'Allemagne',
       role: 'FOURNISSEUR',
       requestedRole: 'FOURNISSEUR',
-      passwordHashArgon2id: hashPasswordArgon2id('SupplierEuro!2026', 'salt-supp-01'),
+      passwordHashArgon2id: TradeLinkDomainServices.getSeededAccountHash('SupplierEuro!2026', 'salt-supp-01'),
       emailVerified: true,
       emailVerifiedAt: '2026-02-12T00:00:00Z',
       termsAcceptedAt: '2026-02-12T00:00:00Z',
@@ -440,7 +461,7 @@ export class TradeLinkDomainServices {
       phoneVerifiedAt: '2026-02-14T00:00:00Z',
       role: 'TRANSPORTEUR',
       requestedRole: 'TRANSPORTEUR',
-      passwordHashArgon2id: hashPasswordArgon2id('CarrierLogis!2026', 'salt-trans-01'),
+      passwordHashArgon2id: TradeLinkDomainServices.getSeededAccountHash('CarrierLogis!2026', 'salt-trans-01'),
       emailVerified: true,
       emailVerifiedAt: '2026-02-14T00:00:00Z',
       termsAcceptedAt: '2026-02-14T00:00:00Z',
@@ -462,7 +483,7 @@ export class TradeLinkDomainServices {
       country: 'France',
       role: 'COMPTABLE',
       requestedRole: 'COMPTABLE',
-      passwordHashArgon2id: hashPasswordArgon2id('ComptableSecure!2026', 'salt-compt-01'),
+      passwordHashArgon2id: TradeLinkDomainServices.getSeededAccountHash('ComptableSecure!2026', 'salt-compt-01'),
       emailVerified: true,
       emailVerifiedAt: '2026-02-15T00:00:00Z',
       termsAcceptedAt: '2026-02-15T00:00:00Z',
@@ -484,7 +505,7 @@ export class TradeLinkDomainServices {
       country: 'France',
       role: 'SUPPORT',
       requestedRole: 'SUPPORT',
-      passwordHashArgon2id: hashPasswordArgon2id('SupportAgent!2026', 'salt-supp-rep-01'),
+      passwordHashArgon2id: TradeLinkDomainServices.getSeededAccountHash('SupportAgent!2026', 'salt-supp-rep-01'),
       emailVerified: true,
       emailVerifiedAt: '2026-02-16T00:00:00Z',
       termsAcceptedAt: '2026-02-16T00:00:00Z',
@@ -909,6 +930,48 @@ export class TradeLinkDomainServices {
           429,
           'AUTH_ACCOUNT_LOCKED_BRUTE_FORCE',
           'Compte temporairement verrouillé suite à 5 tentatives de connexion infructueuses (15 minutes).'
+        );
+      }
+
+      // Détection des anciens hashes non fiables (FNV 64 chars ou SHA-512 128 chars) :
+      // Révocation immédiate des sessions et réinitialisation obligatoire du mot de passe
+      if (isLegacyMockHash(account.passwordHashArgon2id)) {
+        enforceLegacyHashMigration({
+          storedHash: account.passwordHashArgon2id,
+          userId: account.userId,
+          onInvalidateUserSessions: () => {
+            revokeUserActiveSession(account.userId);
+            const existingSessions = this.repo.getUserSessions(account.userId);
+            for (const s of existingSessions) {
+              this.repo.revokeUserSession(s.id, 'LEGACY_HASH_MANDATORY_PASSWORD_RESET');
+              this.repo.revokeRefreshTokensForSession(s.id);
+            }
+            for (const rt of this.refreshTokens.values()) {
+              if (rt.userId === account.userId) {
+                rt.revoked = true;
+              }
+            }
+          },
+        });
+        this.repo.executeTransaction((tx) => {
+          tx.auditLogs.unshift({
+            id: `aud-${Date.now()}`,
+            timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+            actorName: normalizedEmail,
+            actorRole: account.role,
+            action: 'AUTH_LEGACY_HASH_RESET_MANDATORY',
+            targetType: 'User',
+            targetId: account.userId,
+            result: 'DENIED',
+            correlationId: params.correlationId,
+            ipAddress: params.ipAddress,
+            details: 'Ancien hash non-Argon2id détecté : sessions révoquées et réinitialisation obligatoire requise.',
+          });
+        });
+        throw new AppError(
+          403,
+          'AUTH_PASSWORD_RESET_REQUIRED_LEGACY_HASH',
+          'Sécurité TRADELINK : Votre ancienne empreinte de mot de passe n’est plus fiable. Une réinitialisation obligatoire du mot de passe avec Argon2id (RFC 9106) est requise.'
         );
       }
 
