@@ -24,11 +24,20 @@ import {
   enforceLegacyHashMigration,
   generateTotpSecretBase32,
   hashPasswordArgon2id,
+  invalidateAllUserJwtTokens,
   isLegacyMockHash,
   signJwtAccessToken,
   verifyPasswordArgon2id,
   verifyTotpCode,
 } from '../../services/securityCrypto';
+import {
+  B2BCompanyManagementEngine,
+  CompanyB2BRecord,
+  CompanyInternalPermission,
+  CompanyInternalRole,
+  CompanyStatus,
+  TRADELINK_ACTOR_SPECIFICATIONS,
+} from '../../services/companyAndAccountEngine';
 import {
   checkMandatoryKycCompletion,
   encryptAndStoreKycDocument,
@@ -292,6 +301,12 @@ export interface RegisteredAccountRecord {
   phoneVerifiedAt?: string;
   isSuspended?: boolean;
   suspensionReason?: string;
+  isDeactivated?: boolean;
+  deactivatedReason?: string;
+  deletedAt?: string;
+  locale?: 'fr' | 'en' | 'ar';
+  themePreference?: 'system' | 'light' | 'dark';
+  companyId?: string;
 }
 
 export interface PhoneOtpChallengeRecord {
@@ -350,6 +365,7 @@ export class TradeLinkDomainServices {
   private readonly resetTokens = new Map<string, PasswordResetTokenRecord>();
   private readonly devicesById = new Map<string, UserDeviceRecord>();
   private readonly processedStripeEventIds = new Set<string>();
+  private readonly companyEngine = new B2BCompanyManagementEngine();
 
   constructor(private readonly repo: TradeLinkRepositoryStore) {
     // Provisionnement manuel initial des profils souverains (Chapitre 2.1)
@@ -1753,6 +1769,759 @@ export class TradeLinkDomainServices {
     });
 
     return dev;
+  }
+
+  public trustUserDevice(params: {
+    actorUserId: string;
+    actorRole: UserRoleCode;
+    targetUserId: string;
+    deviceId: string;
+    correlationId: string;
+    ipAddress: string;
+  }): UserDeviceRecord {
+    if (params.actorRole !== 'ADMIN' && params.actorUserId !== params.targetUserId) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Interdit (Protection IDOR) : vous ne pouvez gérer que vos propres appareils.'
+      );
+    }
+
+    const dev = this.devicesById.get(params.deviceId);
+    if (!dev || dev.userId !== params.targetUserId) {
+      throw new AppError(404, 'DEVICE_NOT_FOUND', 'Appareil introuvable pour cet utilisateur.');
+    }
+
+    dev.trusted = true;
+    dev.lastActiveAt = new Date().toISOString();
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actorUserId,
+        actorRole: params.actorRole,
+        action: 'AUTH_DEVICE_TRUSTED',
+        targetType: 'Device',
+        targetId: dev.id,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Appareil ${dev.deviceName} (${dev.id}) marqué comme appareil de confiance.`,
+      });
+    });
+
+    return dev;
+  }
+
+  // ==========================================================================
+  // LOT 3 — CYCLE DE VIE COMPLET DES COMPTES, ACTEURS, ENTREPRISES B2B & ESPACES
+  // ==========================================================================
+
+  private findAccountByIdOrEmail(idOrEmail: string): RegisteredAccountRecord | undefined {
+    const lower = idOrEmail.trim().toLowerCase();
+    const byEmail = this.accountsByEmail.get(lower);
+    if (byEmail) return byEmail;
+    for (const acc of this.accountsByEmail.values()) {
+      if (acc.userId === idOrEmail.trim()) {
+        return acc;
+      }
+    }
+    return undefined;
+  }
+
+  private sanitizeAccountForResponse(acc: RegisteredAccountRecord) {
+    const company = this.companyEngine.findCompanyByUserId(acc.userId, acc.email);
+    return {
+      userId: acc.userId,
+      email: acc.email,
+      fullName: acc.fullName,
+      firstName: acc.firstName,
+      lastName: acc.lastName,
+      companyName: company?.legalName ?? acc.companyName,
+      companyId: company?.id ?? acc.companyId,
+      taxId: acc.taxId,
+      country: acc.country,
+      phone: acc.phone,
+      phoneVerified: Boolean(acc.phoneVerified),
+      businessAddress: acc.businessAddress,
+      city: acc.city,
+      postalCode: acc.postalCode,
+      role: acc.role,
+      requestedRole: acc.requestedRole,
+      emailVerified: acc.emailVerified,
+      kycStatus: acc.kycStatus,
+      mfaEnabled: acc.mfaEnabled,
+      isSuspended: Boolean(acc.isSuspended),
+      suspensionReason: acc.suspensionReason,
+      isDeactivated: Boolean(acc.isDeactivated),
+      deletedAt: acc.deletedAt ?? null,
+      locale: acc.locale ?? 'fr',
+      themePreference: acc.themePreference ?? 'light',
+      createdAt: acc.createdAt,
+    };
+  }
+
+  public listAllUsersForAdmin(actor: NonNullable<ServerRequestContext['user']>) {
+    if (actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_ADMIN_ONLY', 'Seul un administrateur peut lister tous les comptes.');
+    }
+    return Array.from(this.accountsByEmail.values())
+      .filter((a) => !a.deletedAt)
+      .map((a) => this.sanitizeAccountForResponse(a));
+  }
+
+  public getUserProfileService(
+    targetUserId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ) {
+    if (actor.role !== 'ADMIN' && actor.id !== targetUserId) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Protection IDOR : vous ne pouvez consulter que votre propre profil utilisateur.'
+      );
+    }
+
+    const acc = this.findAccountByIdOrEmail(targetUserId);
+    if (!acc || acc.deletedAt) {
+      throw new AppError(404, 'USER_NOT_FOUND', 'Profil utilisateur introuvable.');
+    }
+
+    return {
+      profile: this.sanitizeAccountForResponse(acc),
+      actorSpecification: TRADELINK_ACTOR_SPECIFICATIONS[acc.role],
+      devices: this.listUserDevices(acc.userId),
+      company: this.companyEngine.findCompanyByUserId(acc.userId, acc.email),
+    };
+  }
+
+  public updateUserProfileService(params: {
+    targetUserId: string;
+    patch: {
+      firstName?: string;
+      lastName?: string;
+      fullName?: string;
+      phone?: string;
+      companyName?: string;
+      businessAddress?: string;
+      city?: string;
+      postalCode?: string;
+      country?: string;
+      locale?: 'fr' | 'en' | 'ar';
+      themePreference?: 'system' | 'light' | 'dark';
+    };
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    if (params.actor.role !== 'ADMIN' && params.actor.id !== params.targetUserId) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Protection IDOR : vous ne pouvez modifier que votre propre profil utilisateur.'
+      );
+    }
+
+    const acc = this.findAccountByIdOrEmail(params.targetUserId);
+    if (!acc || acc.deletedAt) {
+      throw new AppError(404, 'USER_NOT_FOUND', 'Utilisateur introuvable.');
+    }
+
+    const { patch } = params;
+    if (patch.firstName !== undefined) acc.firstName = patch.firstName.trim();
+    if (patch.lastName !== undefined) acc.lastName = patch.lastName.trim();
+    if (patch.fullName !== undefined) {
+      acc.fullName = patch.fullName.trim();
+    } else if (patch.firstName !== undefined || patch.lastName !== undefined) {
+      acc.fullName = `${acc.firstName ?? ''} ${acc.lastName ?? ''}`.trim();
+    }
+    if (patch.phone !== undefined) acc.phone = patch.phone.trim();
+    if (patch.companyName !== undefined) acc.companyName = patch.companyName.trim();
+    if (patch.businessAddress !== undefined) acc.businessAddress = patch.businessAddress.trim();
+    if (patch.city !== undefined) acc.city = patch.city.trim();
+    if (patch.postalCode !== undefined) acc.postalCode = patch.postalCode.trim();
+    if (patch.country !== undefined) acc.country = patch.country.trim();
+    if (patch.locale && ['fr', 'en', 'ar'].includes(patch.locale)) {
+      acc.locale = patch.locale;
+      this.repo.setUserLanguagePreference(acc.userId, { preferredLocale: patch.locale });
+    }
+    if (patch.themePreference && ['system', 'light', 'dark'].includes(patch.themePreference)) {
+      acc.themePreference = patch.themePreference;
+    }
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'USER_PROFILE_UPDATED',
+        targetType: 'User',
+        targetId: acc.userId,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Profil utilisateur ${acc.email} mis à jour.`,
+      });
+    });
+
+    return this.sanitizeAccountForResponse(acc);
+  }
+
+  public generateMfaRecoveryCodesService(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    const codes = this.companyEngine.generateMfaRecoveryCodesForUser(params.actor.id);
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'AUTH_MFA_RECOVERY_CODES_GENERATED',
+        targetType: 'User',
+        targetId: params.actor.id,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: '8 codes de récupération MFA à usage unique générés et hachés SHA-256.',
+      });
+    });
+    return {
+      userId: params.actor.id,
+      recoveryCodes: codes,
+      count: codes.length,
+    };
+  }
+
+  public verifyMfaRecoveryCodeService(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    recoveryCode: string;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    const valid = this.companyEngine.consumeMfaRecoveryCode(params.actor.id, params.recoveryCode);
+    if (!valid) {
+      throw new AppError(
+        401,
+        'MFA_RECOVERY_CODE_INVALID_OR_USED',
+        'Code de récupération MFA invalide ou déjà consommé.'
+      );
+    }
+
+    markSessionMfaVerified(params.actor.sessionId);
+    const upgradedAccessToken = signJwtAccessToken({
+      sub: params.actor.id,
+      email: params.actor.email,
+      role: params.actor.role,
+      sessionId: params.actor.sessionId,
+      mfaVerified: true,
+    });
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'AUTH_MFA_RECOVERY_CODE_CONSUMED',
+        targetType: 'Session',
+        targetId: params.actor.sessionId,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: 'Code de secours MFA validé et consommé ; session élevée.',
+      });
+    });
+
+    return {
+      mfaVerified: true,
+      accessToken: upgradedAccessToken,
+      sessionId: params.actor.sessionId,
+    };
+  }
+
+  public deactivateUserAccountService(params: {
+    targetUserId: string;
+    reason: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    if (params.actor.role !== 'ADMIN' && params.actor.id !== params.targetUserId) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Protection IDOR : vous ne pouvez désactiver que votre propre compte.'
+      );
+    }
+
+    const acc = this.findAccountByIdOrEmail(params.targetUserId);
+    if (!acc || acc.deletedAt) {
+      throw new AppError(404, 'USER_NOT_FOUND', 'Compte introuvable.');
+    }
+
+    acc.isDeactivated = true;
+    acc.deactivatedReason = params.reason || 'Désactivation demandée.';
+    acc.isSuspended = true;
+    acc.suspensionReason = acc.deactivatedReason;
+
+    // Révocation immédiate dans Redis 7 + invalidation des JWT
+    revokeUserActiveSession(acc.userId);
+    invalidateAllUserJwtTokens(acc.userId);
+    for (const rt of this.refreshTokens.values()) {
+      if (rt.userId === acc.userId) rt.revoked = true;
+    }
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'USER_ACCOUNT_DEACTIVATED',
+        targetType: 'User',
+        targetId: acc.userId,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Compte ${acc.email} désactivé et sessions révoquées. Motif : ${acc.deactivatedReason}`,
+      });
+    });
+
+    return {
+      userId: acc.userId,
+      email: acc.email,
+      isDeactivated: true,
+      sessionsRevoked: true,
+    };
+  }
+
+  public deleteUserAccountControlledService(params: {
+    targetUserId: string;
+    reason?: string;
+    forceByAdmin?: boolean;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    if (params.actor.role !== 'ADMIN' && params.actor.id !== params.targetUserId) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Protection IDOR : vous ne pouvez demander la suppression que de votre propre compte.'
+      );
+    }
+
+    const acc = this.findAccountByIdOrEmail(params.targetUserId);
+    if (!acc || acc.deletedAt) {
+      throw new AppError(404, 'USER_NOT_FOUND', 'Compte introuvable ou déjà supprimé.');
+    }
+
+    // Vérification des obligations commerciales actives (commandes en cours / factures impayées)
+    const snapshot = this.repo.getSnapshot();
+    const activeOrders = snapshot.orders.filter(
+      (o) =>
+        !o.deletedAt &&
+        (o.clientId === acc.userId || o.supplierId === acc.userId) &&
+        !['COMPLETED', 'DELIVERED', 'CANCELLED', 'REFUSED'].includes(o.status)
+    );
+
+    const canForce = params.actor.role === 'ADMIN' && params.forceByAdmin === true;
+    if (activeOrders.length > 0 && !canForce) {
+      throw new AppError(
+        409,
+        'ACCOUNT_HAS_ACTIVE_OBLIGATIONS',
+        `Suppression bloquée : ce compte possède ${activeOrders.length} commande(s) active(s) non clôturée(s).`
+      );
+    }
+
+    const nowIso = new Date().toISOString();
+    acc.deletedAt = nowIso;
+    acc.isDeactivated = true;
+    acc.isSuspended = true;
+    acc.suspensionReason = params.reason || 'Suppression contrôlée du compte.';
+
+    // Révocation immédiate de toutes les sessions Redis et jetons JWT
+    revokeUserActiveSession(acc.userId);
+    invalidateAllUserJwtTokens(acc.userId);
+    for (const rt of this.refreshTokens.values()) {
+      if (rt.userId === acc.userId) rt.revoked = true;
+    }
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: nowIso.replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'USER_ACCOUNT_CONTROLLED_DELETION',
+        targetType: 'User',
+        targetId: acc.userId,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Suppression logique contrôlée du compte ${acc.email} (deletedAt=${nowIso}).`,
+      });
+    });
+
+    return {
+      userId: acc.userId,
+      deleted: true,
+      deletedAt: nowIso,
+      sessionsRevoked: true,
+    };
+  }
+
+  // Mission 3.2 : Spécifications des 7 acteurs
+  public listActorSpecificationsService() {
+    return Object.values(TRADELINK_ACTOR_SPECIFICATIONS);
+  }
+
+  public getActorSpecificationService(role: UserRoleCode) {
+    const spec = TRADELINK_ACTOR_SPECIFICATIONS[role];
+    if (!spec) {
+      throw new AppError(404, 'ACTOR_ROLE_NOT_FOUND', `Rôle "${role}" inconnu.`);
+    }
+    return spec;
+  }
+
+  // Mission 3.3 : Services Entreprises B2B
+  public listCompaniesService(actor: NonNullable<ServerRequestContext['user']>): CompanyB2BRecord[] {
+    return this.companyEngine.listCompaniesForActor(actor);
+  }
+
+  public getCompanyByIdService(
+    companyId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): CompanyB2BRecord {
+    try {
+      return this.companyEngine.getCompanyByIdForActor(companyId, actor);
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  public createCompanyService(params: {
+    body: Record<string, any>;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }): CompanyB2BRecord {
+    try {
+      const created = this.companyEngine.createCompany({
+        legalName: String(params.body.legalName ?? ''),
+        tradeName: params.body.tradeName ? String(params.body.tradeName) : undefined,
+        actorType:
+          params.body.actorType === 'FOURNISSEUR'
+            ? 'FOURNISSEUR'
+            : params.body.actorType === 'TRANSPORTEUR'
+            ? 'TRANSPORTEUR'
+            : 'CLIENT',
+        legalForm: String(params.body.legalForm ?? 'SARL'),
+        registrationNumber: String(params.body.registrationNumber ?? ''),
+        taxId: String(params.body.taxId ?? ''),
+        vatNumber: params.body.vatNumber ? String(params.body.vatNumber) : undefined,
+        legalCapital: params.body.legalCapital ? String(params.body.legalCapital) : undefined,
+        currency: params.body.currency ? String(params.body.currency) : 'EUR',
+        countryCode: String(params.body.countryCode ?? 'MA'),
+        headquartersAddress: String(params.body.headquartersAddress ?? 'Siège Social B2B'),
+        city: String(params.body.city ?? 'Casablanca'),
+        postalCode: String(params.body.postalCode ?? '20000'),
+        contactEmail: String(params.body.contactEmail ?? params.actor.email),
+        contactPhone: String(params.body.contactPhone ?? '+212600000000'),
+        website: params.body.website ? String(params.body.website) : undefined,
+        representativeName: params.body.representativeName ? String(params.body.representativeName) : undefined,
+        representativeTitle: params.body.representativeTitle ? String(params.body.representativeTitle) : undefined,
+        representativeIdNumber: params.body.representativeIdNumber ? String(params.body.representativeIdNumber) : undefined,
+        actor: params.actor,
+      });
+
+      this.repo.executeTransaction((tx) => {
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'COMPANY_B2B_CREATED',
+          targetType: 'Company',
+          targetId: created.id,
+          result: 'SUCCESS',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `Entreprise B2B créée : ${created.legalName} (${created.companyCode}).`,
+        });
+      });
+
+      return created;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  public updateCompanyProfileService(params: {
+    companyId: string;
+    patch: Record<string, any>;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }): CompanyB2BRecord {
+    try {
+      const updated = this.companyEngine.updateCompanyProfile({
+        companyId: params.companyId,
+        patch: params.patch,
+        actor: params.actor,
+      });
+      this.repo.executeTransaction((tx) => {
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'COMPANY_B2B_UPDATED',
+          targetType: 'Company',
+          targetId: updated.id,
+          result: 'SUCCESS',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `Profil de l'entreprise ${updated.legalName} modifié.`,
+        });
+      });
+      return updated;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  public addCompanyRepresentativeService(params: {
+    companyId: string;
+    body: Record<string, any>;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    try {
+      return this.companyEngine.addRepresentative({
+        companyId: params.companyId,
+        representative: {
+          fullName: String(params.body.fullName ?? ''),
+          title: String(params.body.title ?? 'Mandataire'),
+          idDocumentType: params.body.idDocumentType ?? 'CIN',
+          idDocumentNumber: String(params.body.idDocumentNumber ?? ''),
+          nationality: String(params.body.nationality ?? 'MA'),
+          email: String(params.body.email ?? params.actor.email),
+          phone: params.body.phone ? String(params.body.phone) : undefined,
+          isPrimarySigner: Boolean(params.body.isPrimarySigner ?? false),
+        },
+        actor: params.actor,
+      });
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  public addCompanyDocumentService(params: {
+    companyId: string;
+    body: Record<string, any>;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    try {
+      return this.companyEngine.addSupportingDocument({
+        companyId: params.companyId,
+        docType: String(params.body.docType ?? 'RNE_KBIS'),
+        title: String(params.body.title ?? 'Justificatif Entreprise'),
+        fileName: String(params.body.fileName ?? 'document.pdf'),
+        fileSizeBytes: Number(params.body.fileSizeBytes ?? 128000),
+        mimeType: String(params.body.mimeType ?? 'application/pdf'),
+        virusScanStatus: params.body.virusScanStatus ?? 'CLEAN',
+        actor: params.actor,
+      });
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  public inviteCompanyMemberService(params: {
+    companyId: string;
+    invitedEmail: string;
+    targetInternalRole: CompanyInternalRole;
+    customPermissions?: CompanyInternalPermission[];
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    try {
+      const res = this.companyEngine.inviteMember({
+        companyId: params.companyId,
+        invitedEmail: params.invitedEmail,
+        targetInternalRole: params.targetInternalRole,
+        customPermissions: params.customPermissions,
+        actor: params.actor,
+      });
+      this.repo.executeTransaction((tx) => {
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'COMPANY_MEMBER_INVITED',
+          targetType: 'Company',
+          targetId: params.companyId,
+          result: 'SUCCESS',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `Invitation envoyée à ${params.invitedEmail} (${params.targetInternalRole}).`,
+        });
+      });
+      return res;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  public acceptCompanyInvitationService(params: {
+    companyId: string;
+    invitationId: string;
+    rawToken: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+    correlationId: string;
+    ipAddress: string;
+  }) {
+    try {
+      const acc = this.findAccountByIdOrEmail(params.actor.id);
+      const member = this.companyEngine.acceptInvitation({
+        companyId: params.companyId,
+        invitationId: params.invitationId,
+        rawToken: params.rawToken,
+        actor: {
+          ...params.actor,
+          fullName: acc?.fullName ?? params.actor.email,
+        },
+      });
+      if (acc) {
+        acc.companyId = params.companyId;
+      }
+      return member;
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  public updateCompanyMemberPermissionsService(params: {
+    companyId: string;
+    targetMemberId: string;
+    internalRole?: CompanyInternalRole;
+    permissions?: CompanyInternalPermission[];
+    actor: NonNullable<ServerRequestContext['user']>;
+  }) {
+    try {
+      return this.companyEngine.updateMemberPermissions(params);
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  public removeCompanyMemberService(params: {
+    companyId: string;
+    targetMemberId: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+  }) {
+    try {
+      return this.companyEngine.removeMember(params);
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  public updateCompanyStatusAdminService(params: {
+    companyId: string;
+    status: CompanyStatus;
+    reason: string;
+    actor: NonNullable<ServerRequestContext['user']>;
+  }) {
+    try {
+      return this.companyEngine.updateCompanyStatusByAdmin(params);
+    } catch (err: any) {
+      throw new AppError(err.statusCode || 400, err.errorCode || err.message, err.message);
+    }
+  }
+
+  // Mission 3.5 : Espace utilisateur complet adapté par acteur
+  public getActorWorkspaceService(
+    targetUserId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ) {
+    if (actor.role !== 'ADMIN' && actor.id !== targetUserId) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Protection IDOR : vous ne pouvez consulter que votre propre espace de travail.'
+      );
+    }
+
+    const acc = this.findAccountByIdOrEmail(targetUserId);
+    const effectiveRole = acc?.role ?? actor.role;
+    const effectiveEmail = acc?.email ?? actor.email;
+    const actorSpec = TRADELINK_ACTOR_SPECIFICATIONS[effectiveRole];
+    const company = this.companyEngine.findCompanyByUserId(targetUserId, effectiveEmail);
+    const snapshot = this.repo.getSnapshot();
+
+    const userOrders = snapshot.orders.filter(
+      (o) => !o.deletedAt && (o.clientId === targetUserId || o.supplierId === targetUserId || effectiveRole === 'ADMIN' || effectiveRole === 'COMPTABLE')
+    );
+    const userKyc = snapshot.kycDossiers.find((d) => d.userId === targetUserId);
+    const notifs = this.repo.listNotifications({ userId: targetUserId });
+    const unreadNotifsCount = notifs.filter((n) => !n.isRead).length;
+    const conversations = this.repo.listConversationsForUser(targetUserId, effectiveRole);
+    const recentActivities = snapshot.auditLogs
+      .filter((a) => a.actorName === effectiveEmail || a.targetId === targetUserId || effectiveRole === 'ADMIN')
+      .slice(0, 15);
+
+    return {
+      userId: targetUserId,
+      role: effectiveRole,
+      workspacePath: actorSpec.defaultWorkspacePath,
+      actorSpecification: actorSpec,
+      profile: acc
+        ? this.sanitizeAccountForResponse(acc)
+        : {
+            userId: actor.id,
+            email: actor.email,
+            role: actor.role,
+            companyName: actor.companyName,
+          },
+      company,
+      security: {
+        mfaEnabled: acc?.mfaEnabled ?? (effectiveRole === 'ADMIN'),
+        mfaMandatory: actorSpec.mfaMandatory,
+        activeSessionId: actor.sessionId,
+        trustedDevicesCount: this.listUserDevices(targetUserId).filter((d) => d.trusted && !d.revoked).length,
+      },
+      kyc: {
+        requiresKyc: actorSpec.requiresKyc,
+        status: userKyc?.status ?? acc?.kycStatus ?? 'NOT_REQUIRED',
+        daysRemaining: userKyc?.daysRemaining ?? 7,
+        dossierId: userKyc?.id ?? null,
+      },
+      dashboardSummary: {
+        allowedModules: actorSpec.allowedModules,
+        ordersCount: userOrders.length,
+        unreadNotificationsCount: unreadNotifsCount,
+        activeConversationsCount: conversations.length,
+        canCreateRoomLive: actorSpec.canCreateRoomLive,
+        sourceCommercialDataAccess: actorSpec.sourceCommercialDataAccess,
+      },
+      notifications: {
+        unreadCount: unreadNotifsCount,
+        recent: notifs.slice(0, 5),
+      },
+      activities: recentActivities,
+    };
   }
 
   // 2. OrderService & StockService — Création de commande TRANSACTIONNELLE avec réservation de stock

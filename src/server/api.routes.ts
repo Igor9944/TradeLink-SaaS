@@ -129,4 +129,17 @@ export const TRADELINK_API_INVENTORY: ApiEndpointSpec[] = [
   { group: 'Search', method: 'GET', path: '/api/v1/search/autocomplete', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
   { group: 'Analytics', method: 'GET', path: '/api/v1/analytics/dashboard', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: false },
   { group: 'Analytics', method: 'GET', path: '/api/v1/analytics/export', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'], ownershipCheck: false, audited: true },
+
+  // Lot 3 : Authentification étendue, Utilisateurs, Acteurs, Entreprises B2B & Espaces
+  { group: 'Users', method: 'PUT', path: '/api/v1/users/:id/profile', rolesAllowed: ['ADMIN', 'SELF'], ownershipCheck: true, audited: true },
+  { group: 'Users', method: 'POST', path: '/api/v1/users/:id/deactivate', rolesAllowed: ['ADMIN', 'SELF'], ownershipCheck: true, audited: true },
+  { group: 'Users', method: 'DELETE', path: '/api/v1/users/:id', rolesAllowed: ['ADMIN', 'SELF'], ownershipCheck: true, audited: true },
+  { group: 'Actors', method: 'GET', path: '/api/v1/actors/roles', rolesAllowed: ['AUTH'], ownershipCheck: false, audited: false },
+  { group: 'Workspace', method: 'GET', path: '/api/v1/workspace/me', rolesAllowed: ['AUTH'], ownershipCheck: true, audited: false },
+  { group: 'Companies', method: 'GET', path: '/api/v1/companies', rolesAllowed: ['AUTH'], ownershipCheck: true, audited: false },
+  { group: 'Companies', method: 'POST', path: '/api/v1/companies', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'ADMIN'], ownershipCheck: true, audited: true },
+  { group: 'Companies', method: 'GET', path: '/api/v1/companies/:id', rolesAllowed: ['AUTH'], ownershipCheck: true, audited: false },
+  { group: 'Companies', method: 'PUT', path: '/api/v1/companies/:id', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'ADMIN'], ownershipCheck: true, audited: true },
+  { group: 'Companies', method: 'POST', path: '/api/v1/companies/:id/invitations', rolesAllowed: ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'ADMIN'], ownershipCheck: true, audited: true },
+  { group: 'Companies', method: 'POST', path: '/api/v1/companies/:id/invitations/:inviteId/accept', rolesAllowed: ['AUTH'], ownershipCheck: true, audited: true },
 ];

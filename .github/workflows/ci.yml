@@ -84,6 +84,9 @@ jobs:
       - name: 1C. Lot 2 PostgreSQL 16, Prisma & Redis 7 Multi-Instance Persistence
         run: npm run test:lot2-persistence
 
+      - name: 1D. Lot 3 Auth, Users, Actors, B2B Companies & Workspaces
+        run: npm run test:lot3-actors
+
       - name: 2. Backend Integration Tests
         run: npm run test:backend
 

@@ -451,6 +451,350 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, res, 200);
     }
 
+    // ============================================================================
+    // 2I. LOT 3 : CYCLE DE VIE COMPLET DES COMPTES, ACTEURS, ENTREPRISES B2B & ESPACES
+    // ============================================================================
+
+    // Codes de récupération MFA à usage unique
+    if (method === 'POST' && path === '/api/v1/auth/mfa/recovery-codes') {
+      const user = requireAuthenticatedSession(ctx);
+      const res = this.services.generateMfaRecoveryCodesService({
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    if (method === 'POST' && path === '/api/v1/auth/mfa/verify-recovery') {
+      const user = requireAuthenticatedSession(ctx);
+      const { recoveryCode } = ctx.body || {};
+      if (!recoveryCode) {
+        throw new AppError(400, 'VALIDATION_RECOVERY_CODE', 'Le code de récupération MFA est requis.');
+      }
+      const res = this.services.verifyMfaRecoveryCodeService({
+        actor: user,
+        recoveryCode: String(recoveryCode),
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    // Gouvernance des 7 acteurs (Spécifications et permissions serveur)
+    if (method === 'GET' && path === '/api/v1/actors/roles') {
+      requireAuthenticatedSession(ctx);
+      const specs = this.services.listActorSpecificationsService();
+      return this.ok(ctx, specs, 200);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/actors/roles/')) {
+      requireAuthenticatedSession(ctx);
+      const roleCode = (path.split('/').pop() ?? '').toUpperCase() as any;
+      const spec = this.services.getActorSpecificationService(roleCode);
+      return this.ok(ctx, spec, 200);
+    }
+
+    // Espace utilisateur adapté par acteur (/api/v1/workspace/me & /api/v1/users/:id/workspace)
+    if (method === 'GET' && path === '/api/v1/workspace/me') {
+      const user = requireAuthenticatedSession(ctx);
+      const ws = this.services.getActorWorkspaceService(user.id, user);
+      return this.ok(ctx, ws, 200);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/users/') && path.endsWith('/workspace')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const targetUserId = parts[parts.length - 2];
+      const ws = this.services.getActorWorkspaceService(targetUserId, user);
+      return this.ok(ctx, ws, 200);
+    }
+
+    // Gestion des utilisateurs (Admin list, Profil, Appareils de confiance, Sessions, Désactivation, Suppression contrôlée)
+    if (method === 'GET' && path === '/api/v1/users') {
+      const user = requireAuthenticatedSession(ctx);
+      const list = this.services.listAllUsersForAdmin(user);
+      return this.ok(ctx, list, 200);
+    }
+
+    if (method === 'PUT' && path === '/api/v1/auth/profile') {
+      const user = requireAuthenticatedSession(ctx);
+      const updated = this.services.updateUserProfileService({
+        targetUserId: user.id,
+        patch: ctx.body || {},
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, updated, 200);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/users/') && path.endsWith('/profile')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const targetUserId = parts[parts.length - 2];
+      const updated = this.services.updateUserProfileService({
+        targetUserId,
+        patch: ctx.body || {},
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, updated, 200);
+    }
+
+    if (
+      method === 'POST' &&
+      path.startsWith('/api/v1/users/') &&
+      path.includes('/devices/') &&
+      path.endsWith('/trust')
+    ) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const deviceId = parts[parts.length - 2];
+      const targetUserId = parts[parts.length - 4];
+      const trusted = this.services.trustUserDevice({
+        actorUserId: user.id,
+        actorRole: user.role,
+        targetUserId,
+        deviceId,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, trusted, 200);
+    }
+
+    if (
+      method === 'DELETE' &&
+      path.startsWith('/api/v1/users/') &&
+      path.includes('/sessions/')
+    ) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const targetSessionId = parts[parts.length - 1];
+      const targetUserId = parts[parts.length - 3];
+      if (user.role !== 'ADMIN' && user.id !== targetUserId) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Protection IDOR : révocation de session refusée.');
+      }
+      const res = this.services.revokeUserSessionById({
+        userId: targetUserId,
+        targetSessionId,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/users/') && path.endsWith('/deactivate')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const targetUserId = parts[parts.length - 2];
+      const res = this.services.deactivateUserAccountService({
+        targetUserId,
+        reason: String(ctx.body?.reason ?? 'Désactivation volontaire du compte.'),
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    if (method === 'DELETE' && path.startsWith('/api/v1/users/') && path.split('/').length === 5) {
+      const user = requireAuthenticatedSession(ctx);
+      const targetUserId = path.split('/').pop() ?? '';
+      const res = this.services.deleteUserAccountControlledService({
+        targetUserId,
+        reason: ctx.body?.reason ? String(ctx.body.reason) : undefined,
+        forceByAdmin: Boolean(ctx.body?.forceByAdmin),
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/users/') && path.split('/').length === 5) {
+      const user = requireAuthenticatedSession(ctx);
+      const targetUserId = path.split('/').pop() ?? '';
+      const detail = this.services.getUserProfileService(targetUserId, user);
+      return this.ok(ctx, detail, 200);
+    }
+
+    // Gestion des Entreprises B2B (/api/v1/companies/*) avec isolation stricte Anti-IDOR
+    if (method === 'GET' && path === '/api/v1/companies') {
+      const user = requireAuthenticatedSession(ctx);
+      const companies = this.services.listCompaniesService(user);
+      return this.ok(ctx, companies, 200);
+    }
+
+    if (method === 'POST' && path === '/api/v1/companies') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'ADMIN']);
+      const created = this.services.createCompanyService({
+        body: ctx.body || {},
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, created, 201);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/companies/') && path.endsWith('/representatives')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const companyId = parts[parts.length - 2];
+      const rep = this.services.addCompanyRepresentativeService({
+        companyId,
+        body: ctx.body || {},
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, rep, 201);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/companies/') && path.endsWith('/documents')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const companyId = parts[parts.length - 2];
+      const doc = this.services.addCompanyDocumentService({
+        companyId,
+        body: ctx.body || {},
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, doc, 201);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/companies/') && path.endsWith('/members')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const companyId = parts[parts.length - 2];
+      const comp = this.services.getCompanyByIdService(companyId, user);
+      return this.ok(ctx, comp.members, 200);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/companies/') && path.endsWith('/invitations')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const companyId = parts[parts.length - 2];
+      const { invitedEmail, targetInternalRole, customPermissions } = ctx.body || {};
+      if (!invitedEmail) {
+        throw new AppError(400, 'VALIDATION_INVITED_EMAIL', 'invitedEmail est obligatoire.');
+      }
+      const res = this.services.inviteCompanyMemberService({
+        companyId,
+        invitedEmail: String(invitedEmail),
+        targetInternalRole: targetInternalRole || 'COMPANY_VIEWER',
+        customPermissions: Array.isArray(customPermissions) ? customPermissions : undefined,
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 201);
+    }
+
+    if (
+      method === 'POST' &&
+      path.startsWith('/api/v1/companies/') &&
+      path.includes('/invitations/') &&
+      path.endsWith('/accept')
+    ) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const invitationId = parts[parts.length - 2];
+      const companyId = parts[parts.length - 4];
+      const rawToken = String(ctx.body?.token ?? '');
+      const member = this.services.acceptCompanyInvitationService({
+        companyId,
+        invitationId,
+        rawToken,
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, member, 200);
+    }
+
+    if (
+      method === 'PUT' &&
+      path.startsWith('/api/v1/companies/') &&
+      path.includes('/members/') &&
+      path.endsWith('/permissions')
+    ) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const targetMemberId = parts[parts.length - 2];
+      const companyId = parts[parts.length - 4];
+      const updated = this.services.updateCompanyMemberPermissionsService({
+        companyId,
+        targetMemberId,
+        internalRole: ctx.body?.internalRole,
+        permissions: Array.isArray(ctx.body?.permissions) ? ctx.body.permissions : undefined,
+        actor: user,
+      });
+      return this.ok(ctx, updated, 200);
+    }
+
+    if (
+      method === 'DELETE' &&
+      path.startsWith('/api/v1/companies/') &&
+      path.includes('/members/')
+    ) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const targetMemberId = parts[parts.length - 1];
+      const companyId = parts[parts.length - 3];
+      const removed = this.services.removeCompanyMemberService({
+        companyId,
+        targetMemberId,
+        actor: user,
+      });
+      return this.ok(ctx, removed, 200);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/companies/') && path.endsWith('/status')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const companyId = parts[parts.length - 2];
+      const updated = this.services.updateCompanyStatusAdminService({
+        companyId,
+        status: ctx.body?.status,
+        reason: String(ctx.body?.reason ?? ''),
+        actor: user,
+      });
+      return this.ok(ctx, updated, 200);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/companies/') && path.endsWith('/history')) {
+      const user = requireAuthenticatedSession(ctx);
+      const parts = path.split('/');
+      const companyId = parts[parts.length - 2];
+      const comp = this.services.getCompanyByIdService(companyId, user);
+      return this.ok(ctx, comp.history, 200);
+    }
+
+    if (method === 'PUT' && path.startsWith('/api/v1/companies/') && path.split('/').length === 5) {
+      const user = requireAuthenticatedSession(ctx);
+      const companyId = path.split('/').pop() ?? '';
+      const updated = this.services.updateCompanyProfileService({
+        companyId,
+        patch: ctx.body || {},
+        actor: user,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, updated, 200);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/companies/') && path.split('/').length === 5) {
+      const user = requireAuthenticatedSession(ctx);
+      const companyId = path.split('/').pop() ?? '';
+      const comp = this.services.getCompanyByIdService(companyId, user);
+      return this.ok(ctx, comp, 200);
+    }
+
     // 3A. Catégories & Produits (Pagination, Filtres, Soft Delete, Restriction Comptable Stage 3)
     if (method === 'GET' && path === '/api/v1/categories') {
       const categories = this.services.listProductCategories();
