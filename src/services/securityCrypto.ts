@@ -583,16 +583,65 @@ const JWT_AUDIENCE = 'urn:tradelink:api:v6';
 const revokedJwtJtis = new Set<string>();
 const userTokensInvalidatedAtSec = new Map<string, number>();
 
-export function revokeJwtAccessTokenByJti(jti: string): void {
+function getSharedRedisKvStore(): Map<string, { value: string; expiresAtMs: number | null }> | null {
+  const sym = Symbol.for('tradelink.v6.shared.redis.cluster');
+  const cluster = (globalThis as any)?.[sym];
+  return cluster?.kvStore ?? null;
+}
+
+export function revokeJwtAccessTokenByJti(jti: string, ttlSeconds = 3600): void {
   if (jti) {
     revokedJwtJtis.add(jti);
+    const kv = getSharedRedisKvStore();
+    if (kv) {
+      kv.set(`tradelink:jwt:revoked:jti:${jti}`, {
+        value: '1',
+        expiresAtMs: Date.now() + ttlSeconds * 1000,
+      });
+    }
   }
 }
 
 export function invalidateAllUserJwtTokens(userId: string): void {
   if (userId) {
-    userTokensInvalidatedAtSec.set(userId, Math.floor(Date.now() / 1000));
+    const nowSec = Math.floor(Date.now() / 1000);
+    userTokensInvalidatedAtSec.set(userId, nowSec);
+    const kv = getSharedRedisKvStore();
+    if (kv) {
+      kv.set(`tradelink:jwt:invalidated_before:${userId}`, {
+        value: String(nowSec),
+        expiresAtMs: Date.now() + 86400 * 7 * 1000,
+      });
+    }
   }
+}
+
+function isJtiRevokedInCluster(jti: string): boolean {
+  if (revokedJwtJtis.has(jti)) return true;
+  const kv = getSharedRedisKvStore();
+  if (!kv) return false;
+  const entry = kv.get(`tradelink:jwt:revoked:jti:${jti}`);
+  if (!entry) return false;
+  if (entry.expiresAtMs !== null && Date.now() > entry.expiresAtMs) {
+    kv.delete(`tradelink:jwt:revoked:jti:${jti}`);
+    return false;
+  }
+  return entry.value === '1';
+}
+
+function getUserInvalidatedBeforeFromCluster(userId: string): number | undefined {
+  const localVal = userTokensInvalidatedAtSec.get(userId);
+  const kv = getSharedRedisKvStore();
+  if (!kv) return localVal;
+  const entry = kv.get(`tradelink:jwt:invalidated_before:${userId}`);
+  if (!entry) return localVal;
+  if (entry.expiresAtMs !== null && Date.now() > entry.expiresAtMs) {
+    kv.delete(`tradelink:jwt:invalidated_before:${userId}`);
+    return localVal;
+  }
+  const clusterVal = Number(entry.value);
+  if (Number.isNaN(clusterVal)) return localVal;
+  return localVal !== undefined ? Math.max(localVal, clusterVal) : clusterVal;
 }
 
 // Secret maître sécurisé récupéré depuis l'environnement ou généré aléatoirement
@@ -692,9 +741,9 @@ export function verifyJwtAccessToken(token: string): JwtAccessPayload | null {
     if (typeof decoded.exp !== 'number' || decoded.exp < nowSec) return null;
     if (decoded.iss && decoded.iss !== JWT_ISSUER) return null;
     if (decoded.aud && decoded.aud !== JWT_AUDIENCE) return null;
-    if (decoded.jti && revokedJwtJtis.has(decoded.jti)) return null;
+    if (decoded.jti && isJtiRevokedInCluster(decoded.jti)) return null;
 
-    const invalidatedBefore = userTokensInvalidatedAtSec.get(decoded.sub);
+    const invalidatedBefore = getUserInvalidatedBeforeFromCluster(decoded.sub);
     if (invalidatedBefore !== undefined && decoded.iat < invalidatedBefore) {
       return null;
     }

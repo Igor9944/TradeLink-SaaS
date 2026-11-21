@@ -18,7 +18,7 @@ try {
     bundle: true,
     platform: 'node',
     target: 'node20',
-    external: ['@electric-sql/pglite', '@electric-sql/pglite/contrib/pgcrypto', '@node-rs/argon2'],
+    external: ['@electric-sql/pglite', '@electric-sql/pglite/contrib/pgcrypto', '@node-rs/argon2', '@prisma/client'],
     outfile,
   });
 } catch (err) {

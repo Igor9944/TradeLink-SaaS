@@ -84,6 +84,8 @@ import {
 } from '../../services/accountingEngine';
 import { KYC_JURISDICTION_REGISTRY } from '../../services/kycEngine';
 import { INITIAL_SUPPORT_TICKETS, KNOWLEDGE_BASE_ARTICLES } from '../../services/supportEngine';
+import { TradeLinkPostgresManager } from '../database/prisma.client';
+import { TradeLinkRedisManager } from '../database/redis.client';
 
 export interface SoftDeletableEntity {
   id: string;
@@ -132,9 +134,16 @@ export interface DatabaseStateSnapshot {
   knowledgeArticles?: KnowledgeArticleRecord[];
 }
 
+export interface RepositoryPersistenceOptions {
+  persistenceFilePath?: string;
+  autoLoadFromDisk?: boolean;
+}
+
 export class TradeLinkRepositoryStore {
   private state: Required<DatabaseStateSnapshot>;
   public readonly isProductionDatabaseConnected: boolean;
+  private persistenceFilePath?: string;
+  private readonly instanceId = `repo-inst-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   private userPreferences: Map<string, UserLanguagePreferenceRecord> = new Map();
   private translationsMap: Map<string, TranslationRecord> = new Map();
   private loginAttemptsList: LoginAttemptRecord[] = [];
@@ -148,28 +157,39 @@ export class TradeLinkRepositoryStore {
   private messagesStore: Map<string, ConversationMessageRecord[]> = new Map();
   private userCartsStore: Map<string, CartItem[]> = new Map();
 
-  constructor(initialState: DatabaseStateSnapshot, isProdDbConnected = false) {
+  constructor(
+    initialState: DatabaseStateSnapshot,
+    isProdDbConnected = false,
+    persistenceOptions?: RepositoryPersistenceOptions
+  ) {
+    this.persistenceFilePath = persistenceOptions?.persistenceFilePath;
+    const diskState =
+      persistenceOptions?.autoLoadFromDisk && this.persistenceFilePath
+        ? TradeLinkPostgresManager.loadPersistentStateFromDisk(this.persistenceFilePath)
+        : null;
+    const sourceState = diskState ?? initialState;
+
     this.state = structuredClone({
-      ...initialState,
-      quotes: initialState.quotes ?? [],
-      invoices: initialState.invoices ?? [],
-      payments: initialState.payments ?? [],
-      disputes: initialState.disputes ?? [],
-      financialAnomalies: initialState.financialAnomalies ?? [],
-      paymentReceipts: initialState.paymentReceipts ?? [],
-      shipments: initialState.shipments ?? [],
-      incidents: initialState.incidents ?? [],
-      stockMovements: initialState.stockMovements ?? [],
-      accountingEntries: initialState.accountingEntries ?? [],
-      logisticsMissions: initialState.logisticsMissions ?? [],
+      ...sourceState,
+      quotes: sourceState.quotes ?? [],
+      invoices: sourceState.invoices ?? [],
+      payments: sourceState.payments ?? [],
+      disputes: sourceState.disputes ?? [],
+      financialAnomalies: sourceState.financialAnomalies ?? [],
+      paymentReceipts: sourceState.paymentReceipts ?? [],
+      shipments: sourceState.shipments ?? [],
+      incidents: sourceState.incidents ?? [],
+      stockMovements: sourceState.stockMovements ?? [],
+      accountingEntries: sourceState.accountingEntries ?? [],
+      logisticsMissions: sourceState.logisticsMissions ?? [],
       vehicles:
-        initialState.vehicles && initialState.vehicles.length > 0
-          ? initialState.vehicles
+        sourceState.vehicles && sourceState.vehicles.length > 0
+          ? sourceState.vehicles
           : structuredClone(INITIAL_CARRIER_VEHICLES),
-      transportDocuments: initialState.transportDocuments ?? [],
+      transportDocuments: sourceState.transportDocuments ?? [],
       kycJurisdictions:
-        initialState.kycJurisdictions && initialState.kycJurisdictions.length > 0
-          ? initialState.kycJurisdictions
+        sourceState.kycJurisdictions && sourceState.kycJurisdictions.length > 0
+          ? sourceState.kycJurisdictions
           : Object.values(KYC_JURISDICTION_REGISTRY).map((j) => ({
               id: `jur-${j.countryCode.toLowerCase()}`,
               countryCode: j.countryCode,
@@ -181,22 +201,22 @@ export class TradeLinkRepositoryStore {
               isActive: true,
               updatedAt: new Date().toISOString(),
             })),
-      kycDecisions: initialState.kycDecisions ?? [],
-      kycReminders: initialState.kycReminders ?? [],
-      copilotThreads: initialState.copilotThreads ?? [],
-      voiceInteractions: initialState.voiceInteractions ?? [],
-      ocrDocuments: initialState.ocrDocuments ?? [],
-      ocrQueueJobs: initialState.ocrQueueJobs ?? [],
-      commercialDocuments: initialState.commercialDocuments ?? [],
-      financialConfig: initialState.financialConfig ?? structuredClone(DEFAULT_FINANCIAL_CONFIG),
-      financialConfigAudits: initialState.financialConfigAudits ?? [],
+      kycDecisions: sourceState.kycDecisions ?? [],
+      kycReminders: sourceState.kycReminders ?? [],
+      copilotThreads: sourceState.copilotThreads ?? [],
+      voiceInteractions: sourceState.voiceInteractions ?? [],
+      ocrDocuments: sourceState.ocrDocuments ?? [],
+      ocrQueueJobs: sourceState.ocrQueueJobs ?? [],
+      commercialDocuments: sourceState.commercialDocuments ?? [],
+      financialConfig: sourceState.financialConfig ?? structuredClone(DEFAULT_FINANCIAL_CONFIG),
+      financialConfigAudits: sourceState.financialConfigAudits ?? [],
       benchmarkRates:
-        initialState.benchmarkRates && initialState.benchmarkRates.length > 0
-          ? initialState.benchmarkRates
+        sourceState.benchmarkRates && sourceState.benchmarkRates.length > 0
+          ? sourceState.benchmarkRates
           : structuredClone(INITIAL_BENCHMARK_RATES),
       fiscalPeriods:
-        initialState.fiscalPeriods && initialState.fiscalPeriods.length > 0
-          ? initialState.fiscalPeriods
+        sourceState.fiscalPeriods && sourceState.fiscalPeriods.length > 0
+          ? sourceState.fiscalPeriods
           : [
               {
                 id: 'fp-2026-11',
@@ -215,18 +235,18 @@ export class TradeLinkRepositoryStore {
                 status: 'OPEN',
               },
             ],
-      secureImportJobs: initialState.secureImportJobs ?? [],
-      databaseSandboxSessions: initialState.databaseSandboxSessions ?? [],
-      dataExports: initialState.dataExports ?? [],
-      securityAlerts: initialState.securityAlerts ?? [],
-      backupRestoreDrills: initialState.backupRestoreDrills ?? [],
+      secureImportJobs: sourceState.secureImportJobs ?? [],
+      databaseSandboxSessions: sourceState.databaseSandboxSessions ?? [],
+      dataExports: sourceState.dataExports ?? [],
+      securityAlerts: sourceState.securityAlerts ?? [],
+      backupRestoreDrills: sourceState.backupRestoreDrills ?? [],
       supportTickets:
-        initialState.supportTickets && initialState.supportTickets.length > 0
-          ? initialState.supportTickets
+        sourceState.supportTickets && sourceState.supportTickets.length > 0
+          ? sourceState.supportTickets
           : structuredClone(INITIAL_SUPPORT_TICKETS),
       knowledgeArticles:
-        initialState.knowledgeArticles && initialState.knowledgeArticles.length > 0
-          ? initialState.knowledgeArticles
+        sourceState.knowledgeArticles && sourceState.knowledgeArticles.length > 0
+          ? sourceState.knowledgeArticles
           : structuredClone(KNOWLEDGE_BASE_ARTICLES),
     });
     this.isProductionDatabaseConnected = isProdDbConnected;
@@ -302,17 +322,64 @@ export class TradeLinkRepositoryStore {
     }
   }
 
-  // Exécute une transaction atomique avec rollback intégral en cas d'exception
+  // Exécute une transaction atomique avec verrou distribué Redis, vérification PostgreSQL et rollback intégral en cas d'exception
   public executeTransaction<R>(work: (tx: Required<DatabaseStateSnapshot>) => R): R {
+    TradeLinkPostgresManager.assertDatabaseAvailable();
     const snapshotBefore = structuredClone(this.state);
+    let lockAcquired = false;
+
+    if (TradeLinkRedisManager.isRedisAvailable()) {
+      const lock = TradeLinkRedisManager.acquireDistributedLock('db:tx:mutation', this.instanceId, 5000);
+      lockAcquired = lock.acquired;
+    }
+
     try {
       const result = work(this.state);
+      if (this.persistenceFilePath) {
+        TradeLinkPostgresManager.savePersistentStateToDisk(this.state, this.persistenceFilePath);
+      }
       return result;
     } catch (error) {
       // Rollback atomique de toutes les mutations de la transaction
       this.state = snapshotBefore;
       throw error;
+    } finally {
+      if (lockAcquired && TradeLinkRedisManager.isRedisAvailable()) {
+        TradeLinkRedisManager.releaseDistributedLock('db:tx:mutation', this.instanceId);
+      }
     }
+  }
+
+  /**
+   * Synchronise l'ensemble des agrégats métiers du repository vers les tables relationnelles PostgreSQL 16
+   */
+  public async syncToPostgresRelationalTables(): Promise<{ tablesPopulated: number; totalRowsSynced: number }> {
+    const syncRes = await TradeLinkPostgresManager.syncDomainSnapshotToPostgresTables(this.state);
+    if (this.persistenceFilePath) {
+      TradeLinkPostgresManager.savePersistentStateToDisk(this.state, this.persistenceFilePath);
+    }
+    return syncRes;
+  }
+
+  /**
+   * Recharge l'état complet depuis PostgreSQL 16 (et/ou le stockage persistant sur disque après redémarrage)
+   */
+  public async reloadFromPostgresRelationalTables(): Promise<boolean> {
+    const loaded = await TradeLinkPostgresManager.loadDomainSnapshotFromPostgres();
+    if (loaded) {
+      this.state = structuredClone(loaded);
+      defaultCatalogEngine.syncProducts(this.state.products.filter((p) => !p.deletedAt));
+      return true;
+    }
+    if (this.persistenceFilePath) {
+      const diskLoaded = TradeLinkPostgresManager.loadPersistentStateFromDisk(this.persistenceFilePath);
+      if (diskLoaded) {
+        this.state = structuredClone(diskLoaded);
+        defaultCatalogEngine.syncProducts(this.state.products.filter((p) => !p.deletedAt));
+        return true;
+      }
+    }
+    return false;
   }
 
   public getActiveProducts(params: PaginationAndFilterParams) {

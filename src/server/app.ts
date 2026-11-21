@@ -14,6 +14,8 @@ import {
 } from './repositories/domain.repositories';
 import { ServerRequestContext, AppError } from './middlewares/errorAndSecurity.middleware';
 import { verifyJwtAccessToken } from '../services/securityCrypto';
+import { TradeLinkRedisManager } from './database/redis.client';
+import { TradeLinkPostgresManager } from './database/prisma.client';
 
 export interface AppOptions {
   repositoryStore?: TradeLinkRepositoryStore;
@@ -83,8 +85,7 @@ export function createApp(options: AppOptions = {}): Application {
     next();
   });
 
-  // Rate Limiting HTTP par IP et par route (Anti-DDoS & Anti-Brute-Force API)
-  const rateLimitBuckets = new Map<string, { count: number; resetAtMs: number }>();
+  // Rate Limiting HTTP distribué via Redis 7 (partagé entre toutes les instances Express)
   const authWindowLimit = Number(process.env.RATE_LIMIT_AUTH_MAX || 40);
   const apiWindowLimit = Number(process.env.RATE_LIMIT_API_MAX || 400);
   const windowDurationMs = 60 * 1000;
@@ -96,28 +97,30 @@ export function createApp(options: AppOptions = {}): Application {
     const maxLimit = isAuthRoute ? authWindowLimit : apiWindowLimit;
     const now = Date.now();
 
-    let bucket = rateLimitBuckets.get(bucketKey);
-    if (!bucket || now > bucket.resetAtMs) {
-      bucket = { count: 0, resetAtMs: now + windowDurationMs };
-      rateLimitBuckets.set(bucketKey, bucket);
-    }
+    try {
+      const { count, resetAtMs } = TradeLinkRedisManager.incrementRateLimitCounter(
+        bucketKey,
+        windowDurationMs
+      );
+      const remaining = Math.max(0, maxLimit - count);
+      res.setHeader('X-RateLimit-Limit', String(maxLimit));
+      res.setHeader('X-RateLimit-Remaining', String(remaining));
 
-    bucket.count += 1;
-    const remaining = Math.max(0, maxLimit - bucket.count);
-    res.setHeader('X-RateLimit-Limit', String(maxLimit));
-    res.setHeader('X-RateLimit-Remaining', String(remaining));
-
-    if (bucket.count > maxLimit) {
-      const retryAfterSec = Math.ceil((bucket.resetAtMs - now) / 1000);
-      res.setHeader('Retry-After', String(retryAfterSec));
-      res.status(429).json({
-        success: false,
-        error: {
-          code: 'HTTP_RATE_LIMIT_EXCEEDED',
-          message: `Limite de requêtes atteinte (${maxLimit}/min). Veuillez réessayer dans ${retryAfterSec}s.`,
-        },
-      });
-      return;
+      if (count > maxLimit) {
+        const retryAfterSec = Math.max(1, Math.ceil((resetAtMs - now) / 1000));
+        res.setHeader('Retry-After', String(retryAfterSec));
+        res.status(429).json({
+          success: false,
+          error: {
+            code: 'HTTP_RATE_LIMIT_EXCEEDED',
+            message: `Limite de requêtes distribuée atteinte (${maxLimit}/min). Veuillez réessayer dans ${retryAfterSec}s.`,
+          },
+        });
+        return;
+      }
+    } catch {
+      // Dégradation maîtrisée si Redis est temporairement indisponible sur le compteur de rate-limit
+      res.setHeader('X-RateLimit-Degraded', 'true');
     }
     next();
   });
@@ -191,18 +194,29 @@ export function createApp(options: AppOptions = {}): Application {
     next();
   });
 
-  // 4. Endpoints de santé & Observabilité
+  // 4. Endpoints de santé & Observabilité (état réel PostgreSQL 16 & Redis 7)
   const healthHandler = (_req: Request, res: Response) => {
-    res.status(200).json({
-      status: 'UP',
-      service: 'TradeLink SaaS V6.0 API Gateway',
+    const pgAvailable = TradeLinkPostgresManager.isDatabaseAvailable();
+    const redisHealth = TradeLinkRedisManager.checkRedisHealth();
+    const isHealthy = pgAvailable && redisHealth.status === 'UP';
+
+    res.status(isHealthy ? 200 : 503).json({
+      status: isHealthy ? 'UP' : 'DEGRADED',
+      service: 'TradeLink SaaS V6.1 API Gateway',
       environment: process.env.NODE_ENV || 'development',
-      version: '6.0.0',
+      version: '6.1.0',
       timestamp: new Date().toISOString(),
       uptimeSeconds: Math.floor(process.uptime()),
       checks: {
-        database: repository.isProductionDatabaseConnected ? 'UP (PostgreSQL Prisma)' : 'STANDBY (Test Snapshot)',
-        redis: 'UP (Session Storage)',
+        database: !pgAvailable
+          ? 'DOWN (PostgreSQL Connection Error)'
+          : repository.isProductionDatabaseConnected
+          ? 'UP (PostgreSQL Prisma)'
+          : 'STANDBY (Test Snapshot)',
+        redis:
+          redisHealth.status === 'UP'
+            ? 'UP (Session Storage)'
+            : 'DOWN (Redis Cluster Unreachable)',
         kms: 'UP (AES-256-GCM Envelope Engine)',
         storage: 'UP (MinIO/S3 Compliance)',
       },

@@ -7,6 +7,7 @@
 
 import { UserRoleCode } from '../../types';
 import { GranularPermission, hasGranularPermission } from '../../services/securityCrypto';
+import { TradeLinkRedisManager } from '../database/redis.client';
 
 export class AppError extends Error {
   public readonly statusCode: number;
@@ -68,13 +69,7 @@ export interface ServerResponsePayload<T = unknown> {
   };
 }
 
-// Registre Redis simulé de sessions actives (1 seule session active par userId)
-const activeSessionRegistry = new Map<string, string>();
-// Registre Redis de statut MFA par sessionId (pour les sessions ADMIN)
-const sessionMfaRegistry = new Map<string, boolean>();
-// Registre Redis de clés d'idempotence (anti-rejeu sur paiements, commandes, imports, restaurations)
-const idempotencyCache = new Map<string, ServerResponsePayload>();
-
+// Registre distribué Redis 7 (partagé entre toutes les instances Node.js — Zéro dépendance à une Map locale isolée)
 export function registerSingleActiveSession(
   userId: string,
   sessionId: string,
@@ -82,23 +77,15 @@ export function registerSingleActiveSession(
 ): {
   previousRevokedSessionId: string | null;
 } {
-  const previous = activeSessionRegistry.get(userId) ?? null;
-  if (previous && previous !== sessionId) {
-    sessionMfaRegistry.delete(previous);
-  }
-  activeSessionRegistry.set(userId, sessionId);
-  sessionMfaRegistry.set(sessionId, mfaVerified);
-  return {
-    previousRevokedSessionId: previous && previous !== sessionId ? previous : null,
-  };
+  return TradeLinkRedisManager.registerActiveSession(userId, sessionId, mfaVerified);
 }
 
 export function markSessionMfaVerified(sessionId: string): void {
-  sessionMfaRegistry.set(sessionId, true);
+  TradeLinkRedisManager.setSessionMfaVerified(sessionId, true);
 }
 
 export function isSessionMfaVerified(sessionId: string): boolean {
-  return sessionMfaRegistry.get(sessionId) ?? false;
+  return TradeLinkRedisManager.getSessionMfaVerified(sessionId) ?? false;
 }
 
 export interface SecurityEventLogEntry {
@@ -130,20 +117,14 @@ export function getSecurityEventLogs(): SecurityEventLogEntry[] {
 }
 
 export function verifySingleActiveSession(userId: string, sessionId: string): boolean {
-  const current = activeSessionRegistry.get(userId);
-  if (!current) return false;
-  return current === sessionId;
+  return TradeLinkRedisManager.verifyActiveSession(userId, sessionId);
 }
 
 export function revokeUserActiveSession(userId: string): boolean {
-  const current = activeSessionRegistry.get(userId);
-  if (current) {
-    sessionMfaRegistry.delete(current);
-  }
-  return activeSessionRegistry.delete(userId);
+  return TradeLinkRedisManager.revokeActiveSessionForUser(userId);
 }
 
-// Middleware d'authentification et vérification de session unique
+// Middleware d'authentification et vérification de session unique via Redis 7
 export function requireAuthenticatedSession(
   ctx: ServerRequestContext
 ): NonNullable<ServerRequestContext['user']> {
@@ -164,8 +145,8 @@ export function requireAuthenticatedSession(
   }
 
   // Vérification MFA obligatoire pour l'Administrateur (Chapitre 2.2 & PROMPT 5)
-  // Si la session en registre est explicitement marquée non vérifiée (false), bloquer même si le payload non élevé tente de passer
-  const registryMfa = sessionMfaRegistry.get(ctx.user.sessionId);
+  // Si la session en registre Redis est explicitement marquée non vérifiée (false), bloquer même si le payload non élevé tente de passer
+  const registryMfa = TradeLinkRedisManager.getSessionMfaVerified(ctx.user.sessionId);
   const mfaOk =
     registryMfa === false
       ? false
@@ -253,12 +234,12 @@ export function enforceRBACAndOwnership(
   }
 }
 
-// Middleware d'idempotence (Chapitre 9.20 : Idempotency-Key)
+// Middleware d'idempotence distribué via Redis 7 (Chapitre 9.20 : Idempotency-Key)
 export function checkIdempotencyCache(
   idempotencyKey: string | undefined
 ): ServerResponsePayload | null {
   if (!idempotencyKey) return null;
-  return idempotencyCache.get(idempotencyKey) ?? null;
+  return TradeLinkRedisManager.getIdempotencyPayload<ServerResponsePayload>(idempotencyKey);
 }
 
 export function storeIdempotencyResult(
@@ -266,7 +247,7 @@ export function storeIdempotencyResult(
   response: ServerResponsePayload
 ): void {
   if (idempotencyKey && response.statusCode >= 200 && response.statusCode < 300) {
-    idempotencyCache.set(idempotencyKey, response);
+    TradeLinkRedisManager.setIdempotencyPayload(idempotencyKey, response, 86400);
   }
 }
 
