@@ -15,6 +15,7 @@
     "test:lot1-audit": "node scripts/run-test.cjs src/server/tests/lot1.security.final.audit.test.ts",
     "test:lot2-persistence": "node scripts/run-test.cjs src/server/tests/lot2.postgres.redis.persistence.test.ts",
     "test:lot3-actors": "node scripts/run-test.cjs src/server/tests/lot3.auth.users.actors.companies.test.ts",
+    "test:lot4-commercial": "node scripts/run-test.cjs src/server/tests/lot4.commercial.ecosystem.test.ts",
     "test:express": "node scripts/run-test.cjs src/server/tests/express.server.test.ts",
     "test:backend": "node scripts/run-test.cjs src/server/tests/backend.integration.test.ts",
     "test:security": "node scripts/run-test.cjs src/server/tests/security.auth.test.ts",

@@ -72,6 +72,12 @@ export interface AccountingEntryRecord {
   validatedAt: string;
   validatedBy: string;
   lines: AccountingEntryLineRecord[];
+  isImmutable?: boolean;
+  reversesEntryId?: string;
+  reversesEntryNumber?: string;
+  reversedByEntryId?: string;
+  reversedByEntryNumber?: string;
+  correctionReason?: string;
 }
 
 export interface GeneralLedgerAccount {
@@ -822,6 +828,180 @@ export class AccountingEngine {
       validatedAt: now.toISOString(),
       validatedBy,
       lines,
+    };
+  }
+
+  /**
+   * Génération automatique d'une écriture de remboursement en partie double
+   * Débit 411000 (Clients) = Crédit 512000 (Banque Trésorerie Principale)
+   */
+  public static createRefundAccountingEntry(
+    payment: PaymentRecord,
+    refundedAmountStr: string,
+    invoiceNumber: string,
+    validatedBy = 'Automate Trésorerie Stage 3'
+  ): AccountingEntryRecord {
+    const refundDec = new Decimal(refundedAmountStr).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const now = new Date();
+
+    const lines: AccountingEntryLineRecord[] = [
+      {
+        id: `line-${Date.now()}-1`,
+        accountCode: '411000',
+        accountName: 'Clients',
+        auxiliaryCode: `CLI-${payment.clientId.slice(-4).toUpperCase()}`,
+        label: `Remboursement client sur facture ${invoiceNumber} (${payment.paymentReference})`,
+        debit: refundDec.toFixed(2),
+        credit: '0.00',
+      },
+      {
+        id: `line-${Date.now()}-2`,
+        accountCode: '512000',
+        accountName: 'Banque Trésorerie Principale',
+        label: `Décaissement remboursement ${payment.paymentReference} (${payment.provider})`,
+        debit: '0.00',
+        credit: refundDec.toFixed(2),
+      },
+    ];
+
+    const balanceCheck = this.validateDoubleEntryBalance(lines);
+    if (!balanceCheck.isBalanced) {
+      throw new Error(`Écriture de remboursement déséquilibrée pour ${payment.paymentReference}.`);
+    }
+
+    return {
+      id: `ent-ref-${Date.now()}`,
+      entryNumber: `BNQ-2026-${Math.floor(10000 + Math.random() * 90000)}`,
+      journalCode: 'BNQ',
+      date: now.toISOString().slice(0, 10),
+      fiscalPeriod: now.toISOString().slice(0, 7),
+      pieceReference: `REF-${payment.paymentReference}`,
+      description: `Remboursement paiement ${payment.paymentReference} (Facture ${invoiceNumber})`,
+      totalDebit: balanceCheck.totalDebit,
+      totalCredit: balanceCheck.totalCredit,
+      isBalanced: true,
+      isImmutable: true,
+      validatedAt: now.toISOString(),
+      validatedBy,
+      lines,
+    };
+  }
+
+  /**
+   * Contre-passation / Écriture corrective d'une écriture comptable validée (Mission 4.9)
+   * Une écriture validée est immuable : toute correction s'effectue par écriture de contre-passation équilibrée.
+   */
+  public static createReversalEntry(params: {
+    originalEntry: AccountingEntryRecord;
+    reason: string;
+    validatedBy: string;
+    replacementLines?: {
+      accountCode: string;
+      accountName: string;
+      auxiliaryCode?: string;
+      label: string;
+      debit: string;
+      credit: string;
+    }[];
+  }): {
+    reversalEntry: AccountingEntryRecord;
+    replacementEntry?: AccountingEntryRecord;
+    updatedOriginalEntry: AccountingEntryRecord;
+  } {
+    const { originalEntry, reason, validatedBy, replacementLines } = params;
+    if (!reason || reason.trim().length < 5) {
+      throw new Error('CORRECTION_REASON_REQUIRED : Un motif explicite (min. 5 caractères) est obligatoire pour contre-passer une écriture validée.');
+    }
+    if (originalEntry.reversedByEntryId) {
+      throw new Error(`ACCOUNTING_ENTRY_ALREADY_REVERSED : L’écriture ${originalEntry.entryNumber} a déjà fait l’objet d’une contre-passation (${originalEntry.reversedByEntryNumber}).`);
+    }
+
+    const now = new Date();
+    const reversalLines: AccountingEntryLineRecord[] = originalEntry.lines.map((line, idx) => ({
+      id: `rev-line-${Date.now()}-${idx}`,
+      accountCode: line.accountCode,
+      accountName: line.accountName,
+      auxiliaryCode: line.auxiliaryCode,
+      label: `[CONTRE-PASSATION ${originalEntry.entryNumber}] ${line.label}`,
+      debit: new Decimal(line.credit || '0.00').toFixed(2),
+      credit: new Decimal(line.debit || '0.00').toFixed(2),
+    }));
+
+    const reversalBalance = this.validateDoubleEntryBalance(reversalLines);
+    if (!reversalBalance.isBalanced) {
+      throw new Error('UNBALANCED_REVERSAL_ENTRY : La contre-passation générée n’est pas équilibrée.');
+    }
+
+    const reversalEntryNumber = `OD-REV-${now.getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
+    const reversalEntry: AccountingEntryRecord = {
+      id: `ent-rev-${Date.now()}`,
+      entryNumber: reversalEntryNumber,
+      journalCode: 'OD',
+      date: now.toISOString().slice(0, 10),
+      fiscalPeriod: now.toISOString().slice(0, 7),
+      pieceReference: `REV-${originalEntry.pieceReference}`,
+      description: `Contre-passation de l’écriture ${originalEntry.entryNumber} — Motif : ${reason.trim()}`,
+      totalDebit: reversalBalance.totalDebit,
+      totalCredit: reversalBalance.totalCredit,
+      isBalanced: true,
+      isImmutable: true,
+      reversesEntryId: originalEntry.id,
+      reversesEntryNumber: originalEntry.entryNumber,
+      correctionReason: reason.trim(),
+      validatedAt: now.toISOString(),
+      validatedBy,
+      lines: reversalLines,
+    };
+
+    let replacementEntry: AccountingEntryRecord | undefined;
+    if (Array.isArray(replacementLines) && replacementLines.length > 0) {
+      const repBalance = this.validateDoubleEntryBalance(replacementLines);
+      if (!repBalance.isBalanced) {
+        throw new Error(
+          `UNBALANCED_ACCOUNTING_ENTRY : L’écriture corrective de remplacement est déséquilibrée (Débit: ${repBalance.totalDebit}, Crédit: ${repBalance.totalCredit}).`
+        );
+      }
+      replacementEntry = {
+        id: `ent-corr-${Date.now() + 1}`,
+        entryNumber: `${originalEntry.journalCode}-CORR-${now.getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`,
+        journalCode: originalEntry.journalCode,
+        date: now.toISOString().slice(0, 10),
+        fiscalPeriod: now.toISOString().slice(0, 7),
+        pieceReference: originalEntry.pieceReference,
+        description: `Écriture corrective remplaçant ${originalEntry.entryNumber} — Motif : ${reason.trim()}`,
+        totalDebit: repBalance.totalDebit,
+        totalCredit: repBalance.totalCredit,
+        isBalanced: true,
+        isImmutable: true,
+        reversesEntryId: originalEntry.id,
+        reversesEntryNumber: originalEntry.entryNumber,
+        correctionReason: reason.trim(),
+        validatedAt: now.toISOString(),
+        validatedBy,
+        lines: replacementLines.map((l, idx) => ({
+          id: `corr-line-${Date.now()}-${idx}`,
+          accountCode: l.accountCode,
+          accountName: l.accountName,
+          auxiliaryCode: l.auxiliaryCode,
+          label: l.label,
+          debit: new Decimal(l.debit || '0.00').toFixed(2),
+          credit: new Decimal(l.credit || '0.00').toFixed(2),
+        })),
+      };
+    }
+
+    const updatedOriginalEntry: AccountingEntryRecord = {
+      ...originalEntry,
+      isImmutable: true,
+      reversedByEntryId: reversalEntry.id,
+      reversedByEntryNumber: reversalEntry.entryNumber,
+      correctionReason: reason.trim(),
+    };
+
+    return {
+      reversalEntry,
+      replacementEntry,
+      updatedOriginalEntry,
     };
   }
 

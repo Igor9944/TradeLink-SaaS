@@ -370,6 +370,22 @@ export class TradeLinkDomainServices {
   constructor(private readonly repo: TradeLinkRepositoryStore) {
     // Provisionnement manuel initial des profils souverains (Chapitre 2.1)
     this.seedProvisionedAccounts();
+
+    // Synchronisation initiale du catalogue central avec le repository PostgreSQL 16
+    defaultCatalogEngine.syncProducts(
+      this.repo.getSnapshot().products.filter((p) => !p.deletedAt),
+      true
+    );
+
+    // Persistance automatique dans PostgreSQL 16 de toute notification IN_APP émise par le dispatcher central
+    defaultNotificationDispatcher.registerPersistenceListener((notif) => {
+      const existing = this.repo
+        .listNotifications({ userId: notif.userId })
+        .some((n) => n.id === notif.id);
+      if (!existing) {
+        this.repo.saveNotification(notif);
+      }
+    });
   }
 
   private static readonly seededArgon2idCache = new Map<string, string>();
@@ -2524,25 +2540,58 @@ export class TradeLinkDomainServices {
     };
   }
 
-  // 2. OrderService & StockService — Création de commande TRANSACTIONNELLE avec réservation de stock
+  // 2. OrderService & StockService — Création de commande TRANSACTIONNELLE avec réservation de stock, MOQ, paliers B2B & idempotence
   public createOrderTransactional(params: {
     actor: NonNullable<ServerRequestContext['user']>;
     shippingAddress: string;
-    lines: { productId: string; quantity: number }[];
+    lines: { productId: string; quantity: number; variantId?: string }[];
+    idempotencyKey?: string;
     correlationId: string;
     ipAddress: string;
   }): OrderRecord {
+    if (params.idempotencyKey) {
+      const existingByIdempotency = this.repo
+        .getSnapshot()
+        .orders.find(
+          (o) =>
+            !o.deletedAt &&
+            o.idempotencyKey === params.idempotencyKey &&
+            o.clientId === params.actor.id
+        );
+      if (existingByIdempotency) {
+        return existingByIdempotency;
+      }
+    }
+
     return this.repo.executeTransaction((tx) => {
       let subtotalDec = new Decimal(0);
       const builtItems: OrderRecord['items'] = [];
+      let primarySupplierId = 'usr-supp-01';
+      let primarySupplierName = 'EuroTech Industrial & ColdChain GmbH';
 
+      // Passe 1 : Vérification atomique sans effet de bord (existence, MOQ, stock disponible)
       for (const reqLine of params.lines) {
+        if (!reqLine.quantity || reqLine.quantity <= 0) {
+          throw new AppError(
+            400,
+            'INVALID_ORDER_QUANTITY',
+            'La quantité commandée doit être strictement supérieure à 0.'
+          );
+        }
         const prod = tx.products.find((p) => p.id === reqLine.productId && !p.deletedAt);
         if (!prod) {
           throw new AppError(
             404,
             'PRODUCT_NOT_FOUND',
             `Le produit ${reqLine.productId} est introuvable ou a été supprimé logiquement.`
+          );
+        }
+        const moq = prod.minOrderQuantity || 1;
+        if (reqLine.quantity < moq) {
+          throw new AppError(
+            400,
+            'ORDER_QUANTITY_BELOW_MOQ',
+            `Quantité minimale de commande (MOQ) non atteinte pour ${prod.sku} : demandé ${reqLine.quantity}, minimum requis ${moq}.`
           );
         }
         if (prod.stockAvailable < reqLine.quantity) {
@@ -2552,13 +2601,33 @@ export class TradeLinkDomainServices {
             `Stock insuffisant pour ${prod.sku} : demandé ${reqLine.quantity}, disponible ${prod.stockAvailable}. Transaction annulée (Rollback).`
           );
         }
+      }
 
-        // Réservation atomique du stock
+      const orderNumber = `CMD-2026-${Math.floor(10000 + Math.random() * 89999)}`;
+      const orderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const nowIso = new Date().toISOString();
+
+      // Passe 2 : Réservation atomique du stock, application des paliers B2B et traçabilité des mouvements
+      for (let i = 0; i < params.lines.length; i++) {
+        const reqLine = params.lines[i];
+        const prod = tx.products.find((p) => p.id === reqLine.productId && !p.deletedAt)!;
+        if (i === 0) {
+          primarySupplierId = prod.supplierId || primarySupplierId;
+          primarySupplierName = prod.supplierName || primarySupplierName;
+        }
+
         prod.stockAvailable -= reqLine.quantity;
         prod.stockReserved += reqLine.quantity;
+        prod.stockOrdered = (prod.stockOrdered || 0) + reqLine.quantity;
+        prod.updatedAt = nowIso;
 
-        const unitDec = new Decimal(prod.unitPrice);
-        const lineTotalDec = unitDec.times(reqLine.quantity);
+        const priceRes = defaultCatalogEngine.resolveTieredUnitPrice(
+          prod,
+          reqLine.quantity,
+          reqLine.variantId
+        );
+        const unitDec = new Decimal(priceRes.unitPrice);
+        const lineTotalDec = unitDec.times(reqLine.quantity).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
         subtotalDec = subtotalDec.plus(lineTotalDec);
 
         builtItems.push({
@@ -2570,33 +2639,64 @@ export class TradeLinkDomainServices {
           totalLine: lineTotalDec.toFixed(2),
           icon3d: prod.icon3d,
         });
+
+        const alertTriggered = prod.stockAvailable <= prod.minStockAlert;
+        if (!tx.stockMovements) tx.stockMovements = [];
+        tx.stockMovements.unshift({
+          id: `stkm-ord-${Date.now()}-${i}`,
+          movementNumber: `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+          productId: prod.id,
+          sku: prod.sku,
+          movementType: 'ORDER_RESERVATION',
+          quantityChange: -reqLine.quantity,
+          resultingAvailable: prod.stockAvailable,
+          resultingReserved: prod.stockReserved,
+          resultingOrdered: prod.stockOrdered,
+          resultingShipped: prod.stockShipped || 0,
+          reason: `Réservation atomique pour commande ${orderNumber}`,
+          referenceDocument: orderNumber,
+          orderId,
+          orderNumber,
+          performedByUserId: params.actor.id,
+          performedByUserName: params.actor.companyName || params.actor.email,
+          performedByUserRole: params.actor.role,
+          timestamp: nowIso,
+          minStockAlertTriggered: alertTriggered,
+        });
       }
+
+      // Synchroniser l'état du stock avec le moteur de catalogue central
+      defaultCatalogEngine.syncProducts(
+        tx.products.filter((p) => !p.deletedAt),
+        true
+      );
 
       const taxDec = subtotalDec.times('0.20').toDecimalPlaces(2);
       const shippingDec = new Decimal('650.00');
       const totalDec = subtotalDec.plus(taxDec).plus(shippingDec);
-      const orderNumber = `CMD-2026-${Math.floor(10000 + Math.random() * 89999)}`;
 
       const createdOrder: OrderRecord = {
-        id: `ord-${Date.now()}`,
+        id: orderId,
         orderNumber,
         clientId: params.actor.id,
         clientName: params.actor.companyName,
-        supplierId: 'usr-supp-01',
-        supplierName: 'EuroTech Industrial & ColdChain GmbH',
+        supplierId: primarySupplierId,
+        supplierName: primarySupplierName,
         status: 'PENDING',
+        paymentStatus: 'UNPAID',
+        idempotencyKey: params.idempotencyKey,
         subtotalAmount: subtotalDec.toFixed(2),
         taxAmount: taxDec.toFixed(2),
         shippingAmount: shippingDec.toFixed(2),
         totalAmount: totalDec.toFixed(2),
         currency: 'EUR',
         shippingAddress: params.shippingAddress,
-        createdAt: new Date().toISOString().replace('T', ' ').slice(0, 16),
+        createdAt: nowIso.replace('T', ' ').slice(0, 16),
         items: builtItems,
         timeline: [
           {
             step: 'Commande créée & Stock réservé atomiquement',
-            timestamp: new Date().toISOString(),
+            timestamp: nowIso,
             actor: params.actor.companyName,
             completed: true,
           },
@@ -2606,7 +2706,7 @@ export class TradeLinkDomainServices {
       tx.orders.unshift(createdOrder);
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
-        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        timestamp: nowIso.replace('T', ' ').slice(0, 19),
         actorName: params.actor.email,
         actorRole: params.actor.role,
         action: 'ORDER_CREATED_TRANSACTIONAL',
@@ -2617,6 +2717,15 @@ export class TradeLinkDomainServices {
         ipAddress: params.ipAddress,
         details: `Commande ${orderNumber} créée avec réservation de stock (${totalDec.toFixed(2)} EUR TTC).`,
       });
+
+      const orderNotif = defaultNotificationDispatcher.createOrderNotification({
+        userId: primarySupplierId,
+        orderNumber: createdOrder.orderNumber,
+        status: 'CREATED',
+        totalAmount: createdOrder.totalAmount,
+        currency: createdOrder.currency,
+      });
+      defaultNotificationDispatcher.dispatch({ notification: orderNotif });
 
       return createdOrder;
     });
@@ -4210,6 +4319,13 @@ export class TradeLinkDomainServices {
       const quote = CommercialEngine.createQuote(params.quoteInput);
       tx.quotes.unshift(quote);
 
+      const notif = defaultNotificationDispatcher.createQuoteNotification({
+        userId: quote.supplierId,
+        quoteNumber: quote.quoteNumber,
+        action: 'REQUESTED',
+      });
+      defaultNotificationDispatcher.dispatch({ notification: notif });
+
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
         timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
@@ -4244,11 +4360,25 @@ export class TradeLinkDomainServices {
         throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez chiffrer que les devis qui vous sont adressés.');
       }
 
-      const updated = CommercialEngine.respondToQuote(quote, params.respondInput);
+      let updated: QuoteRecord;
+      try {
+        updated = CommercialEngine.respondToQuote(quote, params.respondInput);
+      } catch (err: any) {
+        const msg = err?.message || 'Erreur lors de la réponse au devis.';
+        const code = msg.startsWith('QUOTE_EXPIRED') ? 'QUOTE_EXPIRED' : 'QUOTE_RESPOND_ERROR';
+        throw new AppError(409, code, msg);
+      }
       const idx = tx.quotes.findIndex((q) => q.id === updated.id);
       if (idx !== -1) {
         tx.quotes[idx] = updated;
       }
+
+      const notif = defaultNotificationDispatcher.createQuoteNotification({
+        userId: updated.clientId,
+        quoteNumber: updated.quoteNumber,
+        action: 'PRICE_OFFERED',
+      });
+      defaultNotificationDispatcher.dispatch({ notification: notif });
 
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
@@ -4283,7 +4413,23 @@ export class TradeLinkDomainServices {
         throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez accepter que vos propres devis.');
       }
 
+      const todayStr = new Date().toISOString().split('T')[0];
+      if (quote.status === 'EXPIRED' || (quote.validUntil && quote.validUntil < todayStr)) {
+        quote.status = 'EXPIRED';
+        throw new AppError(409, 'QUOTE_EXPIRED', `Le devis ${quote.quoteNumber} a expiré le ${quote.validUntil}.`);
+      }
+      if (quote.status === 'CONVERTED' || quote.status === 'REFUSED' || quote.status === 'REJECTED') {
+        throw new AppError(409, 'QUOTE_ALREADY_FINALIZED', `Le devis ${quote.quoteNumber} est déjà au statut ${quote.status}.`);
+      }
+
       quote.status = 'ACCEPTED';
+
+      const notif = defaultNotificationDispatcher.createQuoteNotification({
+        userId: quote.supplierId,
+        quoteNumber: quote.quoteNumber,
+        action: 'ACCEPTED',
+      });
+      defaultNotificationDispatcher.dispatch({ notification: notif });
 
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
@@ -4300,6 +4446,133 @@ export class TradeLinkDomainServices {
       });
 
       return quote;
+    });
+  }
+
+  public negotiateQuoteTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    quoteId: string;
+    notes?: string;
+    incoterm?: string;
+    paymentTerms?: string;
+    validUntilDate?: string;
+    lines: {
+      productId?: string;
+      description: string;
+      quantity: number;
+      unitPrice: string;
+      discountPct?: string;
+    }[];
+    correlationId: string;
+    ipAddress: string;
+  }): QuoteRecord {
+    if (params.actor.role === 'COMPTABLE') {
+      throw new AppError(
+        403,
+        'COMPTABLE_STAGE3_READONLY_SOURCE_DATA',
+        'Interdit : Le rôle COMPTABLE ne peut pas négocier un devis commercial.'
+      );
+    }
+
+    return this.repo.executeTransaction((tx) => {
+      const quote = tx.quotes.find((q) => q.id === params.quoteId);
+      if (!quote) {
+        throw new AppError(404, 'QUOTE_NOT_FOUND', 'Devis introuvable.');
+      }
+
+      if (params.actor.role === 'CLIENT' && quote.clientId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez négocier que vos propres devis.');
+      }
+      if (params.actor.role === 'FOURNISSEUR' && quote.supplierId !== params.actor.id) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez négocier que les devis qui vous sont adressés.');
+      }
+
+      let updated: QuoteRecord;
+      try {
+        updated = CommercialEngine.negotiateQuote(quote, {
+          actorId: params.actor.id,
+          actorRole: params.actor.role,
+          actorName: params.actor.companyName || params.actor.email,
+          notes: params.notes,
+          incoterm: params.incoterm,
+          paymentTerms: params.paymentTerms,
+          validUntilDate: params.validUntilDate,
+          lines: params.lines,
+        });
+      } catch (err: any) {
+        const msg = err?.message || 'Erreur de négociation du devis.';
+        const code = msg.startsWith('QUOTE_EXPIRED') ? 'QUOTE_EXPIRED' : 'QUOTE_NEGOTIATION_ERROR';
+        throw new AppError(409, code, msg);
+      }
+
+      const idx = tx.quotes.findIndex((q) => q.id === updated.id);
+      if (idx !== -1) {
+        tx.quotes[idx] = updated;
+      }
+
+      const recipientUserId = params.actor.role === 'CLIENT' ? updated.supplierId : updated.clientId;
+      const notif = defaultNotificationDispatcher.createQuoteNotification({
+        userId: recipientUserId,
+        quoteNumber: updated.quoteNumber,
+        action: 'PRICE_OFFERED',
+      });
+      defaultNotificationDispatcher.dispatch({ notification: notif });
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'QUOTE_NEGOTIATION_ROUND_RECORDED',
+        targetType: 'Quote',
+        targetId: updated.quoteNumber,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Contre-proposition enregistrée sur le devis ${updated.quoteNumber} (${updated.totalAmount} ${updated.currency} TTC).`,
+      });
+
+      return updated;
+    });
+  }
+
+  public sweepExpiredQuotesTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    asOfDateStr?: string;
+    correlationId: string;
+    ipAddress: string;
+  }): { expiredCount: number; expiredQuotes: QuoteRecord[] } {
+    const asOf = params.asOfDateStr || new Date().toISOString().split('T')[0];
+    return this.repo.executeTransaction((tx) => {
+      const expiredQuotes: QuoteRecord[] = [];
+      for (const q of tx.quotes) {
+        if (
+          ['DRAFT', 'SENT', 'RFQ_SUBMITTED', 'RESPONDED', 'NEGOTIATING', 'QUOTATION_ISSUED'].includes(q.status) &&
+          q.validUntil &&
+          q.validUntil < asOf
+        ) {
+          q.status = 'EXPIRED';
+          expiredQuotes.push(q);
+        }
+      }
+
+      if (expiredQuotes.length > 0) {
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'QUOTES_EXPIRED_SWEEP',
+          targetType: 'Quote',
+          targetId: `SWEEP-${expiredQuotes.length}`,
+          result: 'SUCCESS',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `${expiredQuotes.length} devis arrivés à échéance avant ${asOf} marqués EXPIRED.`,
+        });
+      }
+
+      return { expiredCount: expiredQuotes.length, expiredQuotes };
     });
   }
 
@@ -4323,11 +4596,23 @@ export class TradeLinkDomainServices {
       }
 
       const activeProds = tx.products.filter((p) => !p.deletedAt);
-      const { updatedQuote, createdOrder, updatedProducts } = CommercialEngine.convertQuoteToOrder(
-        quote,
-        params.shippingAddress,
-        activeProds
-      );
+      let convResult: ReturnType<typeof CommercialEngine.convertQuoteToOrder>;
+      try {
+        convResult = CommercialEngine.convertQuoteToOrder(
+          quote,
+          params.shippingAddress,
+          activeProds
+        );
+      } catch (err: any) {
+        const msg = err?.message || 'Erreur lors de la conversion du devis.';
+        const code = msg.startsWith('QUOTE_EXPIRED')
+          ? 'QUOTE_EXPIRED'
+          : msg.includes('Stock insuffisant')
+          ? 'INSUFFICIENT_STOCK_TRANSACTION_ABORTED'
+          : 'QUOTE_CONVERSION_ERROR';
+        throw new AppError(409, code, msg);
+      }
+      const { updatedQuote, createdOrder, updatedProducts } = convResult;
 
       for (const up of updatedProducts) {
         const idx = tx.products.findIndex((p) => p.id === up.id);
@@ -4335,6 +4620,10 @@ export class TradeLinkDomainServices {
           tx.products[idx] = up;
         }
       }
+      defaultCatalogEngine.syncProducts(
+        tx.products.filter((p) => !p.deletedAt),
+        true
+      );
 
       const qIdx = tx.quotes.findIndex((q) => q.id === updatedQuote.id);
       if (qIdx !== -1) {
@@ -4378,15 +4667,22 @@ export class TradeLinkDomainServices {
       const invoice = CommercialEngine.generateInvoiceFromOrder(
         order,
         params.dueInDays ?? 30,
-        params.jurisdiction ?? 'France / UE (TVA 20%)'
+        params.jurisdiction ?? 'France / UE (TVA 20%)',
+        tx.invoices
       );
-
-      tx.invoices.unshift(invoice);
 
       const salesEntry = AccountingEngine.createSalesInvoiceEntry(
         invoice,
         `${params.actor.email} (${params.actor.role})`
       );
+      salesEntry.isImmutable = true;
+
+      invoice.accountingEntryId = salesEntry.id;
+      invoice.accountingEntryNumber = salesEntry.entryNumber;
+      order.invoiceId = invoice.id;
+      order.invoiceNumber = invoice.invoiceNumber;
+
+      tx.invoices.unshift(invoice);
       tx.accountingEntries.unshift(salesEntry);
 
       tx.auditLogs.unshift({
@@ -4404,6 +4700,59 @@ export class TradeLinkDomainServices {
       });
 
       return invoice;
+    });
+  }
+
+  public getInvoiceByIdService(
+    invoiceIdOrNumber: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): InvoiceRecord {
+    const invoice = this.repo
+      .getSnapshot()
+      .invoices.find((i) => i.id === invoiceIdOrNumber || i.invoiceNumber === invoiceIdOrNumber);
+    if (!invoice) {
+      throw new AppError(404, 'INVOICE_NOT_FOUND', 'Facture introuvable.');
+    }
+    if (actor.role === 'CLIENT' && invoice.clientId !== actor.id) {
+      throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Accès interdit à cette facture.');
+    }
+    if (actor.role === 'FOURNISSEUR' && invoice.supplierId !== actor.id) {
+      throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Accès interdit à cette facture.');
+    }
+    return invoice;
+  }
+
+  public sweepOverdueInvoicesTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    asOfDateStr?: string;
+    correlationId: string;
+    ipAddress: string;
+  }): { overdueCount: number; overdueInvoices: InvoiceRecord[] } {
+    const asOf = params.asOfDateStr || new Date().toISOString().slice(0, 10);
+    return this.repo.executeTransaction((tx) => {
+      const overdueInvoices: InvoiceRecord[] = [];
+      for (const inv of tx.invoices) {
+        if (inv.status === 'ISSUED' && inv.dueAt && inv.dueAt < asOf) {
+          inv.status = 'OVERDUE';
+          overdueInvoices.push(inv);
+        }
+      }
+      if (overdueInvoices.length > 0) {
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'INVOICES_OVERDUE_SWEEP',
+          targetType: 'Invoice',
+          targetId: `OVERDUE-${overdueInvoices.length}`,
+          result: 'SUCCESS',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `${overdueInvoices.length} factures impayées arrivées à échéance avant ${asOf} marquées OVERDUE.`,
+        });
+      }
+      return { overdueCount: overdueInvoices.length, overdueInvoices };
     });
   }
 
@@ -4886,14 +5235,9 @@ export class TradeLinkDomainServices {
       const pIdx = tx.payments.findIndex((p) => p.id === updatedPayment.id);
       if (pIdx !== -1) tx.payments[pIdx] = updatedPayment;
 
-      const iIdx = tx.invoices.findIndex((i) => i.id === updatedInvoice.id);
-      if (iIdx !== -1) tx.invoices[iIdx] = updatedInvoice;
-
-      const oIdx = tx.orders.findIndex((o) => o.id === updatedOrder.id);
-      if (oIdx !== -1) tx.orders[oIdx] = updatedOrder;
-
-      // Sauvegarder la quittance certifiée
-      this.repo.savePaymentReceipt(receipt);
+      updatedInvoice.paymentIds = Array.from(
+        new Set([...(updatedInvoice.paymentIds || []), updatedPayment.id])
+      );
 
       // Générer l'écriture comptable automatique
       const cashEntry = AccountingEngine.createPaymentCashEntry(
@@ -4902,6 +5246,17 @@ export class TradeLinkDomainServices {
         '0.15',
         `${params.actor.email} (${params.actor.role})`
       );
+      cashEntry.isImmutable = true;
+      updatedInvoice.accountingEntryId = updatedInvoice.accountingEntryId || cashEntry.id;
+
+      const iIdx = tx.invoices.findIndex((i) => i.id === updatedInvoice.id);
+      if (iIdx !== -1) tx.invoices[iIdx] = updatedInvoice;
+
+      const oIdx = tx.orders.findIndex((o) => o.id === updatedOrder.id);
+      if (oIdx !== -1) tx.orders[oIdx] = updatedOrder;
+
+      // Sauvegarder la quittance certifiée
+      this.repo.savePaymentReceipt(receipt);
       tx.accountingEntries.unshift(cashEntry);
 
       tx.auditLogs.unshift({
@@ -4983,6 +5338,15 @@ export class TradeLinkDomainServices {
       const oIdx = tx.orders.findIndex((o) => o.id === result.updatedOrder.id);
       if (oIdx !== -1) tx.orders[oIdx] = result.updatedOrder;
 
+      // Générer automatiquement l'écriture comptable de remboursement en partie double
+      const refundEntry = AccountingEngine.createRefundAccountingEntry(
+        result.updatedPayment,
+        result.refundedAmount,
+        invoice.invoiceNumber,
+        `${params.actor.email} (${params.actor.role})`
+      );
+      tx.accountingEntries.unshift(refundEntry);
+
       tx.auditLogs.unshift({
         id: `aud-${Date.now()}`,
         timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
@@ -5013,6 +5377,55 @@ export class TradeLinkDomainServices {
         refundedAmount: result.refundedAmount,
         isFullRefund: result.isFullRefund,
       };
+    });
+  }
+
+  public failOrCancelPaymentTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    paymentId: string;
+    action: 'FAIL' | 'CANCEL';
+    reason: string;
+    correlationId: string;
+    ipAddress: string;
+  }): PaymentRecord {
+    return this.repo.executeTransaction((tx) => {
+      const payment = tx.payments.find((p) => p.id === params.paymentId || p.paymentReference === params.paymentId);
+      if (!payment) {
+        throw new AppError(404, 'PAYMENT_NOT_FOUND', 'Paiement introuvable.');
+      }
+      if (payment.status === 'SUCCEEDED' || payment.status === 'REFUNDED') {
+        throw new AppError(
+          409,
+          'PAYMENT_ALREADY_FINALIZED',
+          `Impossible de marquer ce paiement comme ${params.action} : statut actuel ${payment.status}.`
+        );
+      }
+
+      const updated =
+        params.action === 'FAIL'
+          ? CommercialEngine.failPayment(payment, params.reason || 'Échec de transaction bancaire')
+          : CommercialEngine.cancelPayment(payment, params.reason || 'Annulation de paiement');
+
+      const idx = tx.payments.findIndex((p) => p.id === updated.id);
+      if (idx !== -1) {
+        tx.payments[idx] = updated;
+      }
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: params.action === 'FAIL' ? 'PAYMENT_FAILED' : 'PAYMENT_CANCELLED',
+        targetType: 'Payment',
+        targetId: updated.paymentReference,
+        result: 'WARNING',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Paiement ${updated.paymentReference} passé à ${updated.status}. Motif : ${updated.failureReason}`,
+      });
+
+      return updated;
     });
   }
 
@@ -6140,6 +6553,7 @@ export class TradeLinkDomainServices {
         totalDebit: balanceCheck.totalDebit,
         totalCredit: balanceCheck.totalCredit,
         isBalanced: true,
+        isImmutable: true,
         validatedAt: now.toISOString(),
         validatedBy: params.actor.email,
         lines: params.lines.map((l, idx) => ({
@@ -6170,6 +6584,84 @@ export class TradeLinkDomainServices {
       });
 
       return createdEntry;
+    });
+  }
+
+  public reverseAccountingEntryTransactional(params: {
+    actor: NonNullable<ServerRequestContext['user']>;
+    entryIdOrNumber: string;
+    reason: string;
+    replacementLines?: {
+      accountCode: string;
+      accountName: string;
+      auxiliaryCode?: string;
+      label: string;
+      debit: string;
+      credit: string;
+    }[];
+    correlationId: string;
+    ipAddress: string;
+  }): {
+    reversalEntry: AccountingEntryRecord;
+    replacementEntry?: AccountingEntryRecord;
+    originalEntry: AccountingEntryRecord;
+  } {
+    if (params.actor.role !== 'COMPTABLE' && params.actor.role !== 'ADMIN') {
+      throw new AppError(403, 'FORBIDDEN_ACCOUNTING_REVERSAL', 'Seul un Comptable ou un Administrateur peut émettre une écriture de contre-passation.');
+    }
+
+    return this.repo.executeTransaction((tx) => {
+      const original = tx.accountingEntries.find(
+        (e) => e.id === params.entryIdOrNumber || e.entryNumber === params.entryIdOrNumber
+      );
+      if (!original) {
+        throw new AppError(404, 'ACCOUNTING_ENTRY_NOT_FOUND', 'Écriture comptable d’origine introuvable.');
+      }
+
+      let revRes: ReturnType<typeof AccountingEngine.createReversalEntry>;
+      try {
+        revRes = AccountingEngine.createReversalEntry({
+          originalEntry: original,
+          reason: params.reason,
+          validatedBy: params.actor.email,
+          replacementLines: params.replacementLines,
+        });
+      } catch (err: any) {
+        const msg = err?.message || 'Erreur lors de la contre-passation.';
+        const status = msg.startsWith('ACCOUNTING_ENTRY_ALREADY_REVERSED') ? 409 : 400;
+        const code = msg.split(':')[0].trim();
+        throw new AppError(status, code, msg);
+      }
+
+      const idx = tx.accountingEntries.findIndex((e) => e.id === original.id);
+      if (idx !== -1) {
+        tx.accountingEntries[idx] = revRes.updatedOriginalEntry;
+      }
+
+      if (revRes.replacementEntry) {
+        tx.accountingEntries.unshift(revRes.replacementEntry);
+      }
+      tx.accountingEntries.unshift(revRes.reversalEntry);
+
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        actorName: params.actor.email,
+        actorRole: params.actor.role,
+        action: 'ACCOUNTING_ENTRY_REVERSED_BY_COUNTER_ENTRY',
+        targetType: 'AccountingEntry',
+        targetId: revRes.reversalEntry.entryNumber,
+        result: 'SUCCESS',
+        correlationId: params.correlationId,
+        ipAddress: params.ipAddress,
+        details: `Contre-passation ${revRes.reversalEntry.entryNumber} enregistrée pour l’écriture immuable ${original.entryNumber}. Motif : ${params.reason}`,
+      });
+
+      return {
+        reversalEntry: revRes.reversalEntry,
+        replacementEntry: revRes.replacementEntry,
+        originalEntry: revRes.updatedOriginalEntry,
+      };
     });
   }
 
@@ -7502,6 +7994,21 @@ export class TradeLinkDomainServices {
     return notif;
   }
 
+  public markNotificationUnreadService(
+    notificationId: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): NotificationRecord {
+    const all = this.repo.listNotifications({ userId: actor.role === 'ADMIN' ? undefined : actor.id });
+    const target = all.find((n) => n.id === notificationId);
+    if (!target) {
+      throw new AppError(404, 'NOTIFICATION_NOT_FOUND', `Notification "${notificationId}" introuvable.`);
+    }
+    target.isRead = false;
+    target.readAt = undefined;
+    this.repo.saveNotification(target);
+    return target;
+  }
+
   public markAllNotificationsReadService(
     actor: NonNullable<ServerRequestContext['user']>
   ): { updatedCount: number } {
@@ -7651,13 +8158,22 @@ export class TradeLinkDomainServices {
       email: actor.email,
     };
 
-    const sendResult = defaultB2BMessagingEngine.sendMessage({
-      conversation: conv,
-      sender: senderDetail,
-      text: payload.text,
-      attachments: payload.attachments,
-      recipientLocalePreference: payload.targetRecipientLocale,
-    });
+    let sendResult: ReturnType<typeof defaultB2BMessagingEngine.sendMessage>;
+    try {
+      sendResult = defaultB2BMessagingEngine.sendMessage({
+        conversation: conv,
+        sender: senderDetail,
+        text: payload.text,
+        attachments: payload.attachments,
+        recipientLocalePreference: payload.targetRecipientLocale,
+      });
+    } catch (err: any) {
+      throw new AppError(
+        err.statusCode || 400,
+        err.message || 'MESSAGE_SEND_FAILED',
+        err.message || 'Envoi du message refusé par les contrôles de sécurité.'
+      );
+    }
 
     this.repo.saveMessage(sendResult.message);
     this.repo.updateConversation(sendResult.conversation);
@@ -7789,10 +8305,25 @@ export class TradeLinkDomainServices {
     }
   }
 
+  public hasActiveOrdersForProduct(productId: string): boolean {
+    const orders = this.repo.getSnapshot().orders;
+    return orders.some(
+      (o) =>
+        !o.deletedAt &&
+        !['COMPLETED', 'DELIVERED', 'CANCELLED', 'REFUSED'].includes(o.status) &&
+        Array.isArray(o.items) &&
+        o.items.some((it) => it.productId === productId)
+    );
+  }
+
   public searchCatalogProductsService(
     criteria: CatalogFilterCriteria,
     actor?: ServerRequestContext['user']
   ): CatalogSearchResult {
+    defaultCatalogEngine.syncProducts(
+      this.repo.getSnapshot().products.filter((p) => !p.deletedAt),
+      false
+    );
     const role = actor?.role || 'CLIENT';
     const userId = actor?.id;
     return defaultCatalogEngine.searchProducts(criteria, role, userId);
@@ -7802,6 +8333,10 @@ export class TradeLinkDomainServices {
     id: string,
     actor?: ServerRequestContext['user']
   ): ProductItem {
+    defaultCatalogEngine.syncProducts(
+      this.repo.getSnapshot().products.filter((p) => !p.deletedAt),
+      false
+    );
     const product = defaultCatalogEngine.getProductById(id);
     if (!product) {
       throw new AppError(404, 'PRODUCT_NOT_FOUND', `Produit "${id}" introuvable.`);
@@ -7866,6 +8401,23 @@ export class TradeLinkDomainServices {
     correlationId = 'cid-catalog',
     ipAddress = '127.0.0.1'
   ): ProductItem {
+    defaultCatalogEngine.syncProducts(
+      this.repo.getSnapshot().products.filter((p) => !p.deletedAt),
+      false
+    );
+    const existing = defaultCatalogEngine.getProductById(id);
+    if (existing && this.hasActiveOrdersForProduct(id)) {
+      const locksSku = updates.sku !== undefined && updates.sku.toUpperCase() !== existing.sku.toUpperCase();
+      const locksCurrency = updates.currency !== undefined && updates.currency.toUpperCase() !== existing.currency.toUpperCase();
+      const locksUnit = updates.unit !== undefined && updates.unit !== existing.unit;
+      if (locksSku || locksCurrency || locksUnit) {
+        throw new AppError(
+          409,
+          'PRODUCT_CRITICAL_FIELD_LOCKED_BY_ACTIVE_ORDER',
+          'Impossible de modifier le SKU, la devise ou l’unité de vente d’un produit engagé dans des commandes actives en cours.'
+        );
+      }
+    }
     try {
       const updated = defaultCatalogEngine.updateProduct(id, actor.id, actor.role, updates);
 
@@ -7936,6 +8488,13 @@ export class TradeLinkDomainServices {
     actor: NonNullable<ServerRequestContext['user']>,
     id: string
   ): { success: boolean; message: string } {
+    if (this.hasActiveOrdersForProduct(id)) {
+      throw new AppError(
+        409,
+        'PRODUCT_HAS_ACTIVE_ORDERS',
+        'Suppression refusée : ce produit est rattaché à une ou plusieurs commandes actives. Veuillez l’archiver ou clôturer les commandes en cours.'
+      );
+    }
     try {
       const result = defaultCatalogEngine.deleteProduct(id, actor.id, actor.role);
       this.repo.softDeleteProduct(id);

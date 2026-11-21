@@ -815,6 +815,15 @@ export class B2BMessagingEngine {
       throw err;
     }
 
+    // 0. Sécurité Antivirus ClamAV sur les pièces jointes attachées au message (Mission 4.10)
+    for (const att of attachments) {
+      if (att.virusScanStatus !== 'CLEAN' || (att.storageKey && att.storageKey.startsWith('quarantine/'))) {
+        const err = new Error('MESSAGE_ATTACHMENT_NOT_CLEAN');
+        (err as any).statusCode = 422;
+        throw err;
+      }
+    }
+
     // 1. Détection de langue source du message
     const detection = CentralTranslationService.detectLanguage(text);
     const sourceLang: SupportedLocale =

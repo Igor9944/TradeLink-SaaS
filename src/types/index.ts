@@ -280,6 +280,22 @@ export interface ProductSpecification {
   category?: string; // e.g. "Technique", "Dimensions", "Normes & Certifications"
 }
 
+export interface ProductPriceTier {
+  minQuantity: number;
+  maxQuantity?: number;
+  unitPrice: string; // Decimal string
+  discountPct?: string;
+}
+
+export interface ProductTechnicalDocument {
+  id: string;
+  title: string;
+  fileName: string;
+  url: string;
+  mimeType?: string;
+  sha256?: string;
+}
+
 export interface ProductCategoryRecord {
   id: string;
   code: string;
@@ -320,6 +336,8 @@ export interface ProductItem {
   gallery?: string[];
   specifications?: ProductSpecification[];
   variants?: ProductVariant[];
+  priceTiers?: ProductPriceTier[];
+  technicalDocuments?: ProductTechnicalDocument[];
   originCountry: string;
   incoterm: string;
   leadTimeDays: number;
@@ -550,6 +568,9 @@ export interface OrderRecord {
   }[];
   quoteId?: string;
   quoteNumber?: string;
+  invoiceId?: string;
+  invoiceNumber?: string;
+  idempotencyKey?: string;
   paymentStatus?: 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' | 'REFUNDED';
   paidAmount?: string;
   paymentMethod?: string;
@@ -564,11 +585,24 @@ export type QuoteStatus =
   | 'SENT'
   | 'RFQ_SUBMITTED'
   | 'RESPONDED'
+  | 'NEGOTIATING'
   | 'QUOTATION_ISSUED'
   | 'ACCEPTED'
   | 'CONVERTED'
   | 'REFUSED'
-  | 'REJECTED';
+  | 'REJECTED'
+  | 'EXPIRED';
+
+export interface QuoteNegotiationRound {
+  round: number;
+  actorId: string;
+  actorRole: UserRoleCode;
+  actorName: string;
+  proposedSubtotal: string;
+  proposedTotal: string;
+  notes?: string;
+  timestamp: string;
+}
 
 export interface QuoteRecord {
   id: string;
@@ -601,6 +635,7 @@ export interface QuoteRecord {
   rejectionReason?: string;
   orderId?: string;
   orderNumber?: string;
+  negotiationHistory?: QuoteNegotiationRound[];
 }
 
 export interface InvoiceRecord {
@@ -621,6 +656,9 @@ export interface InvoiceRecord {
   issuedAt: string;
   dueAt: string;
   paidAt?: string;
+  paymentIds?: string[];
+  accountingEntryId?: string;
+  accountingEntryNumber?: string;
 }
 
 export type PaymentProvider =

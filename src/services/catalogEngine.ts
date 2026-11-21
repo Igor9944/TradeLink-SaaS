@@ -6,6 +6,8 @@ import type {
   ProductCategoryRecord,
   ProductVariant,
   ProductSpecification,
+  ProductPriceTier,
+  ProductTechnicalDocument,
   ProductStatus,
   Locale,
   Icon3DName,
@@ -265,12 +267,61 @@ export class CentralCatalogEngine {
     }
   }
 
-  public syncProducts(products: ProductItem[]): void {
+  public syncProducts(products: ProductItem[], overwriteExisting = false): void {
     for (const p of products) {
-      if (!this.products.has(p.id)) {
+      if (overwriteExisting || !this.products.has(p.id)) {
         this.products.set(p.id, structuredClone(p));
       }
     }
+  }
+
+  /**
+   * Résout le prix unitaire B2B applicable selon la quantité commandée (paliers dégressifs) et la variante éventuelle
+   */
+  public resolveTieredUnitPrice(
+    product: ProductItem,
+    quantity: number,
+    variantId?: string
+  ): {
+    unitPrice: string;
+    appliedTier?: ProductPriceTier;
+    appliedVariant?: ProductVariant;
+  } {
+    let baseDec = new Decimal(product.unitPrice || '0.00');
+    let appliedTier: ProductPriceTier | undefined;
+
+    if (Array.isArray(product.priceTiers) && product.priceTiers.length > 0) {
+      const sortedTiers = [...product.priceTiers].sort((a, b) => b.minQuantity - a.minQuantity);
+      for (const tier of sortedTiers) {
+        const meetsMin = quantity >= tier.minQuantity;
+        const meetsMax = tier.maxQuantity === undefined || quantity <= tier.maxQuantity;
+        if (meetsMin && meetsMax) {
+          appliedTier = tier;
+          if (tier.unitPrice) {
+            baseDec = new Decimal(tier.unitPrice);
+          } else if (tier.discountPct) {
+            const disc = new Decimal(tier.discountPct).dividedBy(100);
+            baseDec = baseDec.minus(baseDec.times(disc));
+          }
+          break;
+        }
+      }
+    }
+
+    let appliedVariant: ProductVariant | undefined;
+    if (variantId && Array.isArray(product.variants)) {
+      appliedVariant = product.variants.find((v) => v.id === variantId || v.sku === variantId);
+      if (appliedVariant && appliedVariant.priceDelta) {
+        const deltaStr = appliedVariant.priceDelta.replace(/^\+/, '');
+        baseDec = baseDec.plus(new Decimal(deltaStr || '0.00'));
+      }
+    }
+
+    return {
+      unitPrice: Decimal.max(0, baseDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2),
+      appliedTier,
+      appliedVariant,
+    };
   }
 
   public getProductById(id: string): ProductItem | null {
@@ -420,6 +471,8 @@ export class CentralCatalogEngine {
     gallery?: string[];
     specifications?: ProductSpecification[];
     variants?: ProductVariant[];
+    priceTiers?: ProductPriceTier[];
+    technicalDocuments?: ProductTechnicalDocument[];
     originCountry: string;
     incoterm: string;
     leadTimeDays: number;
@@ -505,6 +558,8 @@ export class CentralCatalogEngine {
       gallery: params.gallery || params.photos || [],
       specifications: params.specifications || [],
       variants: params.variants || [],
+      priceTiers: params.priceTiers || [],
+      technicalDocuments: params.technicalDocuments || [],
       originCountry: params.originCountry,
       incoterm: params.incoterm || 'FOB',
       leadTimeDays: params.leadTimeDays || 3,

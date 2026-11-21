@@ -332,10 +332,15 @@ export class NotificationJobQueue {
 export class CentralNotificationDispatcher {
   private deduplicator: NotificationDeduplicator;
   private jobQueue: NotificationJobQueue;
+  private persistenceListeners: Array<(notification: NotificationRecord) => void> = [];
 
   constructor() {
     this.deduplicator = new NotificationDeduplicator(5 * 60 * 1000); // 5 min
     this.jobQueue = new NotificationJobQueue();
+  }
+
+  public registerPersistenceListener(listener: (notification: NotificationRecord) => void): void {
+    this.persistenceListeners.push(listener);
   }
 
   public getDeduplicator(): NotificationDeduplicator {
@@ -499,6 +504,19 @@ export class CentralNotificationDispatcher {
             });
           }
           break;
+      }
+    }
+
+    const inAppDelivered = dispatchedChannels.some(
+      (c) => c.channel === 'IN_APP' && c.status === 'DELIVERED'
+    );
+    if (inAppDelivered) {
+      for (const listener of this.persistenceListeners) {
+        try {
+          listener(notification);
+        } catch {
+          // Ne jamais bloquer l'exécution métier si un listener échoue
+        }
       }
     }
 

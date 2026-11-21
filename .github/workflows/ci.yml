@@ -87,6 +87,9 @@ jobs:
       - name: 1D. Lot 3 Auth, Users, Actors, B2B Companies & Workspaces
         run: npm run test:lot3-actors
 
+      - name: 1E. Lot 4 B2B Commercial Ecosystem, Double-Entry Accounting & Messaging
+        run: npm run test:lot4-commercial
+
       - name: 2. Backend Integration Tests
         run: npm run test:backend
 

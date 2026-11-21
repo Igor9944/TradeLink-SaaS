@@ -478,8 +478,26 @@ export class CommercialEngine {
         warnings.push(warningMessage);
       }
 
-      // Calcul avec le prix catalogue officiel côté serveur dans la devise demandée
-      const unitPriceConverted = this.convertCurrency(prod.unitPrice, prod.currency || 'EUR', currency);
+      // Calcul avec le prix catalogue officiel côté serveur (incluant paliers dégressifs B2B et variantes)
+      let effectiveBasePrice = prod.unitPrice;
+      if (Array.isArray(prod.priceTiers) && prod.priceTiers.length > 0) {
+        const sortedTiers = [...prod.priceTiers].sort((a, b) => b.minQuantity - a.minQuantity);
+        for (const tier of sortedTiers) {
+          const meetsMin = reqItem.quantity >= tier.minQuantity;
+          const meetsMax = tier.maxQuantity === undefined || reqItem.quantity <= tier.maxQuantity;
+          if (meetsMin && meetsMax) {
+            if (tier.unitPrice) {
+              effectiveBasePrice = tier.unitPrice;
+            } else if (tier.discountPct) {
+              const disc = new Decimal(tier.discountPct).dividedBy(100);
+              const baseD = new Decimal(prod.unitPrice);
+              effectiveBasePrice = baseD.minus(baseD.times(disc)).toFixed(2);
+            }
+            break;
+          }
+        }
+      }
+      const unitPriceConverted = this.convertCurrency(effectiveBasePrice, prod.currency || 'EUR', currency);
       const unitDec = new Decimal(unitPriceConverted);
       const lineTotalDec = unitDec.times(reqItem.quantity).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
@@ -582,6 +600,10 @@ export class CommercialEngine {
    * Réponse et chiffrage du devis par le Fournisseur (Contre-proposition)
    */
   public static respondToQuote(quote: QuoteRecord, input: QuoteRespondInput): QuoteRecord {
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (quote.status === 'EXPIRED' || (quote.validUntil && quote.validUntil < todayStr)) {
+      throw new Error(`QUOTE_EXPIRED : Le devis ${quote.quoteNumber} a expiré le ${quote.validUntil}.`);
+    }
     if (quote.status === 'CONVERTED' || quote.status === 'REFUSED' || quote.status === 'REJECTED') {
       throw new Error(`Le devis ${quote.quoteNumber} ne peut plus être modifié (statut actuel: ${quote.status}).`);
     }
@@ -603,6 +625,17 @@ export class CommercialEngine {
     });
 
     const totals = this.calculateTotals(calculatedLines);
+    const history = [...(quote.negotiationHistory || [])];
+    history.push({
+      round: history.length + 1,
+      actorId: input.supplierId,
+      actorRole: 'FOURNISSEUR',
+      actorName: quote.supplierName,
+      proposedSubtotal: totals.subtotalAmount,
+      proposedTotal: totals.totalAmount,
+      notes: input.supplierNotes,
+      timestamp: new Date().toISOString(),
+    });
 
     return {
       ...quote,
@@ -616,6 +649,83 @@ export class CommercialEngine {
       taxAmount: totals.taxAmount,
       totalAmount: totals.totalAmount,
       amountInWords: `${totals.totalAmount} ${quote.currency} TTC`,
+      negotiationHistory: history,
+    };
+  }
+
+  /**
+   * Contre-proposition de négociation sur un devis B2B (Client ou Fournisseur)
+   */
+  public static negotiateQuote(
+    quote: QuoteRecord,
+    input: {
+      actorId: string;
+      actorRole: UserRoleCode;
+      actorName: string;
+      notes?: string;
+      incoterm?: string;
+      paymentTerms?: string;
+      validUntilDate?: string;
+      lines: {
+        productId?: string;
+        description: string;
+        quantity: number;
+        unitPrice: string;
+        discountPct?: string;
+      }[];
+    }
+  ): QuoteRecord {
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (quote.status === 'EXPIRED' || (quote.validUntil && quote.validUntil < todayStr)) {
+      throw new Error(`QUOTE_EXPIRED : Le devis ${quote.quoteNumber} a expiré le ${quote.validUntil}.`);
+    }
+    if (quote.status === 'CONVERTED' || quote.status === 'REFUSED' || quote.status === 'REJECTED') {
+      throw new Error(`Le devis ${quote.quoteNumber} ne peut plus être négocié (statut actuel: ${quote.status}).`);
+    }
+
+    const calculatedLines = input.lines.map((l) => {
+      const unit = new Decimal(l.unitPrice);
+      const discount = l.discountPct ? new Decimal(l.discountPct).dividedBy(100) : new Decimal(0);
+      const discountedUnit = unit.minus(unit.times(discount));
+      const lineTotal = discountedUnit.times(l.quantity).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+      return {
+        productId: l.productId,
+        description: l.description,
+        quantity: l.quantity,
+        unitPrice: unit.toFixed(2),
+        discountPct: l.discountPct ?? '0.00',
+        totalLine: lineTotal.toFixed(2),
+      };
+    });
+
+    const totals = this.calculateTotals(calculatedLines);
+    const history = [...(quote.negotiationHistory || [])];
+    history.push({
+      round: history.length + 1,
+      actorId: input.actorId,
+      actorRole: input.actorRole,
+      actorName: input.actorName,
+      proposedSubtotal: totals.subtotalAmount,
+      proposedTotal: totals.totalAmount,
+      notes: input.notes,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      ...quote,
+      status: 'NEGOTIATING',
+      validUntil: input.validUntilDate || quote.validUntil,
+      incoterm: input.incoterm || quote.incoterm,
+      paymentTerms: input.paymentTerms || quote.paymentTerms,
+      supplierNotes: input.actorRole === 'FOURNISSEUR' ? (input.notes || quote.supplierNotes) : quote.supplierNotes,
+      specialInstructions: input.actorRole === 'CLIENT' ? (input.notes || quote.specialInstructions) : quote.specialInstructions,
+      lines: calculatedLines,
+      subtotalAmount: totals.subtotalAmount,
+      taxAmount: totals.taxAmount,
+      totalAmount: totals.totalAmount,
+      amountInWords: `${totals.totalAmount} ${quote.currency} TTC`,
+      negotiationHistory: history,
     };
   }
 
@@ -672,16 +782,21 @@ export class CommercialEngine {
     createdOrder: OrderRecord;
     updatedProducts: ProductItem[];
   } {
-    if (quote.status !== 'RESPONDED' && quote.status !== 'ACCEPTED' && quote.status !== 'QUOTATION_ISSUED') {
+    if (
+      quote.status !== 'RESPONDED' &&
+      quote.status !== 'ACCEPTED' &&
+      quote.status !== 'QUOTATION_ISSUED' &&
+      quote.status !== 'NEGOTIATING'
+    ) {
       throw new Error(
-        `Impossible de convertir le devis ${quote.quoteNumber} en commande : il doit être au statut RESPONDED ou ACCEPTED (statut actuel: ${quote.status}).`
+        `Impossible de convertir le devis ${quote.quoteNumber} en commande : il doit être au statut RESPONDED, NEGOTIATING ou ACCEPTED (statut actuel: ${quote.status}).`
       );
     }
 
     // Vérification de la date de validité
     const nowStr = new Date().toISOString().split('T')[0];
     if (quote.validUntil && quote.validUntil < nowStr) {
-      throw new Error(`Le devis ${quote.quoteNumber} a expiré le ${quote.validUntil}.`);
+      throw new Error(`QUOTE_EXPIRED : Le devis ${quote.quoteNumber} a expiré le ${quote.validUntil}.`);
     }
 
     const updatedProducts: ProductItem[] = [];
@@ -768,21 +883,42 @@ export class CommercialEngine {
     return { updatedQuote, createdOrder, updatedProducts };
   }
 
+  private static readonly invoiceSequenceByYear = new Map<number, number>();
+
   /**
    * Génération d'une facture légale normalisée à partir d'une commande
+   * Numérotation séquentielle unique et stricte par exercice fiscal (ex: FAC-2026-00001)
    */
   public static generateInvoiceFromOrder(
     order: OrderRecord,
     dueInDays = 30,
-    jurisdiction = 'France / UE (TVA 20%)'
+    jurisdiction = 'France / UE (TVA 20%)',
+    existingInvoices: InvoiceRecord[] = []
   ): InvoiceRecord {
-    const invoiceNumber = `FAC-2026-${Math.floor(10000 + Math.random() * 90000)}`;
     const now = new Date();
+    const fiscalYear = now.getFullYear();
+    const prefix = `FAC-${fiscalYear}-`;
+
+    let maxExistingSeq = this.invoiceSequenceByYear.get(fiscalYear) || 0;
+    for (const inv of existingInvoices) {
+      if (inv.invoiceNumber && inv.invoiceNumber.startsWith(prefix)) {
+        const suffix = inv.invoiceNumber.slice(prefix.length);
+        const parsed = parseInt(suffix, 10);
+        if (!Number.isNaN(parsed) && parsed < 10000 && parsed > maxExistingSeq) {
+          maxExistingSeq = parsed;
+        }
+      }
+    }
+
+    const nextSeq = maxExistingSeq + 1;
+    this.invoiceSequenceByYear.set(fiscalYear, nextSeq);
+    const invoiceNumber = `${prefix}${String(nextSeq).padStart(5, '0')}`;
+
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + dueInDays);
 
     return {
-      id: `inv-${Date.now()}`,
+      id: `inv-${Date.now()}-${nextSeq}`,
       invoiceNumber,
       orderId: order.id,
       orderNumber: order.orderNumber,

@@ -801,6 +801,26 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, categories);
     }
 
+    if (method === 'POST' && path === '/api/v1/categories') {
+      const user = requireAuthenticatedSession(ctx);
+      const cat = this.services.createCatalogCategoryService(user, ctx.body as any);
+      return this.ok(ctx, cat, 201);
+    }
+
+    if ((method === 'PUT' || method === 'PATCH') && path.startsWith('/api/v1/categories/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const categoryId = path.replace('/api/v1/categories/', '');
+      const cat = this.services.updateCatalogCategoryService(user, categoryId, ctx.body);
+      return this.ok(ctx, cat);
+    }
+
+    if (method === 'DELETE' && path.startsWith('/api/v1/categories/')) {
+      const user = requireAuthenticatedSession(ctx);
+      const categoryId = path.replace('/api/v1/categories/', '');
+      const result = this.services.deleteCatalogCategoryService(user, categoryId);
+      return this.ok(ctx, result);
+    }
+
     if (method === 'GET' && path === '/api/v1/products') {
       const pagination = validatePaginationAndFilters(ctx.query);
       const res = this.repo.getActiveProducts(pagination);
@@ -883,6 +903,13 @@ export class TradeLinkApiApplication {
         ctx.user?.role === 'FOURNISSEUR' ? product.supplierId : undefined,
         'products:write'
       );
+      if (this.services.hasActiveOrdersForProduct(productId)) {
+        throw new AppError(
+          409,
+          'PRODUCT_HAS_ACTIVE_ORDERS',
+          'Suppression refusée : ce produit est rattaché à une ou plusieurs commandes actives. Veuillez l’archiver ou clôturer les commandes en cours.'
+        );
+      }
       this.repo.softDeleteProduct(productId);
       return this.ok(ctx, { id: productId, softDeleted: true });
     }
@@ -910,7 +937,7 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, cat, 201);
     }
 
-    if (method === 'PUT' && path.startsWith('/api/v1/catalog/categories/')) {
+    if ((method === 'PUT' || method === 'PATCH') && path.startsWith('/api/v1/catalog/categories/')) {
       const user = requireAuthenticatedSession(ctx);
       const categoryId = path.replace('/api/v1/catalog/categories/', '');
       const cat = this.services.updateCatalogCategoryService(user, categoryId, ctx.body);
@@ -1403,10 +1430,14 @@ export class TradeLinkApiApplication {
       }
       enforceRBACAndOwnership(ctx, ['CLIENT'], undefined, 'orders:create');
       const payload = validateOrderCreatePayload(ctx.body);
+      const idempotencyKey =
+        (ctx.headers['idempotency-key'] as string | undefined) ||
+        (ctx.body?.idempotencyKey ? String(ctx.body.idempotencyKey) : undefined);
       const created = this.services.createOrderTransactional({
         actor: ctx.user!,
         shippingAddress: payload.shippingAddress,
         lines: payload.lines,
+        idempotencyKey,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
       });
@@ -1447,7 +1478,38 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, quote, 201);
     }
 
-    if (method === 'GET' && path.startsWith('/api/v1/quotes/') && !path.includes('/')) {
+    if (method === 'POST' && path === '/api/v1/quotes/sweep-expired') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['ADMIN', 'FOURNISSEUR', 'CLIENT']);
+      const res = this.services.sweepExpiredQuotesTransactional({
+        actor: user,
+        asOfDateStr: ctx.body?.asOfDate ? String(ctx.body.asOfDate) : undefined,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    if ((method === 'PUT' || method === 'POST') && path.startsWith('/api/v1/quotes/') && path.endsWith('/negotiate')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'ADMIN']);
+      const parts = path.split('/');
+      const quoteId = parts[parts.length - 2];
+      const res = this.services.negotiateQuoteTransactional({
+        actor: user,
+        quoteId,
+        notes: ctx.body?.notes ? String(ctx.body.notes) : undefined,
+        incoterm: ctx.body?.incoterm ? String(ctx.body.incoterm) : undefined,
+        paymentTerms: ctx.body?.paymentTerms ? String(ctx.body.paymentTerms) : undefined,
+        validUntilDate: ctx.body?.validUntilDate ? String(ctx.body.validUntilDate) : undefined,
+        lines: Array.isArray(ctx.body?.lines) ? ctx.body.lines : [],
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    if (method === 'GET' && path.startsWith('/api/v1/quotes/') && !path.replace('/api/v1/quotes/', '').includes('/')) {
       const user = requireAuthenticatedSession(ctx);
       const quoteId = path.split('/').pop() || '';
       const quote = this.repo.findQuoteById(quoteId);
@@ -1544,6 +1606,30 @@ export class TradeLinkApiApplication {
           ? allInvoices.filter((i) => i.clientId === user.id)
           : allInvoices.filter((i) => i.supplierId === user.id);
       return this.ok(ctx, scoped);
+    }
+
+    if (method === 'POST' && path === '/api/v1/invoices/sweep-overdue') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN', 'FOURNISSEUR']);
+      const res = this.services.sweepOverdueInvoicesTransactional({
+        actor: user,
+        asOfDateStr: ctx.body?.asOfDate ? String(ctx.body.asOfDate) : undefined,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, res, 200);
+    }
+
+    if (
+      method === 'GET' &&
+      path.startsWith('/api/v1/invoices/') &&
+      !path.replace('/api/v1/invoices/', '').includes('/')
+    ) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
+      const invoiceId = path.replace('/api/v1/invoices/', '');
+      const inv = this.services.getInvoiceByIdService(invoiceId, user);
+      return this.ok(ctx, inv, 200);
     }
 
     if (method === 'POST' && path === '/api/v1/invoices/generate') {
@@ -1680,6 +1766,23 @@ export class TradeLinkApiApplication {
       });
 
       return this.ok(ctx, result, 200);
+    }
+
+    if (method === 'POST' && path.startsWith('/api/v1/payments/') && (path.endsWith('/fail') || path.endsWith('/cancel'))) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'ADMIN', 'COMPTABLE']);
+      const parts = path.split('/');
+      const paymentId = parts[parts.length - 2];
+      const action = path.endsWith('/fail') ? 'FAIL' : 'CANCEL';
+      const updated = this.services.failOrCancelPaymentTransactional({
+        actor: user,
+        paymentId,
+        action,
+        reason: String(ctx.body?.reason ?? (action === 'FAIL' ? 'Échec de paiement' : 'Annulation de paiement')),
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, updated, 200);
     }
 
     if (method === 'GET' && path === '/api/v1/payments/receipts') {
@@ -2455,6 +2558,33 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, entry, 201);
     }
 
+    if (method === 'POST' && path.startsWith('/api/v1/accounting/entries/') && path.endsWith('/reverse')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
+      const entryId = path.replace('/api/v1/accounting/entries/', '').replace('/reverse', '');
+      const result = this.services.reverseAccountingEntryTransactional({
+        actor: user,
+        entryIdOrNumber: entryId,
+        reason: String(ctx.body?.reason ?? ''),
+        replacementLines: Array.isArray(ctx.body?.replacementLines) ? ctx.body.replacementLines : undefined,
+        correlationId: ctx.correlationId,
+        ipAddress: ctx.ipAddress,
+      });
+      return this.ok(ctx, result, 201);
+    }
+
+    if (
+      (method === 'PUT' || method === 'PATCH' || method === 'DELETE') &&
+      path.startsWith('/api/v1/accounting/entries/')
+    ) {
+      requireAuthenticatedSession(ctx);
+      throw new AppError(
+        403,
+        'ACCOUNTING_VALIDATED_ENTRY_IMMUTABLE',
+        'Immuabilité comptable stricte : une écriture comptable validée ne peut jamais être modifiée ni supprimée directement. Utilisez POST /api/v1/accounting/entries/:id/reverse pour émettre une écriture de contre-passation.'
+      );
+    }
+
     if (method === 'GET' && path === '/api/v1/accounting/general-ledger') {
       enforceRBACAndOwnership(ctx, ['COMPTABLE', 'ADMIN']);
       const ledger = this.services.getGeneralLedger(ctx.query?.framework as any);
@@ -3180,6 +3310,14 @@ export class TradeLinkApiApplication {
       const user = requireAuthenticatedSession(ctx);
       const notifId = path.replace('/api/v1/notifications/', '').replace('/read', '');
       const updated = this.services.markNotificationReadService(notifId, user);
+      return this.ok(ctx, { notification: updated }, 200);
+    }
+
+    // 25B-bis. Marquer une notification comme non lue
+    if (method === 'PUT' && path.startsWith('/api/v1/notifications/') && path.endsWith('/unread')) {
+      const user = requireAuthenticatedSession(ctx);
+      const notifId = path.replace('/api/v1/notifications/', '').replace('/unread', '');
+      const updated = this.services.markNotificationUnreadService(notifId, user);
       return this.ok(ctx, { notification: updated }, 200);
     }
 
