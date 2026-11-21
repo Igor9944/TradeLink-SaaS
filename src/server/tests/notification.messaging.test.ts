@@ -661,7 +661,54 @@ async function runNotificationAndMessagingTests() {
     );
     assert.strictEqual(isValidToken, true);
 
-    console.log('  ✅ [MSG-04] Contrôle Magic Bytes, scan antivirus et URLs signées HMAC 15 min validés.');
+    // 5. Mise en quarantaine automatique tant que le scan n'est pas terminé & blocage du téléchargement
+    const quarantinedAttachment = SecureAttachmentManager.validateAndProcess({
+      fileName: 'Facture_En_Attente_Scan.pdf',
+      fileSizeBytes: 120000,
+      mimeType: 'application/pdf',
+      magicBytesHeaderHex: '255044462D312E37',
+      deferAntivirusScan: true,
+    });
+    assert.strictEqual(quarantinedAttachment.virusScanStatus, 'QUARANTINED');
+    assert.strictEqual(quarantinedAttachment.presignedDownloadUrl, '');
+    assert.ok(quarantinedAttachment.storageKey.startsWith('quarantine/b2b/'));
+    assert.strictEqual(
+      SecureAttachmentManager.verifyDownloadToken(
+        quarantinedAttachment.id,
+        quarantinedAttachment.storageKey,
+        quarantinedAttachment.expiresAt,
+        token
+      ),
+      false
+    );
+    assert.throws(
+      () => SecureAttachmentManager.assertDownloadAllowed(quarantinedAttachment),
+      (err: any) => err.message === 'DOWNLOAD_BLOCKED_FILE_IN_QUARANTINE_OR_UNSCANNED'
+    );
+
+    // 6. Finalisation du scan antivirus de la pièce en quarantaine -> déblocage CLEAN
+    const promotedAttachment = SecureAttachmentManager.completeQuarantineScan(quarantinedAttachment.id, {
+      magicBytesHex: '255044462D312E37',
+    });
+    assert.strictEqual(promotedAttachment.virusScanStatus, 'CLEAN');
+    assert.ok(promotedAttachment.presignedDownloadUrl.includes('/download?expires='));
+
+    // 7. Détection et rejet de la signature virale EICAR par le scanner antivirus
+    assert.throws(
+      () =>
+        SecureAttachmentManager.validateAndProcess({
+          fileName: 'eicar_payload.pdf',
+          fileSizeBytes: 2048,
+          mimeType: 'application/pdf',
+          magicBytesHeaderHex: '25504446',
+          base64Data: Buffer.from(
+            '%PDF-1.5 X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'
+          ).toString('base64'),
+        }),
+      (err: any) => String(err.message).startsWith('ANTIVIRUS_THREAT_DETECTED')
+    );
+
+    console.log('  ✅ [MSG-04] Contrôle Magic Bytes, quarantaine, scan antivirus EICAR et URLs signées HMAC 15 min validés.');
   }
 
   // --------------------------------------------------------------------------

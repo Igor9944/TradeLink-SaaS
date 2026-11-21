@@ -7,6 +7,7 @@
 
 import crypto from 'crypto';
 import Decimal from 'decimal.js';
+import { getServiceHmacSecret } from './securityCrypto';
 import type {
   OcrDocumentDetail,
   OcrDocumentProfile,
@@ -100,12 +101,13 @@ export function calculateDocumentSha256(buffer: Buffer): string {
 export function generateOcrPresignedUrl(
   documentId: string,
   fileName: string,
-  secretKey = 'tradelink_kms_hmac_secret_key'
+  secretKey?: string
 ): { url: string; expiresAt: string } {
+  const resolvedSecret = secretKey ?? getServiceHmacSecret('OCR_HMAC_SECRET');
   const expiresTimestamp = Date.now() + OCR_PRESIGNED_EXPIRATION_SECONDS * 1000;
   const expiresAt = new Date(expiresTimestamp).toISOString();
   const signature = crypto
-    .createHmac('sha256', secretKey)
+    .createHmac('sha256', resolvedSecret)
     .update(`${documentId}:${fileName}:${expiresTimestamp}`)
     .digest('hex');
 

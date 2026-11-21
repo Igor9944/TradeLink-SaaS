@@ -18,6 +18,7 @@ import {
   BackupRestoreDrillResult,
   LoginAttemptRecord,
 } from '../types';
+import { generateSha256Hash } from './securityCrypto';
 
 // ============================================================================
 // 1. TYPES & CONSTANTES : FORMATS D'IMPORT / EXPORT
@@ -91,33 +92,11 @@ export interface AuditLogChainEntry extends AuditLogRecord {
 }
 
 // ============================================================================
-// UTILITAIRE CRYPTOGRAPHIQUE SOUVERAIN (SHA-256 SIMULATION HAUTE FIDÉLITÉ)
+// UTILITAIRE CRYPTOGRAPHIQUE SOUVERAIN (SHA-256 STANDARD NIST FIPS 180-4)
 // ============================================================================
 
 export function computeSha256Hex(content: string): string {
-  let h0 = 0x6a09e667;
-  let h1 = 0xbb67ae85;
-  let h2 = 0x3c6ef372;
-  let h3 = 0xa54ff53a;
-
-  for (let i = 0; i < content.length; i++) {
-    const code = content.charCodeAt(i);
-    h0 = Math.imul(h0 ^ code, 0x5bd1e995) >>> 0;
-    h1 = Math.imul(h1 ^ (code >> 2), 0x27d4eb2f) >>> 0;
-    h2 = Math.imul(h2 ^ (code << 3), 0x165667b1) >>> 0;
-    h3 = Math.imul(h3 ^ (code >> 1), 0xd3a2646c) >>> 0;
-  }
-
-  const hex0 = ('00000000' + h0.toString(16)).slice(-8);
-  const hex1 = ('00000000' + h1.toString(16)).slice(-8);
-  const hex2 = ('00000000' + h2.toString(16)).slice(-8);
-  const hex3 = ('00000000' + h3.toString(16)).slice(-8);
-  const hex4 = ('00000000' + (h0 ^ h2).toString(16)).slice(-8);
-  const hex5 = ('00000000' + (h1 ^ h3).toString(16)).slice(-8);
-  const hex6 = ('00000000' + ((h0 + h1) >>> 0).toString(16)).slice(-8);
-  const hex7 = ('00000000' + ((h2 + h3) >>> 0).toString(16)).slice(-8);
-
-  return `${hex0}${hex1}${hex2}${hex3}${hex4}${hex5}${hex6}${hex7}`;
+  return generateSha256Hash(content);
 }
 
 // ============================================================================

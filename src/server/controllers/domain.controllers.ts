@@ -253,7 +253,26 @@ export class TradeLinkApiApplication {
       });
     }
 
-    // 2C-ter. Gestion des sessions de l'utilisateur
+    // 2C-ter. Gestion des sessions de l'utilisateur et endpoint de session courante
+    if (method === 'GET' && path === '/api/v1/auth/session') {
+      const user = requireAuthenticatedSession(ctx);
+      return this.ok(
+        ctx,
+        {
+          authenticated: true,
+          user: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            sessionId: user.sessionId,
+            companyName: user.companyName,
+            mfaVerified: Boolean(user.mfaVerified),
+          },
+        },
+        200
+      );
+    }
+
     if (method === 'GET' && path === '/api/v1/auth/sessions') {
       const user = requireAuthenticatedSession(ctx);
       const sessions = this.services.listUserSessions(user.id);
@@ -1283,6 +1302,7 @@ export class TradeLinkApiApplication {
 
     if (method === 'POST' && path === '/api/v1/payments/confirm') {
       const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['ADMIN', 'COMPTABLE']);
       const { paymentId, providerTxId } = ctx.body || {};
       if (!paymentId) {
         throw new AppError(400, 'PAYMENT_ID_REQUIRED', 'paymentId est obligatoire.');

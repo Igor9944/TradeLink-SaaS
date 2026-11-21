@@ -8,10 +8,8 @@
 import { UserRoleCode } from '../types';
 
 // ============================================================================
-// 1. DÉTECTION DE L'ENVIRONNEMENT & PRIMITIVES CRYPTOGRAPHIQUES UNIVERSELLES
+// 1. PRIMITIVES CRYPTOGRAPHIQUES UNIVERSELLES
 // ============================================================================
-
-const isNode = typeof process !== 'undefined' && Boolean(process.versions?.node);
 
 // Import standard de crypto (Node.js & Vite bundle)
 import * as nodeCryptoModule from 'crypto';
@@ -156,13 +154,135 @@ export function generateSha256Hash(input: string): string {
   return pureSha256Hex(input);
 }
 
+/**
+ * Calcule un HMAC-SHA256 standard en hexadécimal via Node.js crypto
+ */
+export function hmacSha256Hex(secret: string, data: string): string {
+  if (nodeCrypto && typeof nodeCrypto.createHmac === 'function') {
+    return nodeCrypto.createHmac('sha256', secret).update(data, 'utf-8').digest('hex');
+  }
+  return pureSha256Hex(`${secret}:${data}:${secret}`);
+}
+
+// ============================================================================
+// 2B. GESTION CENTRALISÉE DES SECRETS D'ENVIRONNEMENT & CONTRÔLE DE PRODUCTION
+// ============================================================================
+
+const runtimeEphemeralSecrets = new Map<string, string>();
+
+const FORBIDDEN_WEAK_PATTERNS = [
+  'change_me',
+  'changeme',
+  'mock_tradelink',
+  'sample_tradelink',
+  'tradelinkstrong2026password',
+  'tradelinkredissecret2026',
+  'tradelinks3supersecret2026',
+  'tradelinkgrafanaadmin2026',
+  'tradelink-kms-root-token-2026',
+  'tradelink-b2b-attachment-kms-key-2026',
+  'tradelink-kyc-vault-master-signing-key-v6',
+  'tradelink_kms_hmac_secret_key',
+  'tradelink-sfu-room-jwt-hmac-sha256-secret-key-enterprise-v6',
+];
+
+export function isWeakOrExposedSecret(value: string | undefined | null, minLength = 32): boolean {
+  if (!value || typeof value !== 'string') return true;
+  const trimmed = value.trim();
+  if (trimmed.length < minLength) return true;
+  const lower = trimmed.toLowerCase();
+  return FORBIDDEN_WEAK_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
+/**
+ * Récupère un secret HMAC/Service depuis les variables d'environnement.
+ * - En production (NODE_ENV === 'production') : refuse de démarrer si le secret est absent ou faible.
+ * - En développement/test : utilise la variable d'environnement ou génère une clé aléatoire CSPRNG de 256 bits en mémoire (aucun secret codé en dur).
+ */
+export function getServiceHmacSecret(envVarName: string): string {
+  const isProd = typeof process !== 'undefined' && process.env?.NODE_ENV === 'production';
+  const envVal = typeof process !== 'undefined' ? process.env?.[envVarName] : undefined;
+
+  if (isProd) {
+    if (isWeakOrExposedSecret(envVal, 32)) {
+      throw new Error(
+        `FATAL_SECURITY_CONFIG_ERROR: Secret requis "${envVarName}" absent, trop court (< 32 chars) ou compromis en environnement de production.`
+      );
+    }
+    return envVal!.trim();
+  }
+
+  if (envVal && !isWeakOrExposedSecret(envVal, 16)) {
+    return envVal.trim();
+  }
+
+  let ephemeral = runtimeEphemeralSecrets.get(envVarName);
+  if (!ephemeral) {
+    ephemeral = bytesToHex(getSecureRandomBytes(32));
+    runtimeEphemeralSecrets.set(envVarName, ephemeral);
+  }
+  return ephemeral;
+}
+
+/**
+ * Contrôle strict de la configuration de sécurité au démarrage du serveur.
+ * Refuse le démarrage en production si des secrets requis sont absents/faibles ou si Vault est en mode dev.
+ */
+export function validateProductionSecurityEnv(
+  customEnv?: Record<string, string | undefined>
+): { valid: boolean; errors: string[] } {
+  const env = customEnv ?? (typeof process !== 'undefined' ? process.env : {});
+  const isProd = env.NODE_ENV === 'production';
+  const errors: string[] = [];
+
+  if (isProd) {
+    // 1. Interdiction formelle du mode développement Vault en production
+    if (env.VAULT_DEV_ROOT_TOKEN_ID || env.VAULT_DEV_LISTEN_ADDRESS || env.VAULT_DEV_MODE === 'true') {
+      errors.push('VAULT_DEV_MODE_FORBIDDEN_IN_PRODUCTION: Configuration Vault de développement interdite en production.');
+    }
+
+    // 2. Vérification des secrets critiques
+    const jwtSecret = env.JWT_SECRET || env.JWT_ACCESS_SECRET || env.SERVER_JWT_SECRET;
+    if (isWeakOrExposedSecret(jwtSecret, 32)) {
+      errors.push('JWT_SECRET_MISSING_OR_WEAK: Secret JWT absent, < 32 caractères ou valeur exposée.');
+    }
+
+    if (isWeakOrExposedSecret(env.DATABASE_URL, 24) || !env.DATABASE_URL?.startsWith('postgresql://')) {
+      errors.push('DATABASE_URL_INVALID_OR_EXPOSED: DATABASE_URL manquante ou contient un mot de passe compromis.');
+    }
+
+    if (isWeakOrExposedSecret(env.REDIS_URL, 16)) {
+      errors.push('REDIS_URL_INVALID_OR_EXPOSED: REDIS_URL manquante ou contient un mot de passe compromis.');
+    }
+
+    if (isWeakOrExposedSecret(env.S3_SECRET_KEY, 20)) {
+      errors.push('S3_SECRET_KEY_MISSING_OR_WEAK: Clé secrète S3/MinIO absente ou compromise.');
+    }
+
+    if (isWeakOrExposedSecret(env.KMS_VAULT_TOKEN, 20)) {
+      errors.push('KMS_VAULT_TOKEN_MISSING_OR_WEAK: Jeton KMS Vault absent ou compromis.');
+    }
+
+    if (isWeakOrExposedSecret(env.ATTACHMENT_SECRET, 32)) {
+      errors.push('ATTACHMENT_SECRET_MISSING_OR_WEAK: Secret HMAC des fichiers (ATTACHMENT_SECRET) absent ou < 32 caractères.');
+    }
+  }
+
+  if (isProd && errors.length > 0) {
+    throw new Error(`PRODUCTION_STARTUP_SECURITY_CHECK_FAILED: ${errors.join(' | ')}`);
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
 // ============================================================================
 // 3. HACHAGE DE MOT DE PASSE SÉCURISÉ & STRATÉGIE DE MIGRATION
 // Format PHC conforme : $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
 // ============================================================================
 
 const PBKDF2_ITERATIONS = 100000;
-const PBKDF2_KEYLEN = 32;
+const PBKDF2_KEYLEN = 64; // 64 octets = 128 caractères hex (distinction stricte avec les anciens faux hashes 64 chars)
+const LEGACY_MOCK_SALTS = new Set(['s1a2l3t4', 'tradelink_salt', 'mock_salt', 'default_salt']);
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -181,21 +301,26 @@ function deriveCryptographicKey(password: string, salt: string): string {
     );
     return derivedBuf.toString('hex');
   }
-  // Pure JS fallback via SHA-256 rounds
-  let current = password + ':' + salt;
+  // Pure JS fallback via SHA-256 rounds (128 hex chars = 2 x 64)
+  let currentA = password + ':A:' + salt;
+  let currentB = password + ':B:' + salt;
   for (let i = 0; i < 1000; i++) {
-    current = pureSha256Hex(current + ':' + i);
+    currentA = pureSha256Hex(currentA + ':' + i);
+    currentB = pureSha256Hex(currentB + ':' + i);
   }
-  return current;
+  return currentA + currentB;
 }
 
 /**
- * Hache un mot de passe en utilisant un sel aléatoire cryptographique fort (16 octets)
- * et une dérivation résistante conforme au format PHC Argon2id
+ * Hache un mot de passe en utilisant un sel aléatoire cryptographique fort (16 octets = 32 chars hex)
+ * et une dérivation résistante conforme au format PHC Argon2id (digest 128 chars hex)
  */
 export function hashPasswordArgon2id(plainPassword: string, customSalt?: string): string {
   if (!plainPassword || plainPassword.length < 8) {
     throw new Error('PASSWORD_TOO_SHORT');
+  }
+  if (customSalt && (customSalt.length < 8 || LEGACY_MOCK_SALTS.has(customSalt))) {
+    throw new Error('INSECURE_OR_LEGACY_SALT_REJECTED');
   }
   const salt = customSalt ?? bytesToHex(getSecureRandomBytes(16));
   const derived = deriveCryptographicKey(plainPassword, salt);
@@ -203,16 +328,23 @@ export function hashPasswordArgon2id(plainPassword: string, customSalt?: string)
 }
 
 /**
- * Détecte si un hash provient de l'ancienne implémentation factice (fnv1a64Hex)
+ * Détecte si un hash provient de l'ancienne implémentation factice (fnv1a64Hex).
+ * Ne considère JAMAIS un ancien hash simulé (64 chars hex ou sel fixe) comme un véritable hash Argon2id.
  */
 export function isLegacyMockHash(phcHash: string): boolean {
-  if (!phcHash || !phcHash.startsWith('$argon2id$v=19$m=65536,t=3,p=4$')) {
+  if (!phcHash || typeof phcHash !== 'string' || !phcHash.startsWith('$argon2id$v=19$m=65536,t=3,p=4$')) {
     return true;
   }
   const parts = phcHash.split('$');
+  if (parts.length !== 6) return true;
+  const saltPart = parts[4];
   const hashPart = parts[5];
-  // Les anciens faux hash avaient une longueur de 64 caractères hex issus de fnv1a64Hex
-  return !hashPart || hashPart.length < 32;
+  if (!saltPart || saltPart.length < 8 || LEGACY_MOCK_SALTS.has(saltPart)) {
+    return true;
+  }
+  // Les anciens faux hashes issus de fnv1a64Hex avaient une longueur de 64 chars hex (ou moins).
+  // Les nouveaux hashes réels ont exactement 128 caractères hexadécimaux (512 bits).
+  return !hashPart || hashPart.length !== 128 || !/^[0-9a-f]{128}$/i.test(hashPart);
 }
 
 /**
@@ -223,10 +355,39 @@ export function needsPasswordReset(phcHash: string): boolean {
 }
 
 /**
- * Vérifie un mot de passe avec comparaison en temps constant et rejet des faux hachages
+ * Stratégie de migration sécurisée des anciens hashes simulés incompatibles :
+ * - Rejette tout hash simulé
+ * - Invalide immédiatement les sessions et jetons actifs de l'utilisateur
+ * - Exige une réinitialisation sécurisée ou re-hache le mot de passe vérifié par OTP
+ */
+export function enforceLegacyHashMigration(params: {
+  storedHash: string;
+  onInvalidateUserSessions?: () => void;
+}): { isLegacy: boolean; requiresPasswordReset: boolean; sessionsInvalidated: boolean } {
+  const legacy = isLegacyMockHash(params.storedHash);
+  if (legacy) {
+    if (params.onInvalidateUserSessions) {
+      params.onInvalidateUserSessions();
+    }
+    return {
+      isLegacy: true,
+      requiresPasswordReset: true,
+      sessionsInvalidated: Boolean(params.onInvalidateUserSessions),
+    };
+  }
+  return {
+    isLegacy: false,
+    requiresPasswordReset: false,
+    sessionsInvalidated: false,
+  };
+}
+
+/**
+ * Vérifie un mot de passe avec comparaison en temps constant et rejet strict des anciens faux hachages
  */
 export function verifyPasswordArgon2id(plainPassword: string, phcHash: string): boolean {
-  if (!phcHash || !phcHash.startsWith('$argon2id$v=19$m=65536,t=3,p=4$')) {
+  // Interdiction absolue de valider un ancien hash simulé
+  if (isLegacyMockHash(phcHash)) {
     return false;
   }
   const parts = phcHash.split('$');

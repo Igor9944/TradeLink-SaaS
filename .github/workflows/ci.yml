@@ -1,32 +1,27 @@
 # ============================================================================
-# TRADELINK V6.0 — PIPELINE D'INTÉGRATION CONTINUE (CI) GITHUB ACTIONS
-# Vérification qualité, types, tests 100%, audit de sécurité et build Docker
+# TRADELINK V6.1 — PIPELINE D'INTÉGRATION CONTINUE (CI) GITHUB ACTIONS
+# Ordre strict : Checkout -> pnpm/action-setup -> actions/setup-node (cache pnpm)
+# -> pnpm install --frozen-lockfile -> Prisma Validate -> Typecheck -> Tests -> Build
 # ============================================================================
 
-name: TRADELINK V6.0 — CI Quality & Security Pipeline
+name: TRADELINK V6.1 — CI Quality & Security Pipeline
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
 
 jobs:
   # --------------------------------------------------------------------------
-  # 1. VALIDATION TYPESCRIPT & SYNTAXE
+  # 1. VALIDATION TYPESCRIPT, SCHÉMA PRISMA & SYNTAXE
   # --------------------------------------------------------------------------
   typecheck:
-    name: TypeScript Strict Typecheck
+    name: TypeScript & Prisma Strict Check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'pnpm'
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -34,11 +29,22 @@ jobs:
           version: 9
           run_install: false
 
+      - name: Setup Node.js 20 with pnpm Cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate Prisma Schema & Generate Client
+        run: |
+          npx prisma validate
+          npx prisma generate
+
       - name: Run TypeScript Strict Check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
   # --------------------------------------------------------------------------
   # 2. SUITES DE TESTS COMPLÈTES (UNITAIRES, INTÉGRATION, E2E, SÉCURITÉ)
@@ -51,89 +57,104 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'pnpm'
-
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9
           run_install: false
 
+      - name: Setup Node.js 20 with pnpm Cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: 1. Backend Integration Tests
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: 1. Express HTTP Server Tests
+        run: npm run test:express
+
+      - name: 2. Backend Integration Tests
         run: npm run test:backend
 
-      - name: 2. Authentication, RBAC & Security Tests
+      - name: 3. Authentication, RBAC & Security Tests
         run: npm run test:security
 
-      - name: 3. KYC Complete Module Tests
+      - name: 4. Auth Session Lifecycle & TOTP RFC 6238 Tests
+        run: npm run test:auth-lifecycle
+
+      - name: 5. KYC Complete Module Tests
         run: npm run test:kyc
 
-      - name: 4. Commercial Ecosystem Tests
+      - name: 6. Commercial Ecosystem Tests
         run: npm run test:commercial
 
-      - name: 5. Logistics & Fleet Tests
+      - name: 7. Logistics & Fleet Tests
         run: npm run test:logistics
 
-      - name: 6. Accounting & Financial Engine Tests
+      - name: 8. Accounting & Financial Engine Tests
         run: npm run test:accounting
 
-      - name: 7. AI, OCR & Room Live Tests
+      - name: 9. AI, OCR & Room Live Tests
         run: npm run test:ai
 
-      - name: 8. Admin Advanced & Isolated Sandbox Tests
+      - name: 10. Notifications, Messaging & File Quarantine Tests
+        run: npm run test:notifications
+
+      - name: 11. Admin Advanced & Isolated Sandbox Tests
         run: npm run test:admin
 
-      - name: 9. Multilingual & RTL Coverage Tests
+      - name: 12. Multilingual & RTL Coverage Tests
         run: npm run test:i18n
 
-      - name: 10. E2E Playwright Workflow Simulation
+      - name: 13. E2E Playwright Workflow Simulation
         run: npm run test:e2e
 
-      - name: 11. Security Audit (SAST/DAST/Anti-XSS/Anti-SQLi)
+      - name: 14. Security Audit (SAST/DAST/Anti-XSS/Anti-SQLi)
         run: npm run test:security-audit
 
-      - name: 12. Performance & Latency Benchmarks
+      - name: 15. Performance & Latency Benchmarks
         run: npm run test:performance
 
   # --------------------------------------------------------------------------
-  # 3. COMPILATION FRONTEND DE PRODUCTION
+  # 3. COMPILATION FRONTEND & BACKEND DE PRODUCTION
   # --------------------------------------------------------------------------
   build-frontend:
-    name: Production Assets Build
+    name: Production Frontend & Backend Build
     runs-on: ubuntu-latest
     needs: [test-matrix]
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'pnpm'
-
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9
           run_install: false
 
+      - name: Setup Node.js 20 with pnpm Cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Production Assets
-        run: npm run build
+      - name: Build Frontend & Backend Production Bundles
+        run: |
+          npm run build
+          npm run build:backend
 
       - name: Verify Bundle Size & Output
         run: |
           test -d dist
+          test -f dist/server.cjs
           ls -lh dist
 
   # --------------------------------------------------------------------------
@@ -150,13 +171,23 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Application Docker Image
+      - name: Build Backend Docker Image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile
+          target: backend
           push: false
-          tags: tradelink-saas:ci-test
+          tags: tradelink-backend:ci-test
+
+      - name: Build Frontend Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          target: runner
+          push: false
+          tags: tradelink-frontend:ci-test
 
       - name: Build Isolated Sandbox Docker Image
         uses: docker/build-push-action@v5

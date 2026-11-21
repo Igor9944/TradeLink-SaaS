@@ -13,9 +13,15 @@ import type {
 } from '../types';
 import { CentralTranslationService } from './translationEngine';
 import { defaultNotificationDispatcher } from './notificationEngine';
+import {
+  getServiceHmacSecret,
+  generateSha256Hash,
+  hmacSha256Hex,
+  constantTimeEqual,
+} from './securityCrypto';
 
 // ============================================================================
-// GESTIONNAIRE DE PIÈCES JOINTES SÉCURISÉES (Magic Bytes, Scan AV, Token HMAC)
+// GESTIONNAIRE DE PIÈCES JOINTES SÉCURISÉES (Magic Bytes, Scan AV Réel, Quarantaine & Token HMAC)
 // ============================================================================
 
 export interface AttachmentUploadRequest {
@@ -24,13 +30,39 @@ export interface AttachmentUploadRequest {
   mimeType: string;
   base64Data?: string;
   magicBytesHeaderHex?: string;
+  deferAntivirusScan?: boolean;
 }
+
+export interface AntivirusScanResult {
+  status: 'CLEAN' | 'QUARANTINED' | 'INFECTED';
+  engine: string;
+  scannedAt: string;
+  threatName?: string;
+}
+
+export type ExternalAntivirusScannerFn = (payload: {
+  fileName: string;
+  mimeType: string;
+  rawContent: string;
+  magicBytesHex: string;
+}) => AntivirusScanResult;
+
+const EICAR_SIGNATURE_FRAGMENT = 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE';
+const MALICIOUS_PAYLOAD_PATTERNS = [
+  EICAR_SIGNATURE_FRAGMENT,
+  '/JavaScript',
+  '/Launch',
+  '<?php',
+  '<script',
+  'powershell.exe',
+  'cmd.exe /c',
+  'xp_cmdshell',
+];
 
 export class SecureAttachmentManager {
   private static readonly MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 Mo
-  private static readonly HMAC_SECRET =
-    (typeof process !== 'undefined' && process.env.ATTACHMENT_SECRET) ||
-    'tradelink-b2b-attachment-kms-key-2026';
+  private static customScanner: ExternalAntivirusScannerFn | null = null;
+  private static readonly attachmentRegistry = new Map<string, MessageAttachment>();
 
   private static readonly ALLOWED_MIME_TYPES = new Set([
     'application/pdf',
@@ -50,10 +82,79 @@ export class SecureAttachmentManager {
     '.com',
     '.vbs',
     '.js',
+    '.dll',
+    '.jar',
+    '.php',
   ];
 
+  private static getHmacSecret(): string {
+    return getServiceHmacSecret('ATTACHMENT_SECRET');
+  }
+
+  public static configureAntivirusScanner(scanner: ExternalAntivirusScannerFn | null): void {
+    this.customScanner = scanner;
+  }
+
+  /**
+   * Analyse antivirus réelle par signatures binaires, EICAR, en-têtes PE/ELF et charges actives
+   */
+  public static runRealAntivirusScan(params: {
+    fileName: string;
+    mimeType: string;
+    base64Data?: string;
+    magicBytesHex: string;
+  }): AntivirusScanResult {
+    const now = new Date().toISOString();
+    let decodedContent = '';
+    if (params.base64Data) {
+      try {
+        decodedContent = Buffer.from(params.base64Data, 'base64').toString('utf-8');
+      } catch {
+        decodedContent = params.base64Data;
+      }
+    }
+
+    if (this.customScanner) {
+      return this.customScanner({
+        fileName: params.fileName,
+        mimeType: params.mimeType,
+        rawContent: decodedContent || params.base64Data || '',
+        magicBytesHex: params.magicBytesHex,
+      });
+    }
+
+    const upperHex = params.magicBytesHex.toUpperCase();
+    // Détection d'exécutables camouflés (PE/MZ 4D5A, ELF 7F454C46, Mach-O CAFEBABE)
+    if (upperHex.startsWith('4D5A') || upperHex.startsWith('7F454C46') || upperHex.startsWith('CAFEBABE')) {
+      return {
+        status: 'INFECTED',
+        engine: 'TradeLink-AV-SignatureEngine/v6.1',
+        scannedAt: now,
+        threatName: 'Win32/ELF.Executable.DisguisedHeader',
+      };
+    }
+
+    const combinedText = `${params.base64Data || ''} ${decodedContent}`;
+    for (const pattern of MALICIOUS_PAYLOAD_PATTERNS) {
+      if (combinedText.toUpperCase().includes(pattern.toUpperCase())) {
+        return {
+          status: 'INFECTED',
+          engine: 'TradeLink-AV-SignatureEngine/v6.1',
+          scannedAt: now,
+          threatName: pattern === EICAR_SIGNATURE_FRAGMENT ? 'EICAR-Test-File' : `Exploit.Payload.${pattern.replace(/[^a-zA-Z0-9]/g, '')}`,
+        };
+      }
+    }
+
+    return {
+      status: 'CLEAN',
+      engine: 'TradeLink-AV-SignatureEngine/v6.1',
+      scannedAt: now,
+    };
+  }
+
   public static validateAndProcess(request: AttachmentUploadRequest): MessageAttachment {
-    const { fileName, fileSizeBytes, mimeType, base64Data, magicBytesHeaderHex } = request;
+    const { fileName, fileSizeBytes, mimeType, base64Data, magicBytesHeaderHex, deferAntivirusScan } = request;
 
     // 1. Validation de l'extension du nom de fichier
     const lowerName = fileName.toLowerCase();
@@ -65,7 +166,7 @@ export class SecureAttachmentManager {
     }
 
     // 2. Validation de la taille maximale (10 Mo)
-    if (fileSizeBytes > this.MAX_FILE_SIZE) {
+    if (fileSizeBytes <= 0 || fileSizeBytes > this.MAX_FILE_SIZE) {
       const err = new Error('FILE_SIZE_EXCEEDS_10MB_LIMIT');
       (err as any).statusCode = 400;
       throw err;
@@ -78,14 +179,25 @@ export class SecureAttachmentManager {
       throw err;
     }
 
-    // 4. Magic bytes validation (PDF %PDF, PNG 89504E47, JPEG FFD8FF, WEBP 52494646)
-    if (magicBytesHeaderHex) {
-      const hex = magicBytesHeaderHex.toUpperCase();
+    // 4. Extraction et validation stricte des Magic Bytes
+    let resolvedMagicHex = magicBytesHeaderHex ? magicBytesHeaderHex.toUpperCase() : '';
+    if (!resolvedMagicHex && base64Data) {
+      try {
+        const buf = Buffer.from(base64Data, 'base64');
+        if (buf.length >= 4) {
+          resolvedMagicHex = buf.subarray(0, 12).toString('hex').toUpperCase();
+        }
+      } catch {
+        // Ignore base64 decode failure if not valid base64
+      }
+    }
+
+    if (resolvedMagicHex) {
       let valid = false;
-      if (mimeType === 'application/pdf' && hex.startsWith('25504446')) valid = true;
-      if (mimeType === 'image/png' && hex.startsWith('89504E47')) valid = true;
-      if (mimeType === 'image/jpeg' && hex.startsWith('FFD8FF')) valid = true;
-      if (mimeType === 'image/webp' && hex.startsWith('52494646')) valid = true;
+      if (mimeType === 'application/pdf' && resolvedMagicHex.startsWith('25504446')) valid = true;
+      if (mimeType === 'image/png' && resolvedMagicHex.startsWith('89504E47')) valid = true;
+      if (mimeType === 'image/jpeg' && resolvedMagicHex.startsWith('FFD8FF')) valid = true;
+      if (mimeType === 'image/webp' && resolvedMagicHex.startsWith('52494646')) valid = true;
 
       if (!valid) {
         const err = new Error('MAGIC_BYTES_SIGNATURE_MISMATCH');
@@ -94,28 +206,51 @@ export class SecureAttachmentManager {
       }
     }
 
-    // 5. Calcul de l'empreinte SHA-256
-    const attachmentId = `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const sha256 = crypto
-      .createHash('sha256')
-      .update(base64Data || `${fileName}-${fileSizeBytes}-${Date.now()}`)
-      .digest('hex');
+    // 5. Calcul de l'empreinte SHA-256 réelle via Node.js crypto
+    const attachmentId = `att-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    const sha256 = generateSha256Hash(base64Data || `${fileName}:${fileSizeBytes}:${resolvedMagicHex}:${Date.now()}`);
 
-    const storageKey = `attachments/b2b/${new Date().getFullYear()}/${attachmentId}-${fileName}`;
+    // 6. Exécution du scan antivirus ou mise en quarantaine si différé
+    const shouldQuarantine =
+      deferAntivirusScan === true ||
+      (typeof process !== 'undefined' && process.env?.AV_FORCE_QUARANTINE === 'true');
 
-    // 6. Signature de l'URL de téléchargement (HMAC-SHA256, expiration 15 minutes)
+    let virusScanStatus: 'CLEAN' | 'QUARANTINED' = 'QUARANTINED';
+
+    if (!shouldQuarantine) {
+      const scanResult = this.runRealAntivirusScan({
+        fileName,
+        mimeType,
+        base64Data,
+        magicBytesHex: resolvedMagicHex,
+      });
+
+      if (scanResult.status === 'INFECTED') {
+        const err = new Error(`ANTIVIRUS_THREAT_DETECTED:${scanResult.threatName || 'MALWARE'}`);
+        (err as any).statusCode = 400;
+        throw err;
+      }
+
+      virusScanStatus = scanResult.status === 'CLEAN' ? 'CLEAN' : 'QUARANTINED';
+    }
+
+    const bucketPrefix = virusScanStatus === 'CLEAN' ? 'attachments/b2b' : 'quarantine/b2b';
+    const storageKey = `${bucketPrefix}/${new Date().getFullYear()}/${attachmentId}-${fileName}`;
+
+    // 7. Signature de l'URL de téléchargement (HMAC-SHA256, expiration 15 minutes)
+    // Si le fichier est en quarantaine, aucun lien de téléchargement actif n'est délivré
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    const tokenPayload = `${attachmentId}:${storageKey}:${expiresAt}`;
-    const token = crypto
-      .createHmac('sha256', this.HMAC_SECRET)
-      .update(tokenPayload)
-      .digest('hex');
+    let presignedDownloadUrl = '';
 
-    const presignedDownloadUrl = `/api/v1/messaging/attachments/${attachmentId}/download?expires=${encodeURIComponent(
-      expiresAt
-    )}&token=${token}`;
+    if (virusScanStatus === 'CLEAN') {
+      const tokenPayload = `${attachmentId}:${storageKey}:${expiresAt}`;
+      const token = hmacSha256Hex(this.getHmacSecret(), tokenPayload);
+      presignedDownloadUrl = `/api/v1/messaging/attachments/${attachmentId}/download?expires=${encodeURIComponent(
+        expiresAt
+      )}&token=${token}`;
+    }
 
-    return {
+    const attachment: MessageAttachment = {
       id: attachmentId,
       fileName,
       fileSizeBytes,
@@ -124,8 +259,76 @@ export class SecureAttachmentManager {
       presignedDownloadUrl,
       expiresAt,
       sha256,
-      virusScanStatus: 'CLEAN',
+      virusScanStatus,
     };
+
+    this.attachmentRegistry.set(attachmentId, attachment);
+    return attachment;
+  }
+
+  /**
+   * Finalise l'analyse antivirus d'un fichier en quarantaine et débloque son téléchargement si CLEAN
+   */
+  public static completeQuarantineScan(
+    attachmentId: string,
+    payloadToScan?: { base64Data?: string; magicBytesHex?: string }
+  ): MessageAttachment {
+    const existing = this.attachmentRegistry.get(attachmentId);
+    if (!existing) {
+      const err = new Error('ATTACHMENT_NOT_FOUND');
+      (err as any).statusCode = 404;
+      throw err;
+    }
+
+    const scanResult = this.runRealAntivirusScan({
+      fileName: existing.fileName,
+      mimeType: existing.mimeType,
+      base64Data: payloadToScan?.base64Data,
+      magicBytesHex: payloadToScan?.magicBytesHex || '',
+    });
+
+    if (scanResult.status !== 'CLEAN') {
+      existing.virusScanStatus = 'QUARANTINED';
+      existing.presignedDownloadUrl = '';
+      this.attachmentRegistry.set(attachmentId, existing);
+      const err = new Error(`ANTIVIRUS_SCAN_FAILED_QUARANTINED:${scanResult.threatName || 'THREAT'}`);
+      (err as any).statusCode = 403;
+      throw err;
+    }
+
+    const newStorageKey = existing.storageKey.replace(/^quarantine\/b2b\//, 'attachments/b2b/');
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const tokenPayload = `${existing.id}:${newStorageKey}:${expiresAt}`;
+    const token = hmacSha256Hex(this.getHmacSecret(), tokenPayload);
+
+    const promoted: MessageAttachment = {
+      ...existing,
+      storageKey: newStorageKey,
+      expiresAt,
+      virusScanStatus: 'CLEAN',
+      presignedDownloadUrl: `/api/v1/messaging/attachments/${existing.id}/download?expires=${encodeURIComponent(
+        expiresAt
+      )}&token=${token}`,
+    };
+
+    this.attachmentRegistry.set(attachmentId, promoted);
+    return promoted;
+  }
+
+  /**
+   * Vérifie qu'un fichier a terminé son scan antivirus avec le statut CLEAN avant tout téléchargement
+   */
+  public static assertDownloadAllowed(attachmentOrId: MessageAttachment | string): void {
+    const att =
+      typeof attachmentOrId === 'string'
+        ? this.attachmentRegistry.get(attachmentOrId)
+        : attachmentOrId;
+
+    if (!att || att.virusScanStatus !== 'CLEAN' || att.storageKey.startsWith('quarantine/')) {
+      const err = new Error('DOWNLOAD_BLOCKED_FILE_IN_QUARANTINE_OR_UNSCANNED');
+      (err as any).statusCode = 403;
+      throw err;
+    }
   }
 
   public static verifyDownloadToken(
@@ -134,15 +337,25 @@ export class SecureAttachmentManager {
     expiresAt: string,
     token: string
   ): boolean {
-    if (new Date(expiresAt).getTime() < Date.now()) {
-      return false; // Expired
+    if (!attachmentId || !storageKey || !expiresAt || !token) {
+      return false;
+    }
+    // Bloquer immédiatement tout fichier en quarantaine ou dont le scan n'est pas CLEAN
+    if (storageKey.startsWith('quarantine/')) {
+      return false;
+    }
+    const registered = this.attachmentRegistry.get(attachmentId);
+    if (registered && registered.virusScanStatus !== 'CLEAN') {
+      return false;
+    }
+
+    const expTime = new Date(expiresAt).getTime();
+    if (Number.isNaN(expTime) || expTime < Date.now()) {
+      return false; // Expiré
     }
     const tokenPayload = `${attachmentId}:${storageKey}:${expiresAt}`;
-    const expected = crypto
-      .createHmac('sha256', this.HMAC_SECRET)
-      .update(tokenPayload)
-      .digest('hex');
-    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+    const expected = hmacSha256Hex(this.getHmacSecret(), tokenPayload);
+    return constantTimeEqual(token, expected);
   }
 }
 

@@ -85,19 +85,56 @@ export function calculateFinancialInterest(params: {
   const leapDetected = isLeapYear(startYear) || isLeapYear(endYear);
 
   let annualDivisor = 365;
+  let interest: Decimal;
+  const rateDecimal = ratePct.dividedBy(100);
+
   if (params.basis === 'ACT/360') {
     annualDivisor = 360;
-  } else if (params.basis === 'ACT/ACT') {
-    annualDivisor = leapDetected ? 366 : 365;
-  }
+    interest = principal
+      .times(rateDecimal)
+      .times(daysCount)
+      .dividedBy(annualDivisor)
+      .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  } else if (params.basis === 'ACT/365') {
+    annualDivisor = 365;
+    interest = principal
+      .times(rateDecimal)
+      .times(daysCount)
+      .dividedBy(annualDivisor)
+      .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  } else {
+    // Convention financière internationale ACT/ACT (ICMA / ISDA) mono & multi-années
+    if (startYear === endYear) {
+      annualDivisor = isLeapYear(startYear) ? 366 : 365;
+      interest = principal
+        .times(rateDecimal)
+        .times(daysCount)
+        .dividedBy(annualDivisor)
+        .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    } else {
+      // Décomposition par tranche d'année civile avec diviseur spécifique (365 ou 366)
+      let weightedDaysFraction = new Decimal(0);
+      for (let y = startYear; y <= endYear; y++) {
+        const yIsLeap = isLeapYear(y);
+        const yDays = yIsLeap ? 366 : 365;
+        const curYearStart = new Date(Date.UTC(y, 0, 1));
+        const curYearEnd = new Date(Date.UTC(y + 1, 0, 1)); // Début année suivante
 
-  // En convention ACT/ACT multi-années ou bissextile, calcul exact avec Decimal
-  const rateDecimal = ratePct.dividedBy(100);
-  const interest = principal
-    .times(rateDecimal)
-    .times(daysCount)
-    .dividedBy(annualDivisor)
-    .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+        const segStart = start.getTime() > curYearStart.getTime() ? start : curYearStart;
+        const segEnd = end.getTime() < curYearEnd.getTime() ? end : curYearEnd;
+
+        if (segEnd.getTime() > segStart.getTime()) {
+          const segDays = Math.round((segEnd.getTime() - segStart.getTime()) / (1000 * 60 * 60 * 24));
+          weightedDaysFraction = weightedDaysFraction.plus(new Decimal(segDays).dividedBy(yDays));
+        }
+      }
+      annualDivisor = leapDetected ? 366 : 365;
+      interest = principal
+        .times(rateDecimal)
+        .times(weightedDaysFraction)
+        .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    }
+  }
 
   const total = principal.plus(interest).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 

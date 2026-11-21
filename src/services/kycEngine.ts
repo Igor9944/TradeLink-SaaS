@@ -21,6 +21,11 @@ import {
   UserRoleCode,
   KYCPresignedUrlResponse,
 } from '../types';
+import {
+  generateSha256Hash,
+  hmacSha256Hex,
+  getServiceHmacSecret,
+} from './securityCrypto';
 
 export type KycActorProfile = 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR';
 
@@ -585,9 +590,9 @@ export function generateKycPresignedDocumentUrl(params: {
     params.s3ObjectKey ??
     `vault/${params.dossierId}/${params.docId}_${params.fileName.replace(/\s+/g, '_')}`;
 
-  const secret = params.signingSecret ?? 'tradelink-kyc-vault-master-signing-key-v6';
-  const signingPayload = `${objectKey}:${expiresAtMs}:${params.docId}:${secret}`;
-  const signatureSha256 = deterministicHex(`hmac-sha256:${signingPayload}`, 64);
+  const secret = params.signingSecret ?? getServiceHmacSecret('KYC_SIGNING_SECRET');
+  const signingPayload = `${objectKey}:${expiresAtMs}:${params.docId}`;
+  const signatureSha256 = hmacSha256Hex(secret, signingPayload);
 
   const url = `https://s3.tradelink-kyc.internal/${objectKey}?X-TL-Algorithm=HMAC-SHA256&X-TL-Credential=tradelink-kyc-vault-agent&X-TL-Date=${encodeURIComponent(
     issuedAt
@@ -605,23 +610,14 @@ export function generateKycPresignedDocumentUrl(params: {
   };
 }
 
-// Hachage déterministe SHA-256 simulé et génération de métadonnées d'enveloppe AES-256-GCM
+// Hachage cryptographique SHA-256 réel (NIST FIPS 180-4) pour métadonnées d'enveloppe AES-256-GCM
 function deterministicHex(seed: string, length: number): string {
-  let h1 = 0x811c9dc5;
-  let h2 = 0x01000193;
-  for (let i = 0; i < seed.length; i++) {
-    const ch = seed.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 16777619) >>> 0;
-    h2 = Math.imul(h2 ^ (ch + i), 2246822507) >>> 0;
+  const fullHash = generateSha256Hash(seed);
+  if (length <= fullHash.length) {
+    return fullHash.slice(0, length);
   }
-  let out = '';
-  let round = 1;
-  while (out.length < length) {
-    const chunk = ((h1 ^ Math.imul(h2, round)) >>> 0).toString(16).padStart(8, '0');
-    out += chunk;
-    round += 1;
-  }
-  return out.slice(0, length);
+  const secondHash = generateSha256Hash(`${seed}:ext`);
+  return (fullHash + secondHash).slice(0, length);
 }
 
 export function encryptAndStoreKycDocument(params: {

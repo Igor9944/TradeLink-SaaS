@@ -1,9 +1,9 @@
 # ============================================================================
-# TRADELINK V6.0 — PIPELINE DE DÉPLOIEMENT MULTI-ENVIRONNEMENTS (CD)
-# Environnements : Development -> Staging -> Production (Approbation Manuelle)
+# TRADELINK V6.1 — PIPELINE DE DÉPLOIEMENT MULTI-ENVIRONNEMENTS (CD)
+# Vérifications réelles : Build, Validation Prisma, Healthcheck HTTP & Rollback
 # ============================================================================
 
-name: TRADELINK V6.0 — Continuous Deployment (CD)
+name: TRADELINK V6.1 — Continuous Deployment (CD)
 
 on:
   push:
@@ -23,10 +23,10 @@ on:
 
 jobs:
   # --------------------------------------------------------------------------
-  # 1. DÉPLOIEMENT STAGING / PRE-PROD
+  # 1. VALIDATION PRÉ-DÉPLOIEMENT & HEALTHCHECK RÉEL DU SERVEUR
   # --------------------------------------------------------------------------
   deploy-staging:
-    name: Deploy to Staging Environment
+    name: Validate & Verify Staging Stack
     runs-on: ubuntu-latest
     environment: staging
     if: github.event.inputs.target_env == 'staging' || startsWith(github.ref, 'refs/tags/v')
@@ -34,39 +34,74 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Deploy Staging Stack
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Setup Node.js 20 with pnpm Cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Prisma Schema & Build Artifacts
         run: |
-          echo "Déploiement sur cluster Staging TRADELINK..."
-          # Commandes de déploiement helm / docker-compose remote
-          echo "Exécution des migrations de schéma Prisma..."
-          echo "Vérification du healthcheck Staging : HTTP 200 reçu."
+          npx prisma validate
+          npx prisma generate
+          npm run build
+          npm run build:backend
+
+      - name: Start Backend Server & Verify Real HTTP Healthcheck
+        run: |
+          node dist/server.cjs &
+          SERVER_PID=$!
+          sleep 3
+          curl --fail --silent --show-error http://127.0.0.1:3000/api/v1/health
+          curl --fail --silent --show-error http://127.0.0.1:3000/health
+          kill $SERVER_PID
 
   # --------------------------------------------------------------------------
-  # 2. DÉPLOIEMENT PRODUCTION AVEC APPROBATION MANUELLE ET CONTRÔLE RÉGALIEN
+  # 2. DÉPLOIEMENT PRODUCTION AVEC APPROBATION MANUELLE & CONTRÔLE STRICT
   # --------------------------------------------------------------------------
   deploy-production:
     name: Deploy to Production (High Availability 99.9%)
     runs-on: ubuntu-latest
     needs: [deploy-staging]
-    environment: production # Nécessite approbation manuelle sur GitHub
+    environment: production
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.target_env == 'production'
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Verify Cryptographic Backup Before Deployment
-        run: |
-          echo "Vérification de la présence d'une sauvegarde pré-migration vérifiée SHA-256..."
-          echo "Sauvegarde pré-déploiement OK."
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
 
-      - name: Deploy Production Stack (Zero-Downtime Rolling Update)
-        run: |
-          echo "Déploiement rolling update sur cluster Production..."
-          echo "Lancement des conteneurs durcis tradelink-app..."
-          echo "Contrôle de santé applicatif post-déploiement..."
+      - name: Setup Node.js 20 with pnpm Cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
 
-      - name: Post-Deploy Health & Latency Verification
+      - name: Install Dependencies & Run Security Suite
         run: |
-          echo "Vérification de l'endpoint https://app.tradelink.ma/api/v1/health"
-          echo "Mesure de latence p95 < 200 ms : Conforme."
-          echo "Déploiement Production TRADELINK V6.0 réussi à 100%."
+          pnpm install --frozen-lockfile
+          npm run test:security
+          npm run test:security-audit
+          npm run build
+          npm run build:backend
+
+      - name: Verify Production Server Health Endpoint
+        run: |
+          node dist/server.cjs &
+          SERVER_PID=$!
+          sleep 3
+          curl --fail --silent --show-error http://127.0.0.1:3000/api/v1/health
+          kill $SERVER_PID

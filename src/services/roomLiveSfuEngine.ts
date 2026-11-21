@@ -24,7 +24,12 @@ import {
   RoomParticipantState,
   RoomLiveSessionState,
 } from './aiIntelligenceEngine';
-import { generateSha256Hash, constantTimeEqual } from './securityCrypto';
+import {
+  generateSha256Hash,
+  hmacSha256Hex,
+  getServiceHmacSecret,
+  constantTimeEqual,
+} from './securityCrypto';
 import { CentralTranslationService } from './translationEngine';
 
 // ============================================================================
@@ -35,12 +40,14 @@ export const SFU_ICE_SERVERS: RTCIceServer[] = [
   { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
   {
     urls: ['turn:turn.tradelink-saas.com:3478?transport=udp', 'turn:turn.tradelink-saas.com:3478?transport=tcp'],
-    username: 'tradelink-live-sfu',
-    credential: 'tl-sfu-secure-ephemeral-turn-key-2026',
+    username: (typeof process !== 'undefined' && process.env?.TURN_USERNAME) || 'tradelink-live-sfu',
+    credential: (typeof process !== 'undefined' && process.env?.TURN_CREDENTIAL) || '',
   },
 ];
 
-const ROOM_ACCESS_TOKEN_SECRET = 'tradelink-sfu-room-jwt-hmac-sha256-secret-key-enterprise-v6';
+function getRoomAccessTokenSecret(): string {
+  return getServiceHmacSecret('ROOM_ACCESS_TOKEN_SECRET');
+}
 
 // ============================================================================
 // GESTION DES JETONS D'ACCÈS SFU (ROOM ACCESS TOKENS)
@@ -48,13 +55,14 @@ const ROOM_ACCESS_TOKEN_SECRET = 'tradelink-sfu-room-jwt-hmac-sha256-secret-key-
 
 export class RoomSfuTokenManager {
   /**
-   * Génère un jeton d'accès cryptographiquement signé pour rejoindre une salle SFU
+   * Génère un jeton d'accès cryptographiquement signé (HMAC-SHA256) pour rejoindre une salle SFU
    */
   public static generateToken(
     payload: Omit<RoomLiveAccessTokenPayload, 'expiresAt'> & { ttlSeconds?: number },
     ttlSecondsArg?: number,
-    secret: string = ROOM_ACCESS_TOKEN_SECRET
+    secret?: string
   ): string {
+    const resolvedSecret = secret ?? getRoomAccessTokenSecret();
     const ttl = ttlSecondsArg ?? payload.ttlSeconds ?? 7200;
     const { ttlSeconds: _t, ...rest } = payload;
     const expiresAt = Date.now() + ttl * 1000;
@@ -63,7 +71,7 @@ export class RoomSfuTokenManager {
     const encodedHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'TL-ROOM-TOKEN' })).toString('base64url');
     const encodedPayload = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
 
-    const signature = generateSha256Hash(`${encodedHeader}.${encodedPayload}.${secret}`);
+    const signature = hmacSha256Hex(resolvedSecret, `${encodedHeader}.${encodedPayload}`);
     return `${encodedHeader}.${encodedPayload}.${signature}`;
   }
 
@@ -72,7 +80,7 @@ export class RoomSfuTokenManager {
    */
   public static verifyToken(
     token: string,
-    secret: string = ROOM_ACCESS_TOKEN_SECRET
+    secret?: string
   ): { valid: boolean; payload?: RoomLiveAccessTokenPayload; error?: string } {
     if (!token || typeof token !== 'string') {
       return { valid: false, error: 'TOKEN_MISSING' };
@@ -83,8 +91,9 @@ export class RoomSfuTokenManager {
       return { valid: false, error: 'TOKEN_MALFORMED' };
     }
 
+    const resolvedSecret = secret ?? getRoomAccessTokenSecret();
     const [headerB64, payloadB64, signature] = parts;
-    const expectedSig = generateSha256Hash(`${headerB64}.${payloadB64}.${secret}`);
+    const expectedSig = hmacSha256Hex(resolvedSecret, `${headerB64}.${payloadB64}`);
 
     if (!constantTimeEqual(signature, expectedSig)) {
       return { valid: false, error: 'SIGNATURE_INVALID' };
