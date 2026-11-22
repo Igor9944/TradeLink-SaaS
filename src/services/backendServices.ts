@@ -32,7 +32,7 @@ export const BACKEND_25_SERVICES: BackendServiceDescriptor[] = [
   { id: 5, name: 'SessionService', file: 'services/session.service.ts', domain: 'Sécurité', status: 'ACTIVE_VERIFIED', description: 'Session unique par utilisateur et invalidation immédiate via Redis' },
   { id: 6, name: 'NotificationService', file: 'services/notification.service.ts', domain: 'Transversal', status: 'ACTIVE_VERIFIED', description: 'Email, SMS, WhatsApp, Telegram selon consentement et préférences' },
   { id: 7, name: 'DocumentService', file: 'services/document.service.ts', domain: 'GED', status: 'ACTIVE_VERIFIED', description: 'Génération PDF, Word, Excel (Factures, CMR, Devis, États financiers)' },
-  { id: 8, name: 'AIService', file: 'services/ai.service.ts', domain: 'IA & RAG', status: 'ACTIVE_VERIFIED', description: 'LLM OpenAI/Ollama, filtrage RAG strict par rôle et propriété de ressource' },
+  { id: 8, name: 'AIService', file: 'services/ai.service.ts', domain: 'IA & RAG', status: 'ACTIVE_VERIFIED', description: 'Google Gemini 1.5 Pro & Flash, filtrage RAG strict par rôle et propriété de ressource' },
   { id: 9, name: 'VoiceService', file: 'services/voice.service.ts', domain: 'IA & Voix', status: 'ACTIVE_VERIFIED', description: 'Dictée vocale STT et synthèse TTS trilingue FR/EN/AR avec consentement micro' },
   { id: 10, name: 'OCRService', file: 'services/ocr.service.ts', domain: 'OCR / IDP', status: 'ACTIVE_VERIFIED', description: 'Extraction structurée de textes, tableaux, dates, TVA et totaux' },
   { id: 11, name: 'IDPService', file: 'services/idp.service.ts', domain: 'OCR / IDP', status: 'ACTIVE_VERIFIED', description: 'Proposition de nouveaux champs dynamiques soumis à validation Admin' },
@@ -47,7 +47,7 @@ export const BACKEND_25_SERVICES: BackendServiceDescriptor[] = [
   { id: 20, name: 'BackupService', file: 'services/backup.service.ts', domain: 'Exploitation', status: 'ACTIVE_VERIFIED', description: 'Sauvegardes chiffrées et restauration soumise à double validation Admin' },
   { id: 21, name: 'AuditService', file: 'services/audit.service.ts', domain: 'Conformité', status: 'ACTIVE_VERIFIED', description: 'Journal d’audit append-only immuable avec ID de corrélation' },
   { id: 22, name: 'SandboxService', file: 'services/sandbox.service.ts', domain: 'Sécurité', status: 'ACTIVE_VERIFIED', description: 'Instance éphémère isolée réseau désactivé pour restauration BAK/SQL' },
-  { id: 23, name: 'IntegrationService', file: 'services/integration.service.ts', domain: 'Transversal', status: 'ACTIVE_VERIFIED', description: 'Connecteurs SMTP, Stripe, WhatsApp, OpenAI/Ollama, S3/MinIO' },
+  { id: 23, name: 'IntegrationService', file: 'services/integration.service.ts', domain: 'Transversal', status: 'ACTIVE_VERIFIED', description: 'Connecteurs SMTP, Stripe, WhatsApp, Google Gemini / Meet, S3/MinIO' },
   { id: 24, name: 'PaymentService', file: 'services/payment.service.ts', domain: 'Finance', status: 'ACTIVE_VERIFIED', description: 'Paiements Stripe/Virements, webhooks signés idempotents et rapprochement' },
   { id: 25, name: 'SecurityScannerService', file: 'services/security-scanner.service.ts', domain: 'Sécurité', status: 'ACTIVE_VERIFIED', description: 'Scan antivirus fichiers, SHA-256 checksum et prévention SSRF/IDOR/XSS' },
 ];
@@ -242,7 +242,7 @@ export function validateDualAdminApproval(initiatorId: string, approverId: strin
 
 // ============================================================================
 // SERVICE 23 & 24 : RÉSILIENCE APIS EXTERNES, TIMEOUTS & RETRIES AVEC EXPONENTIAL BACKOFF
-// Protège Stripe, OpenAI, Ollama et SMTP contre les ralentissements réseau
+// Protège Stripe, Google Gemini, Google Meet et SMTP contre les ralentissements réseau
 // ============================================================================
 
 export interface RetryOptions {

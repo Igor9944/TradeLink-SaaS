@@ -137,7 +137,7 @@ export const AdminWorkspacePage: React.FC<{
   const params = useParams();
   const [search, setSearch] = useState('');
   const [revokeUserTarget, setRevokeUserTarget] = useState<string | null>(null);
-  const [llmProvider, setLlmProvider] = useState<'GOOGLE_GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'OLLAMA'>('GOOGLE_GEMINI');
+  const [activeGeminiModel, setActiveGeminiModel] = useState<'gemini-1.5-pro' | 'gemini-1.5-flash' | 'gemini-2.0-flash'>('gemini-1.5-pro');
 
   // Filtres avancés Section 2 (Utilisateurs)
   const [userRoleFilter, setUserRoleFilter] = useState<string>('ALL');
@@ -2874,29 +2874,28 @@ export const AdminWorkspacePage: React.FC<{
           {aiTab === 'models-ocr' && (
             <Card
               title="Gouvernance de l'Intelligence Artificielle, RAG & Studio OCR / IDP"
-              subtitle="Modèles pris en charge (Gemini 1.5 Pro / Flash, GPT-4o, Claude 3.7, Ollama Local), filtrage strict par rôle RBAC et supervision des clés côté serveur"
+              subtitle="Exclusivité officielle Google Gemini (Gemini 1.5 Pro / Flash & 2.0 Flash), filtrage strict par rôle RBAC et supervision des quotas côté serveur"
             >
               <div className="space-y-6">
                 {/* SÉLECTION DU MODÈLE ET CLÉS SERVEUR MASQUÉES */}
                 <div className="grid md:grid-cols-2 gap-6 text-xs">
                   <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-3">
                     <p className="font-bold text-sm text-slate-900 dark:text-white">
-                      Fournisseur LLM & Moteur de Raisonnement Principal
+                      Fournisseur LLM Officiel (Exclusivité Google Gemini)
                     </p>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 gap-2">
                       {[
-                        { id: 'GOOGLE_GEMINI', label: 'Google Gemini 1.5' },
-                        { id: 'OPENAI', label: 'OpenAI GPT-4o' },
-                        { id: 'ANTHROPIC', label: 'Claude 3.7 Sonnet' },
-                        { id: 'OLLAMA', label: 'Ollama (Local Souverain)' },
+                        { id: 'gemini-1.5-pro', label: 'Google Gemini 1.5 Pro (Multimodal & Long Context)' },
+                        { id: 'gemini-1.5-flash', label: 'Google Gemini 1.5 Flash (Ultra-Rapide & Faible Latence)' },
+                        { id: 'gemini-2.0-flash', label: 'Google Gemini 2.0 Flash (Next-Gen Streaming)' },
                       ].map((p) => (
                         <Button
                           key={p.id}
                           size="sm"
-                          variant={llmProvider === p.id ? 'primary' : 'secondary'}
+                          variant={activeGeminiModel === p.id ? 'primary' : 'secondary'}
                           onClick={() => {
-                            setLlmProvider(p.id as any);
-                            notifyToast(`Fournisseur LLM basculé sur ${p.label}`, 'info');
+                            setActiveGeminiModel(p.id as any);
+                            notifyToast(`Modèle actif configuré : ${p.label}`, 'info');
                           }}
                         >
                           {p.label}

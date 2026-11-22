@@ -148,16 +148,15 @@ export function runAiOcrRoomIntegrationSuite() {
   // --------------------------------------------------------------------------
   // TEST 2 : MULTI-MODÈLES IA & GESTION DES QUOTAS / RATE LIMITS
   // --------------------------------------------------------------------------
-  console.log('\n[TEST 2] Multi-modèles IA (Gemini, GPT-4o, Claude, Ollama) & Quotas / Rate Limits');
+  console.log('\n[TEST 2] Exclusivité Google Gemini (1.5 Pro & Flash) & Quotas / Rate Limits');
   {
-    assert(SUPPORTED_AI_MODELS.length >= 4, 'Au moins 4 modèles IA configurables doivent être enregistrés');
-    const gemini = SUPPORTED_AI_MODELS.find((m) => m.provider === 'GOOGLE_GEMINI');
-    const ollama = SUPPORTED_AI_MODELS.find((m) => m.provider === 'OLLAMA_LOCAL');
-    const gpt = SUPPORTED_AI_MODELS.find((m) => m.provider === 'OPENAI');
-    const claude = SUPPORTED_AI_MODELS.find((m) => m.provider === 'ANTHROPIC');
+    assert(SUPPORTED_AI_MODELS.length >= 2, 'Au moins 2 modèles Google Gemini officiels doivent être enregistrés');
+    const allGemini = SUPPORTED_AI_MODELS.every((m) => m.provider === 'GOOGLE_GEMINI');
+    assert(allGemini === true, 'Exclusivité stricte : 100% des modèles supportés doivent être Google Gemini');
 
-    assert(!!gemini && !!ollama && !!gpt && !!claude, 'Les 4 fournisseurs IA doivent être présents');
-    assert(ollama?.isLocal === true, 'Le modèle Ollama doit être identifié comme Local / Souverain');
+    const geminiPro = SUPPORTED_AI_MODELS.find((m) => m.id === 'gemini-1.5-pro');
+    const geminiFlash = SUPPORTED_AI_MODELS.find((m) => m.id === 'gemini-1.5-flash');
+    assert(!!geminiPro && !!geminiFlash, 'Gemini 1.5 Pro et Gemini 1.5 Flash doivent être configurés');
 
     // Test de consommation de jetons et dépassement de limite
     const testUserId = `test-user-quota-${Date.now()}`;
@@ -165,16 +164,16 @@ export function runAiOcrRoomIntegrationSuite() {
     assert(quotaState.dailyTokensLimit === 100000, 'Quota journalier par défaut de 100,000 jetons');
 
     // Consommation normale
-    const check1 = checkAndConsumeAiTokens(testUserId, gemini!, 5000);
+    const check1 = checkAndConsumeAiTokens(testUserId, geminiPro!, 5000);
     assert(check1.allowed === true, 'La consommation normale de jetons doit être acceptée');
     assert(check1.remainingQuotaPct === 95, 'Le quota restant doit refléter 95%');
 
     // Dépassement de quota
-    const check2 = checkAndConsumeAiTokens(testUserId, gemini!, 150000);
+    const check2 = checkAndConsumeAiTokens(testUserId, geminiPro!, 150000);
     assert(check2.allowed === false, 'Le dépassement de quota journalier doit être bloqué');
     assert(Boolean(check2.reason?.includes('Quota journalier')), 'Le motif de rejet doit indiquer le dépassement de quota');
 
-    console.log('✓ TEST 2 VALIDÉ : Modèles configurés et limitation de débit/quota opérationnelle.');
+    console.log('✓ TEST 2 VALIDÉ : Exclusivité Google Gemini et limitation de débit/quota opérationnelles.');
     passed++;
   }
 

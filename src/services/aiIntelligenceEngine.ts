@@ -14,7 +14,7 @@ import Decimal from 'decimal.js';
 // 1. TYPES & MODÈLES : ASSISTANT IA & RAG
 // ============================================================================
 
-export type AiProvider = 'GOOGLE_GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'OLLAMA_LOCAL';
+export type AiProvider = 'GOOGLE_GEMINI';
 
 export interface AiModelConfig {
   id: string;
@@ -70,7 +70,7 @@ export interface AiQuotaState {
   lastResetDate: string;
 }
 
-// Modèles IA configurables (Gemini, GPT-4o, Claude 3.7, Ollama Local)
+// Modèles IA configurables — Exclusivité officielle Google Gemini (LOT 6)
 export const SUPPORTED_AI_MODELS: AiModelConfig[] = [
   {
     id: 'gemini-1.5-pro',
@@ -95,37 +95,15 @@ export const SUPPORTED_AI_MODELS: AiModelConfig[] = [
     description: 'Optimisé pour les réponses instantanées, transcription vocale et vérifications rapides.',
   },
   {
-    id: 'gpt-4o',
-    name: 'OpenAI GPT-4o (Omni Reasoning)',
-    provider: 'OPENAI',
-    contextWindowTokens: 128000,
-    maxOutputTokens: 4096,
-    temperature: 0.3,
-    isLocal: false,
-    rateLimitPerMinute: 40,
-    description: 'Raisonnement contractuel complexe et synthèses juridiques.',
-  },
-  {
-    id: 'claude-3-7-sonnet',
-    name: 'Anthropic Claude 3.7 Sonnet (Hybrid Reasoning)',
-    provider: 'ANTHROPIC',
-    contextWindowTokens: 200000,
+    id: 'gemini-2.0-flash',
+    name: 'Google Gemini 2.0 Flash (Next-Gen Multimodal & Temps Réel)',
+    provider: 'GOOGLE_GEMINI',
+    contextWindowTokens: 1000000,
     maxOutputTokens: 8192,
-    temperature: 0.2,
+    temperature: 0.15,
     isLocal: false,
-    rateLimitPerMinute: 30,
-    description: 'Extraction structurée et vérification des écritures comptables.',
-  },
-  {
-    id: 'ollama-llama3-70b',
-    name: 'Ollama Llama 3 70B (Souverain Local / On-Premise)',
-    provider: 'OLLAMA_LOCAL',
-    contextWindowTokens: 32768,
-    maxOutputTokens: 2048,
-    temperature: 0.1,
-    isLocal: true,
-    rateLimitPerMinute: 200,
-    description: 'Exécution 100% locale en datacenter souverain sans fuite de données vers le cloud externe.',
+    rateLimitPerMinute: 150,
+    description: 'Modèle nouvelle génération pour le streaming ultra-rapide et les interactions à haute cadence.',
   },
 ];
 

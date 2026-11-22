@@ -93,6 +93,9 @@ jobs:
       - name: 1F. Lot 5 Room Live & Official Google Meet API Integration
         run: npm run test:lot5-roomlive
 
+      - name: 1G. Lot 6 AI Exclusivity Google Gemini (1.5 Pro & Flash)
+        run: npm run test:lot6-ai-gemini
+
       - name: 2. Backend Integration Tests
         run: npm run test:backend
 

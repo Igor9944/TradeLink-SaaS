@@ -645,7 +645,7 @@ export async function runCopilotModuleTestSuite(): Promise<{
       enAns.text.length > 20 &&
       arAns.text.length > 20 &&
       configRes.statusCode === 200 &&
-      configData.models.length >= 4 &&
+      configData.models.length >= 2 &&
       hasNoApiKeyLeaked;
 
     results.push({
