@@ -91,7 +91,9 @@ export const SupportWorkspacePage: React.FC<{
   // --------------------------------------------------------------------------
   // ÉTATS GLOBAUX DU CENTRE DE SUPPORT
   // --------------------------------------------------------------------------
-  const [tickets, setTickets] = useState<SupportTicketRecord[]>(INITIAL_SUPPORT_TICKETS);
+  const [tickets, setTickets] = useState<SupportTicketRecord[]>(
+    !import.meta.env.PROD ? INITIAL_SUPPORT_TICKETS : []
+  );
   const [articles, setArticles] = useState<KnowledgeArticleRecord[]>(KNOWLEDGE_BASE_ARTICLES);
   const [agents] = useState(SUPPORT_AGENTS);
 
@@ -103,8 +105,28 @@ export const SupportWorkspacePage: React.FC<{
 
   // Sélection du ticket actif (si détail)
   const currentTicketId = params.id || 'TCK-2026-409';
-  const selectedTicket = useMemo(() => {
-    return tickets.find((t) => t.id === currentTicketId) || tickets[0];
+  const selectedTicket = useMemo<SupportTicketRecord>(() => {
+    return (
+      tickets.find((t) => t.id === currentTicketId) ||
+      tickets[0] || {
+        id: 'TCK-NONE',
+        subject: 'Aucun ticket sélectionné',
+        description: 'Aucun ticket actif dans la file.',
+        category: 'TECHNIQUE',
+        priority: 'LOW',
+        status: 'OPEN',
+        requesterId: '',
+        requesterName: '',
+        requesterCompany: '',
+        requesterEmail: '',
+        requesterRole: 'CLIENT',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        slaDeadline: new Date().toISOString(),
+        urgencyScore: 0,
+        messages: [],
+      }
+    );
   }, [tickets, currentTicketId]);
 
   // État rédaction message
@@ -118,8 +140,12 @@ export const SupportWorkspacePage: React.FC<{
   const [newDescription, setNewDescription] = useState('');
   const [newCategory, setNewCategory] = useState<SupportTicketCategory>('LOGISTIQUE');
   const [newPriority, setNewPriority] = useState<SupportTicketPriority>('MEDIUM');
-  const [newRequesterCompany, setNewRequesterCompany] = useState('Atlas Import & Distribution S.A.');
-  const [newRequesterEmail, setNewRequesterEmail] = useState('achats@atlas-import-retail.ma');
+  const [newRequesterCompany, setNewRequesterCompany] = useState(
+    !import.meta.env.PROD ? 'Atlas Import & Distribution S.A.' : ''
+  );
+  const [newRequesterEmail, setNewRequesterEmail] = useState(
+    !import.meta.env.PROD ? 'achats@atlas-import-retail.ma' : ''
+  );
 
   // Recherche utilisateurs
   const [userSearchQuery, setUserSearchQuery] = useState('');
@@ -1166,11 +1192,13 @@ export const SupportWorkspacePage: React.FC<{
                       <div>
                         <span className="text-[11px] text-slate-400 block">Email Professionnel :</span>
                         <strong className="text-slate-800 dark:text-slate-200">
-                          {selectedUserForDetail === 'usr-client-01'
-                            ? 'achats@atlas-import-retail.ma'
-                            : selectedUserForDetail === 'usr-supp-01'
-                            ? 'export@eurotech-industrial.de'
-                            : 'dispatch@medfreight-logistics.com'}
+                          {!import.meta.env.PROD
+                            ? selectedUserForDetail === 'usr-client-01'
+                              ? 'achats@atlas-import-retail.ma'
+                              : selectedUserForDetail === 'usr-supp-01'
+                              ? 'export@eurotech-industrial.de'
+                              : 'dispatch@medfreight-logistics.com'
+                            : 'client@company.com'}
                         </strong>
                       </div>
                     </div>

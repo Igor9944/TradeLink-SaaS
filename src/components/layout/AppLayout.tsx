@@ -27,7 +27,7 @@ import {
   Layers,
   Sparkles,
 } from 'lucide-react';
-import { useApp, DEMO_USERS, UXPreviewState } from '../../contexts/AppContext';
+import { useApp, DEMO_USERS, DemoUserKey, UXPreviewState } from '../../contexts/AppContext';
 import { formatCurrency } from '../../i18n/translations';
 import { Icon3D } from '../ui/Icon3D';
 import {
@@ -211,9 +211,12 @@ export const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children })
   const navItems = ROLE_NAVIGATION[currentUser.role] ?? ROLE_NAVIGATION.CLIENT;
   const unreadNotifCount = notificationsList.filter((n) => !n.isRead).length;
 
-  const handleRoleSwitchAndNavigate = (userKey: keyof typeof DEMO_USERS) => {
+  const handleRoleSwitchAndNavigate = (userKey: DemoUserKey) => {
+    if (import.meta.env.PROD) return;
+    const target = DEMO_USERS[userKey];
+    if (!target) return;
     switchUserAccount(userKey);
-    const targetRole = DEMO_USERS[userKey].role;
+    const targetRole = target.role;
     const defaultPaths: Record<UserRoleCode, string> = {
       ADMIN: '/admin/dashboard',
       CLIENT: '/client/dashboard',
@@ -278,7 +281,7 @@ export const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children })
                   { key: 'SUPPORT', label: 'Support' },
                 ] as const
               ).map((u) => {
-                const active = currentUser.id === DEMO_USERS[u.key].id;
+                const active = currentUser.id === DEMO_USERS[u.key]?.id;
                 return (
                   <button
                     key={u.key}

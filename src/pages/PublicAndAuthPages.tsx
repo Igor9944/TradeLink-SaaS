@@ -26,7 +26,7 @@ import {
   Star,
   ChevronRight,
 } from 'lucide-react';
-import { useApp, DEMO_USERS } from '../contexts/AppContext';
+import { useApp, DemoUserKey } from '../contexts/AppContext';
 import { BrandLogo } from '../components/layout/AppLayout';
 import { ALL_3D_ICONS, Icon3D } from '../components/ui/Icon3D';
 import { Badge, Button, Card, Input, SearchBar, ToastNotification } from '../components/ui/DesignSystem';
@@ -198,9 +198,10 @@ export const LandingPage: React.FC = () => {
   const [iconFilter, setIconFilter] = useState<string>('ALL');
 
   const openRoleWorkspace = (
-    userKey: keyof typeof DEMO_USERS,
+    userKey: DemoUserKey,
     targetPath: string
   ) => {
+    if (import.meta.env.PROD) return;
     switchUserAccount(userKey);
     navigate(targetPath);
   };
@@ -1113,44 +1114,48 @@ export const AuthPortalPage: React.FC<{
   const navigate = useNavigate();
 
   // États Login & Brute-Force Lockout
-  const [loginEmail, setLoginEmail] = useState('direction.sec@tradelink-saas.com');
-  const [loginPassword, setLoginPassword] = useState('TradeLink#Admin2026!');
+  const [loginEmail, setLoginEmail] = useState(
+    !import.meta.env.PROD ? 'direction.sec@tradelink-saas.com' : ''
+  );
+  const [loginPassword, setLoginPassword] = useState(
+    !import.meta.env.PROD ? 'TradeLink#Admin2026!' : ''
+  );
   const [showPassword, setShowPassword] = useState(false);
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [lockedUntil, setLockedUntil] = useState<number | null>(null);
 
   // États Register Visiteur (Pré-Client)
   const [regRole, setRegRole] = useState<'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR' | 'ADMIN_ATTEMPT'>('CLIENT');
-  const [regFullName, setRegFullName] = useState('Youssef Berrada');
-  const [regCompany, setRegCompany] = useState('Atlas Import & Distribution S.A.');
-  const [regEmail, setRegEmail] = useState('achats@atlas-import-retail.ma');
-  const [regPhone, setRegPhone] = useState('+212 6 61 00 22 44');
-  const [regTaxId, setRegTaxId] = useState('MA-ICE-002849100');
-  const [regAddress, setRegAddress] = useState('14 Boulevard d’Anfa, Casablanca');
-  const [regPassword, setRegPassword] = useState('SecureTrade#2026!');
+  const [regFullName, setRegFullName] = useState(!import.meta.env.PROD ? 'Youssef Berrada' : '');
+  const [regCompany, setRegCompany] = useState(!import.meta.env.PROD ? 'Atlas Import & Distribution S.A.' : '');
+  const [regEmail, setRegEmail] = useState(!import.meta.env.PROD ? 'achats@atlas-import-retail.ma' : '');
+  const [regPhone, setRegPhone] = useState(!import.meta.env.PROD ? '+212 6 61 00 22 44' : '');
+  const [regTaxId, setRegTaxId] = useState(!import.meta.env.PROD ? 'MA-ICE-002849100' : '');
+  const [regAddress, setRegAddress] = useState(!import.meta.env.PROD ? '14 Boulevard d’Anfa, Casablanca' : '');
+  const [regPassword, setRegPassword] = useState(!import.meta.env.PROD ? 'SecureTrade#2026!' : '');
   const [regCountry, setRegCountry] = useState('Maroc (MA)');
-  const [termsAccepted, setTermsAccepted] = useState(true);
+  const [termsAccepted, setTermsAccepted] = useState(!import.meta.env.PROD);
   const [generatedArgonHash, setGeneratedArgonHash] = useState<string>(() =>
-    hashPasswordArgon2id('SecureTrade#2026!', 'a1b2c3d4e5f60718')
+    !import.meta.env.PROD ? hashPasswordArgon2id('SecureTrade#2026!', 'a1b2c3d4e5f60718') : ''
   );
 
   // États OTP & WebOTP API
-  const [otpCode, setOtpCode] = useState('482910');
+  const [otpCode, setOtpCode] = useState(!import.meta.env.PROD ? '482910' : '');
   const [otpAttemptsLeft, setOtpAttemptsLeft] = useState(5);
   const otpFormRef = useRef<HTMLFormElement>(null);
   const otpAbortRef = useRef<AbortController | null>(null);
 
   // États Mot de Passe Oublié & Jeton à Usage Unique
-  const [resetEmail, setResetEmail] = useState('achats@atlas-import-retail.ma');
+  const [resetEmail, setResetEmail] = useState(!import.meta.env.PROD ? 'achats@atlas-import-retail.ma' : '');
   const [singleUseResetToken, setSingleUseResetToken] = useState<string | null>(null);
   const [tokenConsumed, setTokenConsumed] = useState(false);
-  const [newResetPassword, setNewResetPassword] = useState('NewArgon2id#2026!');
+  const [newResetPassword, setNewResetPassword] = useState(!import.meta.env.PROD ? 'NewArgon2id#2026!' : '');
 
   // États MFA TOTP Admin & QR Code
-  const totpSecret = generateTotpSecretBase32(currentUser.email);
-  const otpAuthUri = buildOtpAuthUri(currentUser.email, totpSecret);
-  const liveTotpCode = computeCurrentTotpCode(totpSecret, 0);
-  const [mfaCodeInput, setMfaCodeInput] = useState(liveTotpCode);
+  const totpSecret = !import.meta.env.PROD ? generateTotpSecretBase32(currentUser.email) : '';
+  const otpAuthUri = !import.meta.env.PROD ? buildOtpAuthUri(currentUser.email, totpSecret) : '';
+  const liveTotpCode = !import.meta.env.PROD ? computeCurrentTotpCode(totpSecret, 0) : '';
+  const [mfaCodeInput, setMfaCodeInput] = useState(!import.meta.env.PROD ? liveTotpCode : '');
 
   useEffect(() => {
     if (mode !== 'otp') return;

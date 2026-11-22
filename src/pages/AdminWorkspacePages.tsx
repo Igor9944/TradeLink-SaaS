@@ -34,7 +34,7 @@ import {
   Trash2,
   FileText,
 } from 'lucide-react';
-import { useApp, DEMO_USERS } from '../contexts/AppContext';
+import { useApp, DEMO_USERS, DemoUserKey } from '../contexts/AppContext';
 import { downloadDataExport, formatCurrency } from '../i18n/translations';
 import { BACKEND_25_SERVICES } from '../services/backendServices';
 import { AdminKycSupervisionView } from '../components/kyc/KycModuleViews';
@@ -213,15 +213,29 @@ export const AdminWorkspacePage: React.FC<{
     'usr-transp-01': { isSuspended: true, reason: 'Suspension automatique J+7 : Pièces obligatoires d’assurance manquantes' },
   });
 
-  const usersList = Object.entries(DEMO_USERS).map(([key, u]) => ({
-    key,
-    ...u,
-    isSuspended: userStatuses[u.id]?.isSuspended ?? u.isSuspended ?? false,
-    suspensionReason: userStatuses[u.id]?.reason ?? u.suspensionReason,
-  }));
+  const usersList = import.meta.env.PROD
+    ? []
+    : Object.entries(DEMO_USERS).flatMap(([key, u]) =>
+        u
+          ? [
+              {
+                key,
+                ...u,
+                isSuspended: userStatuses[u.id]?.isSuspended ?? u.isSuspended ?? false,
+                suspensionReason: userStatuses[u.id]?.reason ?? u.suspensionReason,
+              },
+            ]
+          : []
+      );
 
   const selectedUser =
-    usersList.find((u) => u.id === params.id) ?? usersList[0];
+    usersList.find((u) => u.id === params.id) ??
+    usersList[0] ?? {
+      key: 'GUEST',
+      ...currentUser,
+      isSuspended: false,
+      suspensionReason: undefined,
+    };
   const selectedKycDossier =
     kycDossiers.find((d) => d.id === params.id) ?? kycDossiers[0];
 
@@ -969,7 +983,7 @@ export const AdminWorkspacePage: React.FC<{
                         <Button
                           size="sm"
                           variant="secondary"
-                          onClick={() => switchUserAccount(u.key as keyof typeof DEMO_USERS)}
+                          onClick={() => switchUserAccount(u.key as DemoUserKey)}
                         >
                           Incarner
                         </Button>
@@ -1109,7 +1123,7 @@ export const AdminWorkspacePage: React.FC<{
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => switchUserAccount(selectedUser.key as keyof typeof DEMO_USERS)}
+                      onClick={() => switchUserAccount(selectedUser.key as DemoUserKey)}
                     >
                       Incarner ce profil
                     </Button>
@@ -1203,7 +1217,7 @@ export const AdminWorkspacePage: React.FC<{
       {/* ===================================================================== */}
       {section === 'kyc' && <AdminKycSupervisionView />}
       {section === 'kyc-detail' && (
-        <AdminKycSupervisionView selectedDossierIdParam={selectedKycDossier.id} />
+        <AdminKycSupervisionView selectedDossierIdParam={selectedKycDossier?.id} />
       )}
 
       {/* ===================================================================== */}
@@ -3628,10 +3642,10 @@ export const AdminWorkspacePage: React.FC<{
                         Double Validation Requise pour Promotion en Production :
                       </p>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        Initié par : <strong>Admin #1 (usr-admin-01)</strong> • Acteur actuel :{' '}
+                        Initié par : <strong>{import.meta.env.PROD ? 'Administrateur #1' : 'Admin #1 (usr-admin-01)'}</strong> • Acteur actuel :{' '}
                         <strong>{currentUser.firstName} {currentUser.lastName} ({currentUser.id})</strong>
                       </p>
-                      {currentUser.id === (activeSandboxReport.firstAdminApproverId || 'usr-admin-01') && (
+                      {currentUser.id === (activeSandboxReport.firstAdminApproverId || (!import.meta.env.PROD ? 'usr-admin-01' : '')) && (
                         <p className="text-xs text-red-600 dark:text-red-400 font-bold mt-1">
                           ⚠️ Règle de sécurité stricte : l'initiateur ne peut pas auto-approuver la promotion. Basculez sur Admin #2 ci-dessous !
                         </p>
@@ -4490,33 +4504,39 @@ export const AdminWorkspacePage: React.FC<{
                   </p>
                 </div>
 
-                <div className="grid md:grid-cols-2 gap-4">
-                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-sm">Admin #1 : Karim Mansouri</span>
-                      <Badge variant="orange">SUPER ADMIN</Badge>
+                {!import.meta.env.PROD ? (
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-sm">Admin #1 : Karim Mansouri</span>
+                        <Badge variant="orange">SUPER ADMIN</Badge>
+                      </div>
+                      <p className="text-slate-400">Email : direction.sec@tradelink-saas.com</p>
+                      <p className="text-slate-400">ID : usr-admin-01 • Session : sess-redis-9941a</p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <Badge variant="success">MFA TOTP Obligatoire Validé</Badge>
+                        <Badge variant="info">Clé YubiKey FIDO2</Badge>
+                      </div>
                     </div>
-                    <p className="text-slate-400">Email : direction.sec@tradelink-saas.com</p>
-                    <p className="text-slate-400">ID : usr-admin-01 • Session : sess-redis-9941a</p>
-                    <div className="flex items-center gap-2 pt-1">
-                      <Badge variant="success">MFA TOTP Obligatoire Validé</Badge>
-                      <Badge variant="info">Clé YubiKey FIDO2</Badge>
-                    </div>
-                  </div>
 
-                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-sm">Admin #2 : Sophie Laurent (CISO)</span>
-                      <Badge variant="orange">CISO APPROBATEUR</Badge>
-                    </div>
-                    <p className="text-slate-400">Email : ciso.approver@tradelink-saas.com</p>
-                    <p className="text-slate-400">ID : usr-admin-02 • Session : sess-redis-8820b</p>
-                    <div className="flex items-center gap-2 pt-1">
-                      <Badge variant="success">MFA TOTP Obligatoire Validé</Badge>
-                      <Badge variant="info">Approbateur Distinct Habilité</Badge>
+                    <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-sm">Admin #2 : Sophie Laurent (CISO)</span>
+                        <Badge variant="orange">CISO APPROBATEUR</Badge>
+                      </div>
+                      <p className="text-slate-400">Email : ciso.approver@tradelink-saas.com</p>
+                      <p className="text-slate-400">ID : usr-admin-02 • Session : sess-redis-8820b</p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <Badge variant="success">MFA TOTP Obligatoire Validé</Badge>
+                        <Badge variant="info">Approbateur Distinct Habilité</Badge>
+                      </div>
                     </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#082225] border border-slate-200 dark:border-teal-800 text-xs text-slate-500">
+                    Les comptes administrateurs et approbateurs habilités à la double validation sont provisionnés dynamiquement depuis l’annuaire serveur et Vault KMS en production.
+                  </div>
+                )}
               </div>
             )}
           </Card>

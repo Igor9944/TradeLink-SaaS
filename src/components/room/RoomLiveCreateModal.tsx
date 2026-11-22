@@ -43,10 +43,11 @@ export const RoomLiveCreateModal: React.FC<RoomLiveCreateModalProps> = ({
   const [hasWaitingRoom, setHasWaitingRoom] = useState(true);
   const [meetingProvider, setMeetingProvider] = useState<MeetingProvider>('GOOGLE_MEET');
   const [invitedEmailInput, setInvitedEmailInput] = useState('');
-  const [invitedEmails, setInvitedEmails] = useState<string[]>([
-    'client.atlas@tradelink-saas.com',
-    'transit.tanger@tradelink-saas.com',
-  ]);
+  const [invitedEmails, setInvitedEmails] = useState<string[]>(
+    !import.meta.env.PROD
+      ? ['client.atlas@tradelink-saas.com', 'transit.tanger@tradelink-saas.com']
+      : []
+  );
 
   const isClient = currentUser.role === 'CLIENT' || currentUser.role === 'VISITEUR';
 
@@ -92,7 +93,9 @@ export const RoomLiveCreateModal: React.FC<RoomLiveCreateModalProps> = ({
       isImmediate,
       isPrivate,
       hasWaitingRoom,
-      allowedUserIds: ['usr-admin-01', 'usr-client-01', 'usr-supp-01', 'usr-trans-01', currentUser.id],
+      allowedUserIds: !import.meta.env.PROD
+        ? ['usr-admin-01', 'usr-client-01', 'usr-supp-01', 'usr-trans-01', currentUser.id]
+        : [currentUser.id],
       invitedEmails,
       meetingProvider,
     });

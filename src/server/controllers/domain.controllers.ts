@@ -1997,7 +1997,28 @@ export class TradeLinkApiApplication {
         ctx.headers['x-tradelink-timestamp']
       ) as string | undefined;
 
-      const webhookSecret = getServiceHmacSecret(`${rawProvider}_WEBHOOK_SECRET`);
+      const secretEnvKey = `${rawProvider}_WEBHOOK_SECRET`;
+      let webhookSecret: string;
+      try {
+        if (process.env.NODE_ENV === 'production' && !process.env[secretEnvKey]?.trim()) {
+          throw new AppError(
+            503,
+            'WEBHOOK_PROVIDER_NOT_CONFIGURED',
+            `Passerelle webhook ${rawProvider} non configurée en production.`
+          );
+        }
+        webhookSecret = getServiceHmacSecret(secretEnvKey);
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        if (err instanceof Error && err.message.startsWith('FATAL_SECURITY_CONFIG_ERROR:')) {
+          throw new AppError(
+            503,
+            'WEBHOOK_PROVIDER_NOT_CONFIGURED',
+            `Passerelle webhook ${rawProvider} non configurée en production.`
+          );
+        }
+        throw err;
+      }
 
       const result = this.services.processSecureMultiProviderWebhookTransactional({
         provider,

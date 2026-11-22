@@ -316,7 +316,7 @@ export const DEFAULT_FINANCIAL_CONFIG: FinancialEngineConfigRecord = {
   fixedRecoveryFeeCurrency: 'EUR',
   statutoryFramework: 'EU_DIRECTIVE_2011_7',
   updatedAt: '2026-11-18 08:00',
-  updatedBy: 'usr-admin-01',
+  updatedBy: 'system-fin-engine',
   version: 'ENGINE-FIN-V6.2',
 };
 

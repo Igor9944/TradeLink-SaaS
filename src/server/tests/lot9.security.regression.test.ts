@@ -939,7 +939,127 @@ async function runLot9SecurityRegressionTests() {
     console.log('✓ [LOT9-08] Remédiations Itération 2 (Rooms IDOR, Export 403, Quote Oracle, CWE-1236, Cookie %ZZ, Multi-Webhooks) validées.');
   }
 
-  console.log('\n🎉 TOUS LES TESTS DE NON-RÉGRESSION SÉCURITÉ LOT 9 ONT RÉUSSI (8/8) !');
+  // --------------------------------------------------------------------------
+  // 9. M3 Remediation Regression Tests (Prod Multi-Webhook 503 vs 400 & Bundle Leak Check)
+  // --------------------------------------------------------------------------
+  {
+    const prevNodeEnv = process.env.NODE_ENV;
+    const prevKonnect = process.env.KONNECT_WEBHOOK_SECRET;
+    process.env.NODE_ENV = 'production';
+    delete process.env.KONNECT_WEBHOOK_SECRET;
+
+    const prodAppM3 = createApp({ repositoryStore: repo });
+    const srvM3 = http.createServer(prodAppM3);
+    await new Promise<void>((resolve) => srvM3.listen(0, '127.0.0.1', () => resolve()));
+    const { port: m3Port } = srvM3.address() as { port: number };
+
+    try {
+      // 9A. Production webhook with unset secret -> 503 WEBHOOK_PROVIDER_NOT_CONFIGURED (never 500)
+      const unsetRes = await httpRequestJson(
+        {
+          hostname: '127.0.0.1',
+          port: m3Port,
+          path: '/api/v1/webhooks/payments/konnect',
+          method: 'POST',
+        },
+        JSON.stringify({ id: 'evt_konnect_unset_prod', amount: 100 })
+      );
+      assert.strictEqual(
+        unsetRes.statusCode,
+        503,
+        `Konnect webhook sans secret en production doit retourner 503 (reçu ${unsetRes.statusCode})`
+      );
+      assert.strictEqual(unsetRes.body.error?.code, 'WEBHOOK_PROVIDER_NOT_CONFIGURED');
+
+      // 9B. Production webhook with configured secret & invalid/unsigned payload -> 400/401
+      process.env.KONNECT_WEBHOOK_SECRET =
+        'prod_konnect_webhook_secret_64_chars_minimum_verified_2026_abcd1234';
+      const invalidSigRes = await httpRequestJson(
+        {
+          hostname: '127.0.0.1',
+          port: m3Port,
+          path: '/api/v1/webhooks/payments/konnect',
+          method: 'POST',
+          headers: { 'x-konnect-signature': 't=1700000000,v1=deadbeef' },
+        },
+        JSON.stringify({ id: 'evt_konnect_tampered_prod', amount: 100 })
+      );
+      assert.ok(
+        invalidSigRes.statusCode === 400 || invalidSigRes.statusCode === 401,
+        `Konnect webhook signé invalide en production doit retourner 400/401 (reçu ${invalidSigRes.statusCode})`
+      );
+      assert.strictEqual(invalidSigRes.body.error?.code, 'WEBHOOK_SIGNATURE_INVALID');
+    } finally {
+      if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prevNodeEnv;
+      if (prevKonnect === undefined) delete process.env.KONNECT_WEBHOOK_SECRET;
+      else process.env.KONNECT_WEBHOOK_SECRET = prevKonnect;
+      await new Promise<void>((r) => srvM3.close(() => r()));
+    }
+
+    // 9C. Source guard verification for frontend files
+    const publicAuthSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'pages', 'PublicAndAuthPages.tsx'), 'utf8');
+    const appCtxSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'contexts', 'AppContext.tsx'), 'utf8');
+    const adminPagesSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'pages', 'AdminWorkspacePages.tsx'), 'utf8');
+
+    assert.ok(
+      !publicAuthSrc.includes("useState('TradeLink#Admin2026!')") &&
+        !publicAuthSrc.includes("useState('direction.sec@tradelink-saas.com')") &&
+        !publicAuthSrc.includes("useState('SecureTrade#2026!')") &&
+        !publicAuthSrc.includes("useState('NewArgon2id#2026!')"),
+      'PublicAndAuthPages.tsx ne doit jamais initialiser de identifiants/mots de passe de démo sans garde import.meta.env.PROD'
+    );
+    assert.ok(
+      appCtxSrc.includes('import.meta.env.PROD') &&
+        appCtxSrc.includes('GUEST_UNAUTHENTICATED_USER') &&
+        !appCtxSrc.includes('export const DEMO_USERS: Record<string, UserProfile> = {'),
+      'AppContext.tsx doit conditionner DEMO_USERS à !import.meta.env.PROD'
+    );
+    assert.ok(
+      adminPagesSrc.includes('import.meta.env.PROD') &&
+        !adminPagesSrc.includes('const usersList = Object.entries(DEMO_USERS)'),
+      'AdminWorkspacePages.tsx doit conditionner usersList / profils admin de démo à !import.meta.env.PROD'
+    );
+
+    // 9D. Live dist/assets/*.js scan if built
+    const distAssetsDir = path.join(process.cwd(), 'dist', 'assets');
+    if (fs.existsSync(distAssetsDir)) {
+      const jsFiles = fs.readdirSync(distAssetsDir).filter((f) => f.endsWith('.js'));
+      const forbiddenTokens = [
+        'TradeLink#Admin2026!',
+        'SecureTrade#2026!',
+        'NewArgon2id#2026!',
+        'AdminTradeLink!2026',
+        'ClientAtlas!2026',
+        'direction.sec@tradelink-saas.com',
+        'ciso.approver@tradelink-saas.com',
+        'usr-admin-01',
+        '+33 1 88 40 10 01',
+        'DEMO_USERS',
+        'ADMIN_1',
+        'ADMIN_2',
+        'jsxDEV',
+      ];
+      const leaks: string[] = [];
+      for (const file of jsFiles) {
+        const content = fs.readFileSync(path.join(distAssetsDir, file), 'utf8');
+        for (const token of forbiddenTokens) {
+          if (content.includes(token)) {
+            leaks.push(`${file}:${token}`);
+          }
+        }
+      }
+      assert.strictEqual(
+        leaks.length,
+        0,
+        `Fuite détectée dans le bundle frontend production dist/assets/*.js : ${leaks.join(', ')}`
+      );
+    }
+
+    console.log('✓ [LOT9-09] Remédiations M3 (Webhook Prod 503/400 & Zéro fuite DEMO_USERS/credentials en bundle prod) validées.');
+  }
+
+  console.log('\n🎉 TOUS LES TESTS DE NON-RÉGRESSION SÉCURITÉ LOT 9 ONT RÉUSSI (9/9) !');
 }
 
 runLot9SecurityRegressionTests().catch((err) => {

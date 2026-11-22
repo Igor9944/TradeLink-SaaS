@@ -8,7 +8,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { ShieldAlert, Lock, KeyRound } from 'lucide-react';
-import { useApp, DEMO_USERS } from '../../contexts/AppContext';
+import { useApp, DEMO_USERS, DemoUserKey } from '../../contexts/AppContext';
 import { UserRoleCode } from '../../types';
 import { Badge, Button, Card } from '../ui/DesignSystem';
 import { Icon3D } from '../ui/Icon3D';
@@ -43,10 +43,10 @@ export const RoleGuard: React.FC<{
 
   // Vérification RBAC stricte du rôle sur l'espace métier
   if (!allowedRoles.includes(currentUser.role)) {
-    const recommendedDemoKey =
+    const recommendedDemoKey: DemoUserKey =
       allowedRoles[0] === 'ADMIN'
         ? 'ADMIN_1'
-        : (allowedRoles[0] as keyof typeof DEMO_USERS);
+        : (allowedRoles[0] as DemoUserKey);
 
     return (
       <Card

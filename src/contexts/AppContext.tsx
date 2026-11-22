@@ -186,7 +186,18 @@ export interface NotificationItem {
   createdAt?: string;
 }
 
-export const DEMO_USERS: Record<string, UserProfile> = {
+export type DemoUserKey =
+  | 'ADMIN_1'
+  | 'ADMIN_2'
+  | 'CLIENT'
+  | 'FOURNISSEUR'
+  | 'TRANSPORTEUR'
+  | 'COMPTABLE'
+  | 'SUPPORT';
+
+export const DEMO_USERS: Partial<Record<DemoUserKey, UserProfile>> = import.meta.env.PROD
+  ? {}
+  : {
   ADMIN_1: {
     id: 'usr-admin-01',
     email: 'direction.sec@tradelink-saas.com',
@@ -514,7 +525,7 @@ const INITIAL_PRODUCTS: ProductItem[] = [
   },
 ];
 
-const INITIAL_KYC_DOSSIERS: KYCDossier[] = [
+const INITIAL_KYC_DOSSIERS: KYCDossier[] = import.meta.env.PROD ? [] : [
   {
     id: 'kyc-dos-01',
     userId: 'usr-client-01',
@@ -1635,7 +1646,7 @@ const INITIAL_INCIDENTS: IncidentRecord[] = [
   },
 ];
 
-const INITIAL_ROOMS: RoomLiveRecord[] = [
+const INITIAL_ROOMS: RoomLiveRecord[] = import.meta.env.PROD ? [] : [
   {
     id: 'room-01',
     roomCode: 'RM-LIVE-8841',
@@ -1679,7 +1690,7 @@ const INITIAL_ROOMS: RoomLiveRecord[] = [
   },
 ];
 
-const INITIAL_IMPORT_JOBS: ImportJobRecord[] = [
+const INITIAL_IMPORT_JOBS: ImportJobRecord[] = import.meta.env.PROD ? [] : [
   {
     id: 'imp-01',
     fileName: 'ERP_Legacy_Commercial_Dump_2026.bak',
@@ -1711,7 +1722,7 @@ const INITIAL_IMPORT_JOBS: ImportJobRecord[] = [
   },
 ];
 
-const INITIAL_BACKUPS: BackupRecord[] = [
+const INITIAL_BACKUPS: BackupRecord[] = import.meta.env.PROD ? [] : [
   {
     id: 'bkp-2026-1118',
     backupCode: 'BKP-FULL-20261118-0200',
@@ -1766,7 +1777,7 @@ const INITIAL_KMS_KEYS: KMSKeyRecord[] = [
   },
 ];
 
-const INITIAL_AUDIT_LOGS: AuditLogRecord[] = [
+const INITIAL_AUDIT_LOGS: AuditLogRecord[] = import.meta.env.PROD ? [] : [
   {
     id: 'aud-101',
     timestamp: '2026-11-18 08:15:22',
@@ -1905,7 +1916,7 @@ interface AppContextValue {
   uxPreviewState: UXPreviewState;
   setUxPreviewState: (st: UXPreviewState) => void;
   currentUser: UserProfile;
-  switchUserAccount: (userKey: keyof typeof DEMO_USERS) => void;
+  switchUserAccount: (userKey: DemoUserKey) => void;
   products: ProductItem[];
   categories: ProductCategoryRecord[];
   addCategory: (cat: { code: string; name: Record<Locale, string>; description: Record<Locale, string>; parentCategoryId?: string; icon3d?: Icon3DName; imageUrl?: string; displayOrder?: number }) => void;
@@ -2216,7 +2227,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const [currentUser, setCurrentUser] = useState<UserProfile>(
-    import.meta.env.PROD ? GUEST_UNAUTHENTICATED_USER : DEMO_USERS.ADMIN_1
+    import.meta.env.PROD
+      ? GUEST_UNAUTHENTICATED_USER
+      : (DEMO_USERS.ADMIN_1 ?? GUEST_UNAUTHENTICATED_USER)
   );
   const [products, setProducts] = useState<ProductItem[]>(INITIAL_PRODUCTS);
   const [categories, setCategories] = useState<ProductCategoryRecord[]>(INITIAL_CATALOG_CATEGORIES);
@@ -2294,6 +2307,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       fileName: 'Archive_Catalogue_ERP_2026.bak',
       fileSize: 4850000,
       format: 'BAK',
+      initiatorId: !import.meta.env.PROD ? 'usr-admin-01' : undefined,
     });
     return {
       'imp-01': initialReport,
@@ -2303,43 +2317,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeSandboxReport, setActiveSandboxReport] = useState<SandboxAnalysisReport | null>(() => {
     return Object.values(sandboxReports)[0] || null;
   });
-  const [kmsOperationsHistory, setKmsOperationsHistory] = useState<KmsOperationEntry[]>([
-    {
-      id: 'kms-op-101',
-      timestamp: '2026-10-01 00:00:00',
-      operation: 'ROTATE_KEK',
-      keyAlias: 'alias/tradelink-prod-kek-v4',
-      keyArnMasked: 'vault://kms/eu-west-1/key/••••••••-••••-49a1-b82c-99102f88e104',
-      performedBy: 'direction.sec@tradelink-saas.com',
-      result: 'SUCCESS',
-      details: 'Rotation annuelle programmée HSM. KEK v3 -> v4 avec ré-enveloppement transparent des DEKs.',
-    },
-    {
-      id: 'kms-op-102',
-      timestamp: '2026-11-17 18:12:30',
-      operation: 'GENERATE_DATA_KEY',
-      keyAlias: 'alias/tradelink-kyc-dek-envelope',
-      keyArnMasked: 'vault://kms/eu-west-1/key/••••••••-••••-77b3-c19a-883901bc0912',
-      performedBy: 'system-kyc-vault@tradelink-saas.com',
-      result: 'SUCCESS',
-      details: 'Génération DEK éphémère 256 bits en RAM pour chiffrement du dossier KYC #kdos-01.',
-    },
-    {
-      id: 'kms-op-103',
-      timestamp: '2026-11-18 02:00:15',
-      operation: 'GENERATE_DATA_KEY',
-      keyAlias: 'alias/tradelink-prod-kek-v4',
-      keyArnMasked: 'vault://kms/eu-west-1/key/••••••••-••••-49a1-b82c-99102f88e104',
-      performedBy: 'system-backup-scheduler@tradelink-saas.com',
-      result: 'SUCCESS',
-      details: 'Génération DEK pour sauvegarde snapshot BKP-FULL-20261118-0200.',
-    },
-  ]);
+  const [kmsOperationsHistory, setKmsOperationsHistory] = useState<KmsOperationEntry[]>(
+    import.meta.env.PROD
+      ? []
+      : [
+          {
+            id: 'kms-op-101',
+            timestamp: '2026-10-01 00:00:00',
+            operation: 'ROTATE_KEK',
+            keyAlias: 'alias/tradelink-prod-kek-v4',
+            keyArnMasked: 'vault://kms/eu-west-1/key/••••••••-••••-49a1-b82c-99102f88e104',
+            performedBy: 'direction.sec@tradelink-saas.com',
+            result: 'SUCCESS',
+            details: 'Rotation annuelle programmée HSM. KEK v3 -> v4 avec ré-enveloppement transparent des DEKs.',
+          },
+          {
+            id: 'kms-op-102',
+            timestamp: '2026-11-17 18:12:30',
+            operation: 'GENERATE_DATA_KEY',
+            keyAlias: 'alias/tradelink-kyc-dek-envelope',
+            keyArnMasked: 'vault://kms/eu-west-1/key/••••••••-••••-77b3-c19a-883901bc0912',
+            performedBy: 'system-kyc-vault@tradelink-saas.com',
+            result: 'SUCCESS',
+            details: 'Génération DEK éphémère 256 bits en RAM pour chiffrement du dossier KYC #kdos-01.',
+          },
+          {
+            id: 'kms-op-103',
+            timestamp: '2026-11-18 02:00:15',
+            operation: 'GENERATE_DATA_KEY',
+            keyAlias: 'alias/tradelink-prod-kek-v4',
+            keyArnMasked: 'vault://kms/eu-west-1/key/••••••••-••••-49a1-b82c-99102f88e104',
+            performedBy: 'system-backup-scheduler@tradelink-saas.com',
+            result: 'SUCCESS',
+            details: 'Génération DEK pour sauvegarde snapshot BKP-FULL-20261118-0200.',
+          },
+        ]
+  );
   const [floatingButtons, setFloatingButtons] = useState<FloatingButtonItem[]>(INITIAL_FLOATING_BUTTONS);
   const [notificationsList, setNotificationsList] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferencesRecord>({
     id: 'pref-default',
-    userId: DEMO_USERS.ADMIN_1.id,
+    userId: import.meta.env.PROD
+      ? GUEST_UNAUTHENTICATED_USER.id
+      : (DEMO_USERS.ADMIN_1?.id ?? GUEST_UNAUTHENTICATED_USER.id),
     enabledChannels: {
       IN_APP: true,
       EMAIL: true,
@@ -2364,7 +2384,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     updatedAt: new Date().toISOString(),
   });
 
-  const [conversationsList, setConversationsList] = useState<ConversationRecord[]>([
+  const [conversationsList, setConversationsList] = useState<ConversationRecord[]>(
+    import.meta.env.PROD ? [] : [
     {
       id: 'conv-b2b-01',
       type: 'ORDER_THREAD',
@@ -2429,7 +2450,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [activeConversationId, setActiveConversationId] = useState<string>('conv-b2b-01');
 
-  const [messagesByConversation, setMessagesByConversation] = useState<Record<string, ConversationMessageRecord[]>>({
+  const [messagesByConversation, setMessagesByConversation] = useState<Record<string, ConversationMessageRecord[]>>(
+    import.meta.env.PROD ? {} : {
     'conv-b2b-01': [
       {
         id: 'msg-01',
@@ -2509,8 +2531,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     {
       id: 'thread-default-01',
       title: 'Assistant RAG & Règles TradeLink V6.0',
-      userId: DEMO_USERS.ADMIN_1.id,
-      role: DEMO_USERS.ADMIN_1.role,
+      userId: import.meta.env.PROD
+        ? GUEST_UNAUTHENTICATED_USER.id
+        : (DEMO_USERS.ADMIN_1?.id ?? GUEST_UNAUTHENTICATED_USER.id),
+      role: import.meta.env.PROD
+        ? GUEST_UNAUTHENTICATED_USER.role
+        : (DEMO_USERS.ADMIN_1?.role ?? GUEST_UNAUTHENTICATED_USER.role),
       modelId: 'gemini-1.5-pro',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2659,20 +2685,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAuditLogs((prev) => [entry, ...prev]);
   };
 
-  const switchUserAccount = (userKey: keyof typeof DEMO_USERS) => {
+  const switchUserAccount = (userKey: DemoUserKey) => {
     if (import.meta.env.PROD) {
       addAuditLog(
         'DEMO_IMPERSONATION_BLOCKED_IN_PRODUCTION',
         'Session',
         String(userKey),
         'DENIED',
-        'Tentative de bascule simulateur DEMO_USERS bloquée en build de production.'
+        'Tentative de bascule simulateur bloquée en build de production.'
       );
       notifyToast('Bascule de profil simulé interdite en production.', 'error');
       return;
     }
+    const targetProfile = DEMO_USERS[userKey];
+    if (!targetProfile) {
+      notifyToast('Profil de démonstration indisponible.', 'error');
+      return;
+    }
     const nextUser = {
-      ...DEMO_USERS[userKey],
+      ...targetProfile,
       activeSessionId: `sess-redis-${getSecureRandomAlphanumeric(6)}`,
       previousSessionRevoked: true,
     };
@@ -4478,7 +4509,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const allowedUserIds =
       typeof titleOrParams === 'object' && titleOrParams.allowedUserIds
         ? titleOrParams.allowedUserIds
-        : ['usr-admin-01', 'usr-client-01', 'usr-supp-01', 'usr-trans-01', currentUser.id];
+        : !import.meta.env.PROD
+        ? ['usr-admin-01', 'usr-client-01', 'usr-supp-01', 'usr-trans-01', currentUser.id]
+        : [currentUser.id];
     const invitedEmails = typeof titleOrParams === 'object' ? titleOrParams.invitedEmails || [] : [];
 
     const roomCode = `RM-LIVE-${getSecureRandomInt(1000, 10000)}`;
@@ -4603,7 +4636,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const bkp = backups.find((b) => b.id === backupId);
     if (!bkp) return { ok: false, message: 'Sauvegarde introuvable' };
 
-    const initiatorId = bkp.restoreInitiatorId ?? 'usr-admin-01';
+    const initiatorId = bkp.restoreInitiatorId ?? (!import.meta.env.PROD ? 'usr-admin-01' : '');
     const check = validateDualAdminApproval(initiatorId, currentUser.id);
     if (!check.allowed) {
       addAuditLog(
@@ -4663,6 +4696,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       fileName,
       fileSize: getSecureRandomInt(102400, 5102400),
       format,
+      initiatorId: currentUser.id,
     });
     setSandboxReports((prev) => ({ ...prev, [rep.jobId]: rep }));
     setActiveSandboxReport(rep);
@@ -4701,7 +4735,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { ok: false, message: 'Rapport Sandbox introuvable.' };
     }
 
-    const initiatorId = report.firstAdminApproverId || 'usr-admin-01';
+    const initiatorId = report.firstAdminApproverId || (!import.meta.env.PROD ? 'usr-admin-01' : '');
     const check = validateDualAdminOperation({
       initiatorId,
       approverId: currentUser.id,

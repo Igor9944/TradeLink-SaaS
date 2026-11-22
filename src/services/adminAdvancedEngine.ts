@@ -319,6 +319,7 @@ export function analyzeFileInIsolatedSandbox(params: {
   fileName: string;
   fileSize: number;
   format?: ImportExportFormat;
+  initiatorId?: string;
 }): SandboxAnalysisReport {
   const actualExt = params.fileName.split('.').pop()?.toUpperCase() ?? '';
   const dangerousExtensions = ['EXE', 'BAT', 'CMD', 'SH', 'DLL', 'VBS', 'BIN', 'MSI', 'COM', 'SCR', 'PS1'];
@@ -462,7 +463,7 @@ export function analyzeFileInIsolatedSandbox(params: {
     isolatedNetworkVerified: true, // Garanti sans accès réseau à la prod
     productionSecretsStripped: true, // Garanti sans clés KMS ni credentials de prod
     analyzedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
-    firstAdminApproverId: 'usr-admin-01',
+    firstAdminApproverId: params.initiatorId,
     promotedToProduction: false,
   };
 }
