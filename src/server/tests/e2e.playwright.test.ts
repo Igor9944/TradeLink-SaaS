@@ -11,9 +11,11 @@
 // 7. Gouvernance Admin -> Chiffrement KMS -> Sandbox Isolée -> Double Approbation Anti-Auto-Approbation
 // ============================================================================
 
+import crypto from 'node:crypto';
 import { TradeLinkRepositoryStore, DatabaseStateSnapshot } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
 import { registerSingleActiveSession, ServerResponsePayload } from '../middlewares/errorAndSecurity.middleware';
+import { getServiceHmacSecret } from '../../services/securityCrypto';
 import { AccountingEngine } from '../../services/accountingEngine';
 import {
   analyzeFileInIsolatedSandbox,
@@ -419,9 +421,19 @@ export function runE2EPlaywrightTestSuite() {
     },
   };
 
+  const stripeWebhookSecret = getServiceHmacSecret('STRIPE_WEBHOOK_SECRET');
+  const webhookTs = Math.floor(Date.now() / 1000);
+  const webhookHmac = crypto
+    .createHmac('sha256', stripeWebhookSecret)
+    .update(`${webhookTs}.${JSON.stringify(webhookPayload)}`)
+    .digest('hex');
+
   const webhookRes = makeReq({
     method: 'POST',
     path: '/api/v1/payments/stripe/webhook',
+    headers: {
+      'stripe-signature': `t=${webhookTs},v1=${webhookHmac}`,
+    },
     body: webhookPayload,
   });
   assert(webhookRes.statusCode === 200, 'Webhook Stripe traité avec 200');

@@ -8,7 +8,7 @@
 
 import crypto from 'crypto';
 import Decimal from 'decimal.js';
-import { generateSha256Hash, constantTimeEqual } from './securityCrypto';
+import { generateSha256Hash, constantTimeEqual, getSecureRandomAlphanumeric } from './securityCrypto';
 import {
   CommercialDocumentRecord,
   CommercialDocumentType,
@@ -658,7 +658,7 @@ export class BillingDocumentEngine {
     );
 
     const docDraft: Omit<CommercialDocumentRecord, 'digitalSealSha256'> = {
-      id: `doc-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: `doc-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       documentType: input.documentType,
       documentNumber,
       version: 1,
@@ -1116,7 +1116,7 @@ export class BillingDocumentEngine {
     secretKey: string
   ): { valid: boolean; reason?: string } {
     const nowSec = Math.floor(Date.now() / 1000);
-    if (nowSec > expiresAt) {
+    if (!Number.isFinite(expiresAt) || expiresAt <= 0 || nowSec > expiresAt) {
       return { valid: false, reason: 'TOKEN_EXPIRED' };
     }
 

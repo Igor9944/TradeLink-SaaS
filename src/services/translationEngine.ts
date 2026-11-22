@@ -21,7 +21,7 @@ import {
   SmartTranslatedMessage,
 } from '../types';
 import { TradeGlossaryManager } from './tradeGlossary';
-import { generateSha256Hash } from './securityCrypto';
+import { generateSha256Hash, getSecureRandomAlphanumeric } from './securityCrypto';
 import { geminiAiService } from './geminiAiService';
 
 export interface TranslationRequestOptions {
@@ -628,7 +628,7 @@ ${protectedText}`;
     });
 
     return {
-      id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `sub-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       speakerId: params.speakerId,
       speakerName: params.speakerName,
       speakerRole: params.speakerRole,
@@ -1089,7 +1089,7 @@ ${protectedText}`;
     };
 
     return {
-      id: `smart-msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `smart-msg-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       conversationId: params.conversationId,
       senderId: params.senderId,
       senderName: params.senderName,
@@ -1223,7 +1223,7 @@ export class TranslationJobManager {
     totalItems: number;
   }): TranslationJob {
     const job: TranslationJob = {
-      id: `job-trans-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `job-trans-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       sourceLang: params.sourceLang,
       targetLang: params.targetLang,
       entityType: params.entityType,

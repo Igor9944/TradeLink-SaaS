@@ -18,6 +18,7 @@
 // 11. [HARM-11] Harmonisation Design System, I18n Multilingue (FR, EN, AR) & Direction RTL
 // ============================================================================
 
+import crypto from 'node:crypto';
 import { TradeLinkRepositoryStore, DatabaseStateSnapshot } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
 import {
@@ -26,6 +27,10 @@ import {
   registerSingleActiveSession,
   verifySingleActiveSession,
 } from '../middlewares/errorAndSecurity.middleware';
+import {
+  computeCurrentTotpCode,
+  getServiceHmacSecret,
+} from '../../services/securityCrypto';
 import { AccountingEngine, CHARTS_OF_ACCOUNTS } from '../../services/accountingEngine';
 import { SupportEngine } from '../../services/supportEngine';
 import { canActorCreateRoomLive, initializeRoomLiveSession, generateCertifiedMeetingExport } from '../../services/aiIntelligenceEngine';
@@ -134,13 +139,14 @@ export function runFinalHarmonisationTests(): { passed: number; results: string[
     method: 'GET' | 'POST' | 'PUT' | 'DELETE';
     path: string;
     user?: any;
+    headers?: Record<string, string>;
     body?: any;
     clientIp?: string;
   }): ServerResponsePayload => {
     const ctx: ServerRequestContext = {
       correlationId: `corr-harm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       ipAddress: opts.clientIp || '10.0.9.50',
-      headers: {},
+      headers: opts.headers || {},
       query: {},
       params: {},
       body: opts.body || {},
@@ -151,96 +157,99 @@ export function runFinalHarmonisationTests(): { passed: number; results: string[
     return app.handleRequest(ctx);
   };
 
-  // Initialisation et authentification des acteurs des 7 espaces
+  // Initialisation et authentification par mot de passe Argon2id (+ TOTP MFA Admin) des 6 acteurs
   const clientLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-client-01', email: 'achats@atlas-distribution.ma', role: 'CLIENT', companyName: 'Atlas Import-Export Distribution S.A.' },
+    body: { email: 's.mansouri@atlas-import.ma', password: 'ClientAtlas!2026' },
   });
-  const clientSessionId = (clientLogin.body.data as { sessionId: string }).sessionId;
+  const clientData = clientLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const clientUser = {
-    id: 'usr-client-01',
-    email: 'achats@atlas-distribution.ma',
+    id: clientData.userId,
+    email: clientData.email,
     role: 'CLIENT' as UserRoleCode,
-    sessionId: clientSessionId,
-    companyName: 'Atlas Import-Export Distribution S.A.',
+    sessionId: clientData.sessionId,
+    companyName: clientData.companyName,
     mfaVerified: true,
   };
 
   const supplierLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-supp-01', email: 'contact@eurotech-gmbh.de', role: 'FOURNISSEUR', companyName: 'EuroTech ColdChain Systems GmbH' },
+    body: { email: 'h.weber@eurotech-supply.de', password: 'SupplierEuro!2026' },
   });
-  const supplierSessionId = (supplierLogin.body.data as { sessionId: string }).sessionId;
+  const supplierData = supplierLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const supplierUser = {
-    id: 'usr-supp-01',
-    email: 'contact@eurotech-gmbh.de',
+    id: supplierData.userId,
+    email: supplierData.email,
     role: 'FOURNISSEUR' as UserRoleCode,
-    sessionId: supplierSessionId,
-    companyName: 'EuroTech ColdChain Systems GmbH',
+    sessionId: supplierData.sessionId,
+    companyName: supplierData.companyName,
     mfaVerified: true,
   };
 
   const carrierLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-trans-01', email: 'ops@medfreight-logistics.ma', role: 'TRANSPORTEUR', companyName: 'MedFreight Express Logistics' },
+    body: { email: 't.alami@logistrading.ma', password: 'CarrierLogis!2026' },
   });
-  const carrierSessionId = (carrierLogin.body.data as { sessionId: string }).sessionId;
+  const carrierData = carrierLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const carrierUser = {
-    id: 'usr-trans-01',
-    email: 'ops@medfreight-logistics.ma',
+    id: carrierData.userId,
+    email: carrierData.email,
     role: 'TRANSPORTEUR' as UserRoleCode,
-    sessionId: carrierSessionId,
-    companyName: 'MedFreight Express Logistics',
+    sessionId: carrierData.sessionId,
+    companyName: carrierData.companyName,
     mfaVerified: true,
   };
 
   const accountantLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-acct-01', email: 'audit@cabinet-fiduciaire.fr', role: 'COMPTABLE', companyName: 'Cabinet Fiduciaire Global' },
+    body: { email: 'c.dupont@tradelink-audit.fr', password: 'ComptableSecure!2026' },
   });
-  const accountantSessionId = (accountantLogin.body.data as { sessionId: string }).sessionId;
+  const accountantData = accountantLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const accountantUser = {
-    id: 'usr-acct-01',
-    email: 'audit@cabinet-fiduciaire.fr',
+    id: accountantData.userId,
+    email: accountantData.email,
     role: 'COMPTABLE' as UserRoleCode,
-    sessionId: accountantSessionId,
-    companyName: 'Cabinet Fiduciaire Global',
+    sessionId: accountantData.sessionId,
+    companyName: accountantData.companyName,
     mfaVerified: true,
   };
 
   const supportLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-supp-agent-01', email: 'support@tradelink-platform.io', role: 'SUPPORT', companyName: 'TradeLink Customer Care HQ' },
+    body: { email: 's.lefevre@tradelink-support.com', password: 'SupportAgent!2026' },
   });
-  const supportSessionId = (supportLogin.body.data as { sessionId: string }).sessionId;
+  const supportData = supportLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const supportUser = {
-    id: 'usr-supp-agent-01',
-    email: 'support@tradelink-platform.io',
+    id: supportData.userId,
+    email: supportData.email,
     role: 'SUPPORT' as UserRoleCode,
-    sessionId: supportSessionId,
-    companyName: 'TradeLink Customer Care HQ',
+    sessionId: supportData.sessionId,
+    companyName: supportData.companyName,
     mfaVerified: true,
   };
 
-  const adminLogin = makeReq({
+  const adminStep1 = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-admin-root', email: 'secops@tradelink-platform.io', role: 'ADMIN', companyName: 'TradeLink Sovereign Systems' },
+    body: { email: 'k.benali@tradelink-global.com', password: 'AdminTradeLink!2026' },
   });
-  const adminSessionId = (adminLogin.body.data as { sessionId: string }).sessionId;
+  const adminData = adminStep1.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const adminUser = {
-    id: 'usr-admin-root',
-    email: 'secops@tradelink-platform.io',
+    id: adminData.userId,
+    email: adminData.email,
     role: 'ADMIN' as UserRoleCode,
-    sessionId: adminSessionId,
-    companyName: 'TradeLink Sovereign Systems',
+    sessionId: adminData.sessionId,
+    companyName: adminData.companyName,
     mfaVerified: true,
   };
+  const adminMfaSetup = makeReq({ method: 'POST', path: '/api/v1/auth/mfa/setup', user: adminUser });
+  const adminMfaCode = computeCurrentTotpCode((adminMfaSetup.body.data as { secretBase32: string }).secretBase32);
+  makeReq({ method: 'POST', path: '/api/v1/auth/mfa/verify', user: adminUser, body: { code: adminMfaCode } });
   assert(Boolean(accountantUser.id && supportUser.id && adminUser.id), 'Comptable, Support et Admin authentifiés');
 
   // ==========================================================================
@@ -515,10 +524,19 @@ export function runFinalHarmonisationTests(): { passed: number; results: string[
     },
   };
 
+  const stripeTs = Math.floor(Date.now() / 1000);
+  const stripeSig = crypto
+    .createHmac('sha256', getServiceHmacSecret('STRIPE_WEBHOOK_SECRET'))
+    .update(`${stripeTs}.${JSON.stringify(webhookPayload)}`)
+    .digest('hex');
+
   const webhookRes = makeReq({
     method: 'POST',
     path: '/api/v1/payments/stripe/webhook',
     user: undefined,
+    headers: {
+      'stripe-signature': `t=${stripeTs},v1=${stripeSig}`,
+    },
     body: webhookPayload,
   });
   assert(webhookRes.statusCode === 200, 'Traitement du Webhook Stripe Escrow réussi (code 200)');

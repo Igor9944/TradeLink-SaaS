@@ -1,7 +1,8 @@
 # ============================================================================
 # TRADELINK V6.1 — PIPELINE D'INTÉGRATION CONTINUE (CI) GITHUB ACTIONS
 # Ordre strict : Checkout -> pnpm/action-setup -> actions/setup-node (cache pnpm)
-# -> pnpm install --frozen-lockfile -> Prisma Validate -> Typecheck -> Tests -> Build
+# -> pnpm install --frozen-lockfile -> Prisma Validate -> Typecheck -> Audit
+# -> 14 Suites R1 + Suites Domaines -> Build -> Docker & Compose Validation
 # ============================================================================
 
 name: TRADELINK V6.1 — CI Quality & Security Pipeline
@@ -14,10 +15,10 @@ on:
 
 jobs:
   # --------------------------------------------------------------------------
-  # 1. VALIDATION TYPESCRIPT, SCHÉMA PRISMA & SYNTAXE
+  # 1. VALIDATION TYPESCRIPT, SCHÉMA PRISMA & AUDIT DÉPENDANCES
   # --------------------------------------------------------------------------
   typecheck:
-    name: TypeScript & Prisma Strict Check
+    name: TypeScript, Prisma & Audit Check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -40,14 +41,17 @@ jobs:
 
       - name: Validate Prisma Schema & Generate Client
         run: |
-          npx prisma validate
-          npx prisma generate
+          pnpm exec prisma validate
+          pnpm exec prisma generate
 
       - name: Run TypeScript Strict Check
-        run: npm run typecheck
+        run: pnpm run typecheck
+
+      - name: Run Production Dependency Security Audit
+        run: pnpm audit --prod --audit-level=high
 
   # --------------------------------------------------------------------------
-  # 2. SUITES DE TESTS COMPLÈTES (UNITAIRES, INTÉGRATION, E2E, SÉCURITÉ)
+  # 2. SUITES DE TESTS COMPLÈTES (14 SUITES R1 + SUITES DOMAINES)
   # --------------------------------------------------------------------------
   test-matrix:
     name: Complete Test Suites Execution
@@ -73,81 +77,87 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Generate Prisma Client
-        run: npx prisma generate
+        run: pnpm exec prisma generate
 
-      - name: 1. Express HTTP Server Tests
-        run: npm run test:express
+      - name: 1. Express HTTP Server Tests (R1)
+        run: pnpm run test:express
 
-      - name: 1B. Lot 1.1 Final Security & PostgreSQL 16 Migration Audit
-        run: npm run test:lot1-audit
+      - name: 2. Lot 1 Final Security & PostgreSQL 16 Migration Audit (R1)
+        run: pnpm run test:lot1-audit
 
-      - name: 1C. Lot 2 PostgreSQL 16, Prisma & Redis 7 Multi-Instance Persistence
-        run: npm run test:lot2-persistence
+      - name: 3. Lot 2 PostgreSQL 16, Prisma & Redis 7 Persistence (R1)
+        run: pnpm run test:lot2-persistence
 
-      - name: 1D. Lot 3 Auth, Users, Actors, B2B Companies & Workspaces
-        run: npm run test:lot3-actors
+      - name: 4. Lot 3 Auth, Users, Actors, B2B Companies & Workspaces (R1)
+        run: pnpm run test:lot3-actors
 
-      - name: 1E. Lot 4 B2B Commercial Ecosystem, Double-Entry Accounting & Messaging
-        run: npm run test:lot4-commercial
+      - name: 5. Lot 4 B2B Commercial Ecosystem, Accounting & Messaging (R1)
+        run: pnpm run test:lot4-commercial
 
-      - name: 1F. Lot 5 Room Live & Official Google Meet API Integration
-        run: npm run test:lot5-roomlive
+      - name: 6. Lot 5 Room Live & Official Google Meet API Integration (R1)
+        run: pnpm run test:lot5-roomlive
 
-      - name: 1G. Lot 6 AI Exclusivity Google Gemini (1.5 Pro & Flash)
-        run: npm run test:lot6-ai-gemini
+      - name: 7. Lot 6 AI Exclusivity Google Gemini (R1)
+        run: pnpm run test:lot6-ai-gemini
 
-      - name: 1H. Lot 7 Translation, Multilingual & RTL Support
-        run: npm run test:lot7-translation
+      - name: 8. Lot 7 Translation, Multilingual & RTL Support (R1)
+        run: pnpm run test:lot7-translation
 
-      - name: 1I. Lot 8 Performance, Observability & Resilience
-        run: npm run test:lot8-performance
+      - name: 9. Lot 8 Performance, Observability & Resilience (R1)
+        run: pnpm run test:lot8-performance
 
-      - name: 2. Backend Integration Tests
-        run: npm run test:backend
+      - name: 10. Authentication, RBAC & Security Tests (R1)
+        run: pnpm run test:security
 
-      - name: 3. Authentication, RBAC & Security Tests
-        run: npm run test:security
+      - name: 11. Security Audit SAST/DAST/Anti-XSS/Anti-SQLi (R1)
+        run: pnpm run test:security-audit
 
-      - name: 4. Auth Session Lifecycle & TOTP RFC 6238 Tests
-        run: npm run test:auth-lifecycle
+      - name: 12. E2E Playwright Workflow Simulation (R1)
+        run: pnpm run test:e2e
 
-      - name: 5. KYC Complete Module Tests
-        run: npm run test:kyc
+      - name: 13. Final Harmonisation Integration Tests (R1)
+        run: pnpm run test:harmonisation
 
-      - name: 6. Commercial Ecosystem Tests
-        run: npm run test:commercial
+      - name: 14. Global Integration Validation Tests (R1)
+        run: pnpm run test:global-validation
 
-      - name: 7. Logistics & Fleet Tests
-        run: npm run test:logistics
+      - name: Domain — Backend Integration Tests
+        run: pnpm run test:backend
 
-      - name: 8. Accounting & Financial Engine Tests
-        run: npm run test:accounting
+      - name: Domain — Auth Session Lifecycle & TOTP RFC 6238 Tests
+        run: pnpm run test:auth-lifecycle
 
-      - name: 9. AI, OCR & Room Live Tests
-        run: npm run test:ai
+      - name: Domain — KYC Complete Module Tests
+        run: pnpm run test:kyc
 
-      - name: 10. Notifications, Messaging & File Quarantine Tests
-        run: npm run test:notifications
+      - name: Domain — Commercial Ecosystem Tests
+        run: pnpm run test:commercial
 
-      - name: 11. Admin Advanced & Isolated Sandbox Tests
-        run: npm run test:admin
+      - name: Domain — Logistics & Fleet Tests
+        run: pnpm run test:logistics
 
-      - name: 12. Multilingual & RTL Coverage Tests
-        run: npm run test:i18n
+      - name: Domain — Accounting & Financial Engine Tests
+        run: pnpm run test:accounting
 
-      - name: 13. E2E Playwright Workflow Simulation
-        run: npm run test:e2e
+      - name: Domain — AI, OCR & Room Live Tests
+        run: pnpm run test:ai
 
-      - name: 14. Security Audit (SAST/DAST/Anti-XSS/Anti-SQLi)
-        run: npm run test:security-audit
+      - name: Domain — Notifications, Messaging & File Quarantine Tests
+        run: pnpm run test:notifications
 
-      - name: 15. Performance & Latency Benchmarks
-        run: npm run test:performance
+      - name: Domain — Admin Advanced & Isolated Sandbox Tests
+        run: pnpm run test:admin
+
+      - name: Domain — Multilingual & RTL Coverage Tests
+        run: pnpm run test:i18n
+
+      - name: Domain — Performance & Latency Benchmarks
+        run: pnpm run test:performance
 
   # --------------------------------------------------------------------------
   # 3. COMPILATION FRONTEND & BACKEND DE PRODUCTION
   # --------------------------------------------------------------------------
-  build-frontend:
+  build-artifacts:
     name: Production Frontend & Backend Build
     runs-on: ubuntu-latest
     needs: [test-matrix]
@@ -170,10 +180,11 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Frontend & Backend Production Bundles
+      - name: Generate Prisma Client & Build Production Bundles
         run: |
-          npm run build
-          npm run build:backend
+          pnpm exec prisma generate
+          pnpm run build
+          pnpm run build:backend
 
       - name: Verify Bundle Size & Output
         run: |
@@ -182,15 +193,34 @@ jobs:
           ls -lh dist
 
   # --------------------------------------------------------------------------
-  # 4. CONSTRUCTION & VÉRIFICATION DES CONTENEURS DOCKER
+  # 4. VALIDATION COMPOSE & CONSTRUCTION DES CONTENEURS DOCKER
   # --------------------------------------------------------------------------
   docker-build:
-    name: Docker Images Build & Scan
+    name: Docker Compose Config & Images Build
     runs-on: ubuntu-latest
-    needs: [build-frontend]
+    needs: [build-artifacts]
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Validate Production Docker Compose Configuration
+        env:
+          POSTGRES_PASSWORD: ci-placeholder-postgres-password-0001
+          REDIS_PASSWORD: ci-placeholder-redis-password-0001
+          JWT_SECRET: ci-placeholder-jwt-secret-min-32-chars-0001
+          ATTACHMENT_SECRET: ci-placeholder-attachment-secret-min-32-0001
+          DOCUMENT_DOWNLOAD_SECRET: ci-placeholder-doc-download-secret-32-0001
+          METRICS_SCRAPE_TOKEN: ci-placeholder-metrics-scrape-token-32-0001
+          KYC_SIGNING_SECRET: ci-placeholder-kyc-signing-secret-32-0001
+          OCR_HMAC_SECRET: ci-placeholder-ocr-hmac-secret-min-32-0001
+          ROOM_ACCESS_TOKEN_SECRET: ci-placeholder-room-access-secret-32-0001
+          S3_ACCESS_KEY: ci-placeholder-s3-access-key-0001
+          S3_SECRET_KEY: ci-placeholder-s3-secret-key-min-20-0001
+          KMS_VAULT_TOKEN: ci-placeholder-vault-token-min-20-0001
+          STRIPE_SECRET_KEY: ci-placeholder-stripe-secret-key-0001
+          STRIPE_WEBHOOK_SECRET: ci-placeholder-stripe-webhook-0001
+          GF_SECURITY_ADMIN_PASSWORD: ci-placeholder-grafana-password-0001
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml config -q
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

@@ -12,6 +12,7 @@ import type {
   VoicePunctuationCommand,
   VoiceTranscribeResponse,
 } from '../types';
+import { getSecureRandomAlphanumeric } from './securityCrypto';
 
 export const VOICE_MAX_DURATION_SECONDS = 60;
 
@@ -546,7 +547,7 @@ export class VoiceDictationClient {
       durationSeconds: elapsedSeconds,
       confidence: rawTranscript.length > 0 ? 0.96 : 0.0,
       punctuationsApplied: punctuationCount,
-      interactionId: 'v-int-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+      interactionId: 'v-int-' + Date.now().toString(36) + '-' + getSecureRandomAlphanumeric(5),
       zeroRetentionEnforced: true,
     };
 

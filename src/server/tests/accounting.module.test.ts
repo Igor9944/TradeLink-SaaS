@@ -103,19 +103,19 @@ export function runAccountingModuleTests(): { passed: number; results: string[] 
     return app.handleRequest(ctx);
   };
 
-  // 1. Initialisation des sessions actives via /api/v1/auth/login
+  // 1. Initialisation des sessions actives via /api/v1/auth/login (Argon2id)
   const accountantLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-acct-01', email: 'comptable@cabinet-audit.fr', role: 'COMPTABLE', companyName: 'Cabinet Audit & Expertise Comptable Internationale' },
+    body: { email: 'c.dupont@tradelink-audit.fr', password: 'ComptableSecure!2026' },
   });
-  const accountantSessionId = (accountantLogin.body.data as { sessionId: string }).sessionId;
+  const accountantData = accountantLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const accountantUser = {
-    id: 'usr-acct-01',
-    email: 'comptable@cabinet-audit.fr',
+    id: accountantData.userId,
+    email: accountantData.email,
     role: 'COMPTABLE' as UserRoleCode,
-    sessionId: accountantSessionId,
-    companyName: 'Cabinet Audit & Expertise Comptable Internationale',
+    sessionId: accountantData.sessionId,
+    companyName: accountantData.companyName,
     mfaVerified: true,
   };
 

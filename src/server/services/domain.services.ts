@@ -4,6 +4,7 @@
 // Conforme aux Chapitres 2, 6, 7, 10, PROMPT 4 et PROMPT 5
 // ============================================================================
 
+import crypto from 'node:crypto';
 import Decimal from 'decimal.js';
 import {
   AppError,
@@ -13,6 +14,7 @@ import {
   ServerRequestContext,
 } from '../middlewares/errorAndSecurity.middleware';
 import { TradeLinkRepositoryStore } from '../repositories/domain.repositories';
+import { TradeLinkRedisManager } from '../database/redis.client';
 import {
   calculateFinancialInterest,
   canCreateRoomLiveGeneral,
@@ -23,6 +25,7 @@ import {
   buildOtpAuthUri,
   enforceLegacyHashMigration,
   generateTotpSecretBase32,
+  getServiceHmacSecret,
   hashPasswordArgon2id,
   invalidateAllUserJwtTokens,
   isLegacyMockHash,
@@ -373,8 +376,10 @@ export class TradeLinkDomainServices {
   private readonly companyEngine = new B2BCompanyManagementEngine();
 
   constructor(private readonly repo: TradeLinkRepositoryStore) {
-    // Provisionnement manuel initial des profils souverains (Chapitre 2.1)
-    this.seedProvisionedAccounts();
+    // Provisionnement initial des comptes de démonstration/test uniquement hors production
+    if (process.env.NODE_ENV !== 'production') {
+      this.seedProvisionedAccounts();
+    }
 
     // Synchronisation initiale du catalogue central avec le repository PostgreSQL 16
     defaultCatalogEngine.syncProducts(
@@ -692,7 +697,7 @@ export class TradeLinkDomainServices {
 
     this.accountsByEmail.set(normalizedEmail, record);
 
-    const otpCode = String(Math.floor(100000 + Math.random() * 900000));
+    const otpCode = String(crypto.randomInt(100000, 1000000));
     this.otpChallenges.set(normalizedEmail, {
       email: normalizedEmail,
       code: otpCode,
@@ -705,7 +710,7 @@ export class TradeLinkDomainServices {
     let phoneOtpCode: string | undefined;
     if (params.phone) {
       const normalizedPhone = params.phone.replace(/[\s\-\(\)]/g, '');
-      phoneOtpCode = String(Math.floor(100000 + Math.random() * 900000));
+      phoneOtpCode = String(crypto.randomInt(100000, 1000000));
       this.phoneOtpChallenges.set(normalizedPhone, {
         phone: normalizedPhone,
         code: phoneOtpCode,
@@ -904,10 +909,8 @@ export class TradeLinkDomainServices {
 
   // 1C. AuthService & SessionService — Connexion avec Argon2id, Brute-Force Lockout, Session Unique Redis, JWT & Refresh Token
   public loginAndCreateSingleSession(params: {
-    userId?: string;
     email: string;
-    password?: string;
-    role?: NonNullable<ServerRequestContext['user']>['role'];
+    password: string;
     companyName?: string;
     deviceName?: string;
     userAgent?: string;
@@ -915,11 +918,28 @@ export class TradeLinkDomainServices {
     correlationId: string;
     ipAddress: string;
   }) {
+    if (!params.password || typeof params.password !== 'string' || params.password.length === 0) {
+      throw new AppError(400, 'AUTH_PASSWORD_REQUIRED', 'Le mot de passe est obligatoire.');
+    }
+
     const normalizedEmail = params.email.trim().toLowerCase();
     const account = this.accountsByEmail.get(normalizedEmail);
 
+    if (!account) {
+      this.repo.recordLoginAttempt({
+        userId: 'UNKNOWN',
+        emailAttempted: normalizedEmail,
+        ipAddress: params.ipAddress,
+        userAgent: params.userAgent ?? 'Mozilla/5.0 TradeLink-Client/6.0',
+        isSuccess: false,
+        failureReason: 'AUTH_INVALID_CREDENTIALS',
+        correlationId: params.correlationId,
+      });
+      throw new AppError(401, 'AUTH_INVALID_CREDENTIALS', 'Identifiants invalides.');
+    }
+
     // Vérification compte suspendu
-    if (account?.isSuspended) {
+    if (account.isSuspended) {
       this.repo.recordLoginAttempt({
         userId: account.userId,
         emailAttempted: normalizedEmail,
@@ -936,8 +956,8 @@ export class TradeLinkDomainServices {
       );
     }
 
-    // Si un mot de passe est fourni ou que le compte est enregistré avec Argon2id, appliquer le contrôle Brute-Force + Argon2id
-    if (account && params.password !== undefined) {
+    // Contrôle Brute-Force + Migration ancien hash + Argon2id obligatoire
+    {
       if (account.lockedUntilMs && Date.now() < account.lockedUntilMs) {
         this.repo.recordLoginAttempt({
           userId: account.userId,
@@ -1079,9 +1099,9 @@ export class TradeLinkDomainServices {
       account.lockedUntilMs = undefined;
     }
 
-    const resolvedUserId = account?.userId ?? params.userId ?? `usr-${Date.now().toString(36)}`;
-    const resolvedRole = account?.role ?? params.role ?? 'CLIENT';
-    const resolvedCompany = account?.companyName ?? params.companyName ?? 'TradeLink Partner';
+    const resolvedUserId = account.userId;
+    const resolvedRole = account.role;
+    const resolvedCompany = account.companyName;
 
     // Journalisation tentative réussie
     this.repo.recordLoginAttempt({
@@ -1093,12 +1113,11 @@ export class TradeLinkDomainServices {
       correlationId: params.correlationId,
     });
 
-    // MFA obligatoire pour l'Administrateur lorsque l'authentification complète par mot de passe est utilisée
+    // MFA obligatoire pour tout compte Administrateur (flux 2 étapes ou vérification directe par mfaCode)
     let mfaVerified = true;
-    if (resolvedRole === 'ADMIN' && params.password !== undefined) {
-      if (params.mfaCode && account?.mfaSecretBase32) {
-        const checkTotp = verifyTotpCode(account.mfaSecretBase32, params.mfaCode);
-        if (!checkTotp) {
+    if (resolvedRole === 'ADMIN') {
+      if (params.mfaCode) {
+        if (!account.mfaSecretBase32 || !verifyTotpCode(account.mfaSecretBase32, params.mfaCode)) {
           throw new AppError(401, 'AUTH_INVALID_MFA_TOTP', 'Code TOTP Administrateur invalide.');
         }
         mfaVerified = true;
@@ -1107,7 +1126,7 @@ export class TradeLinkDomainServices {
       }
     }
 
-    const newSessionId = `sess-redis-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const newSessionId = `sess-redis-${crypto.randomBytes(24).toString('hex')}`;
     const { previousRevokedSessionId } = registerSingleActiveSession(
       resolvedUserId,
       newSessionId,
@@ -1126,7 +1145,7 @@ export class TradeLinkDomainServices {
       }
     }
 
-    const deviceId = `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const deviceId = `dev-${crypto.randomBytes(16).toString('hex')}`;
     this.devicesById.set(deviceId, {
       id: deviceId,
       userId: resolvedUserId,
@@ -1164,7 +1183,7 @@ export class TradeLinkDomainServices {
       ttlSeconds: 900,
     });
 
-    const refreshToken = `rt-rot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const refreshToken = `rt-rot-${crypto.randomBytes(32).toString('hex')}`;
     this.refreshTokens.set(refreshToken, {
       token: refreshToken,
       userId: resolvedUserId,
@@ -1470,6 +1489,13 @@ export class TradeLinkDomainServices {
   }) {
     const normalizedEmail = params.email.trim().toLowerCase();
     const account = this.accountsByEmail.get(normalizedEmail);
+    if (process.env.NODE_ENV === 'production' && account?.mfaEnabled && account?.mfaSecretBase32) {
+      throw new AppError(
+        403,
+        'MFA_ALREADY_ENROLLED',
+        'La double authentification TOTP est déjà activée sur ce compte en production.'
+      );
+    }
     const secretBase32 =
       account?.mfaSecretBase32 ?? generateTotpSecretBase32(`${params.userId}-${normalizedEmail}`);
 
@@ -1608,7 +1634,7 @@ export class TradeLinkDomainServices {
 
     record.consumed = true;
 
-    const newRefreshToken = `rt-rot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const newRefreshToken = `rt-rot-${crypto.randomBytes(32).toString('hex')}`;
     this.refreshTokens.set(newRefreshToken, {
       token: newRefreshToken,
       userId: record.userId,
@@ -1619,12 +1645,21 @@ export class TradeLinkDomainServices {
       revoked: false,
     });
 
+    const resolvedAccount = Array.from(this.accountsByEmail.values()).find(
+      (a) => a.userId === record.userId
+    );
+    const resolvedRole = resolvedAccount?.role ?? 'CLIENT';
+    const resolvedEmail = resolvedAccount?.email ?? `${record.userId}@tradelink.io`;
+    const sessionMfa = TradeLinkRedisManager.getSessionMfaVerified(record.sessionId);
+    const resolvedMfaVerified =
+      resolvedRole === 'ADMIN' ? Boolean(sessionMfa) : sessionMfa ?? true;
+
     const newAccessToken = signJwtAccessToken({
       sub: record.userId,
-      email: `${record.userId}@tradelink.io`,
-      role: 'CLIENT',
+      email: resolvedEmail,
+      role: resolvedRole,
       sessionId: record.sessionId,
-      mfaVerified: true,
+      mfaVerified: resolvedMfaVerified,
       deviceId: record.deviceId,
       ttlSeconds: 900,
     });
@@ -1644,7 +1679,7 @@ export class TradeLinkDomainServices {
   }) {
     const normalizedEmail = params.email.trim().toLowerCase();
     const account = this.accountsByEmail.get(normalizedEmail);
-    const resetToken = `rst-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const resetToken = `rst-${crypto.randomBytes(32).toString('hex')}`;
 
     if (account) {
       this.resetTokens.set(resetToken, {
@@ -2608,8 +2643,8 @@ export class TradeLinkDomainServices {
         }
       }
 
-      const orderNumber = `CMD-2026-${Math.floor(10000 + Math.random() * 89999)}`;
-      const orderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const orderNumber = `CMD-2026-${crypto.randomInt(10000, 100000)}`;
+      const orderId = `ord-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
       const nowIso = new Date().toISOString();
 
       // Passe 2 : Réservation atomique du stock, application des paliers B2B et traçabilité des mouvements
@@ -2649,7 +2684,7 @@ export class TradeLinkDomainServices {
         if (!tx.stockMovements) tx.stockMovements = [];
         tx.stockMovements.unshift({
           id: `stkm-ord-${Date.now()}-${i}`,
-          movementNumber: `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+          movementNumber: `MOV-2026-${crypto.randomInt(100000, 1000000)}`,
           productId: prod.id,
           sku: prod.sku,
           movementType: 'ORDER_RESERVATION',
@@ -3050,7 +3085,7 @@ export class TradeLinkDomainServices {
 
       // Enregistrement de la décision administrative dans l'audit trail immuable
       const decisionRec: KYCDecisionHistoryRecord = {
-        id: `dec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: `dec-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
         kycId: dos.id,
         adminUserId: params.actor.id,
         adminEmail: params.actor.email,
@@ -3109,7 +3144,7 @@ export class TradeLinkDomainServices {
       // Journalisation des rappels et suspensions automatiques
       for (const r of report.remindersTriggered) {
         tx.kycReminders?.push({
-          id: `rem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: `rem-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
           kycId: r.dossierId,
           userId: tx.kycDossiers.find((d) => d.id === r.dossierId)?.userId ?? '',
           milestone: r.milestone,
@@ -3120,7 +3155,7 @@ export class TradeLinkDomainServices {
       }
       for (const s of report.suspendedAtJ7) {
         tx.kycReminders?.push({
-          id: `rem-j7-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: `rem-j7-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
           kycId: s.dossierId,
           userId: tx.kycDossiers.find((d) => d.id === s.dossierId)?.userId ?? '',
           milestone: 'J+7',
@@ -3338,7 +3373,7 @@ export class TradeLinkDomainServices {
       }
 
       const decisionRec: KYCDecisionHistoryRecord = {
-        id: `dec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: `dec-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
         kycId: dos.id,
         adminUserId: params.actor.id,
         adminEmail: params.actor.email,
@@ -3406,7 +3441,7 @@ export class TradeLinkDomainServices {
       dos.reviewedBy = params.actor.email;
 
       const decisionRec: KYCDecisionHistoryRecord = {
-        id: `dec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: `dec-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
         kycId: dos.id,
         adminUserId: params.actor.id,
         adminEmail: params.actor.email,
@@ -3521,7 +3556,7 @@ export class TradeLinkDomainServices {
 
     return this.repo.executeTransaction((tx) => {
       const roomId = `room-${Date.now()}`;
-      const roomCode = `RM-LIVE-${Math.floor(1000 + Math.random() * 8999)}`;
+      const roomCode = `RM-LIVE-${crypto.randomInt(1000, 10000)}`;
       const allowed = Array.from(new Set([params.actor.id, ...(params.allowedUserIds || ['usr-client-01'])]));
 
       const token = RoomSfuTokenManager.generateToken({
@@ -3765,7 +3800,12 @@ export class TradeLinkDomainServices {
 
     let session = RoomLiveSfuEngine.getRoomSession(room.id);
     if (!session) {
-      session = initializeRoomLiveSession(room.roomCode);
+      session = {
+        ...initializeRoomLiveSession(room.roomCode),
+        roomId: room.id,
+        creatorId: room.createdById,
+        hostUserId: room.createdById,
+      };
       RoomLiveSfuEngine.registerRoomSession(session);
     }
 
@@ -3950,22 +3990,69 @@ export class TradeLinkDomainServices {
     return RoomLiveSfuEngine.shareDocument(session!, document, actor.id);
   }
 
+  private assertRoomParticipantInteractionAllowed(
+    room: RoomLiveRecord,
+    session: RoomLiveSessionState,
+    participantId: string,
+    actor?: NonNullable<ServerRequestContext['user']>
+  ): void {
+    if (!actor) {
+      throw new AppError(401, 'AUTH_UNAUTHORIZED', 'Authentification requise.');
+    }
+    if (actor.role === 'VISITEUR') {
+      throw new AppError(
+        403,
+        'VISITOR_ACCOUNT_PENDING_APPROVAL',
+        'Accès refusé : un compte VISITEUR ne peut pas interagir dans une salle Room Live.'
+      );
+    }
+    const isHostOrAdmin = actor.role === 'ADMIN' || actor.id === room.createdById;
+    const isActiveParticipant = session.participants.some(
+      (p) => (p.userId === actor.id || p.id === actor.id) && p.status === 'CONNECTED'
+    );
+    if (!isHostOrAdmin && !isActiveParticipant) {
+      throw new AppError(
+        403,
+        'FORBIDDEN_ROOM_ACCESS',
+        'Accès refusé : vous devez être un participant actif connecté à cette salle.'
+      );
+    }
+    if (!isHostOrAdmin) {
+      const targetParticipant = session.participants.find((p) => p.id === participantId);
+      if (!targetParticipant || (targetParticipant.userId !== actor.id && targetParticipant.id !== actor.id)) {
+        throw new AppError(
+          403,
+          'FORBIDDEN_PARTICIPANT_IMPERSONATION',
+          'Accès refusé : vous ne pouvez agir que pour votre propre participant.'
+        );
+      }
+    }
+  }
+
   public raiseHandRoomService(
     roomIdOrCode: string,
     participantId: string,
-    isRaised?: boolean
+    isRaised?: boolean,
+    actor?: NonNullable<ServerRequestContext['user']>
   ): RoomLiveSessionState {
-    const { session } = this.getRoomDetailsService(roomIdOrCode);
-    return RoomLiveSfuEngine.toggleRaiseHand(session!, participantId, isRaised);
+    const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    this.assertRoomParticipantInteractionAllowed(room, session!, participantId, actor);
+    const updatedSession = RoomLiveSfuEngine.toggleRaiseHand(session!, participantId, isRaised);
+    RoomLiveSfuEngine.registerRoomSession(updatedSession);
+    return updatedSession;
   }
 
   public broadcastRoomReactionService(
     roomIdOrCode: string,
     participantId: string,
-    emoji: string
+    emoji: string,
+    actor?: NonNullable<ServerRequestContext['user']>
   ): { session: RoomLiveSessionState; reaction: RoomLiveReaction } {
-    const { session } = this.getRoomDetailsService(roomIdOrCode);
-    return RoomLiveSfuEngine.broadcastReaction(session!, participantId, emoji);
+    const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    this.assertRoomParticipantInteractionAllowed(room, session!, participantId, actor);
+    const result = RoomLiveSfuEngine.broadcastReaction(session!, participantId, emoji);
+    RoomLiveSfuEngine.registerRoomSession(result.session);
+    return result;
   }
 
   public inviteToRoomService(
@@ -4458,7 +4545,15 @@ export class TradeLinkDomainServices {
     ipAddress: string;
   }): QuoteRecord {
     return this.repo.executeTransaction((tx) => {
-      const quote = CommercialEngine.createQuote(params.quoteInput);
+      const effectiveQuoteInput: QuoteCreateInput =
+        params.actor.role === 'CLIENT'
+          ? {
+              ...params.quoteInput,
+              clientId: params.actor.id,
+              clientName: params.actor.companyName || params.actor.email,
+            }
+          : params.quoteInput;
+      const quote = CommercialEngine.createQuote(effectiveQuoteInput);
       tx.quotes.unshift(quote);
 
       const notif = defaultNotificationDispatcher.createQuoteNotification({
@@ -4935,9 +5030,40 @@ export class TradeLinkDomainServices {
 
   public processStripeWebhookTransactional(params: {
     webhookPayload: StripeWebhookPayloadSimulated;
+    rawPayload?: string | object;
+    signatureHeader?: string;
+    timestampHeader?: string | number;
+    webhookSecret?: string;
     correlationId: string;
     ipAddress: string;
   }) {
+    const stripeSecret = params.webhookSecret ?? getServiceHmacSecret('STRIPE_WEBHOOK_SECRET');
+    const sigCheck = CommercialEngine.verifyWebhookSignature(
+      params.rawPayload ?? params.webhookPayload,
+      params.signatureHeader || '',
+      stripeSecret,
+      params.timestampHeader,
+      300
+    );
+
+    if (!sigCheck.valid) {
+      this.repo.saveFinancialAnomaly({
+        id: `anom-${Date.now()}`,
+        anomalyType: 'WEBHOOK_SIGNATURE_INVALID',
+        severity: 'CRITICAL',
+        entityId: 'STRIPE',
+        entityType: 'WEBHOOK',
+        description: `Signature Stripe invalide : ${sigCheck.reason}`,
+        timestamp: new Date().toISOString(),
+        resolved: false,
+      });
+      throw new AppError(
+        401,
+        'STRIPE_WEBHOOK_SIGNATURE_INVALID',
+        `Échec de vérification cryptographique Stripe : ${sigCheck.reason}`
+      );
+    }
+
     return this.repo.executeTransaction((tx) => {
       const result = CommercialEngine.processStripeWebhookIdempotent(
         params.webhookPayload,
@@ -5931,6 +6057,14 @@ export class TradeLinkDomainServices {
         throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande introuvable.');
       }
 
+      if (params.actor.role !== 'ADMIN' && order.supplierId !== params.actor.id) {
+        throw new AppError(
+          403,
+          'RESOURCE_OWNERSHIP_VIOLATION',
+          'Vous ne pouvez créer une mission logistique que pour vos propres commandes.'
+        );
+      }
+
       const mission = LogisticsEngine.createMission({
         order,
         carrierId: params.carrierId,
@@ -6330,10 +6464,29 @@ export class TradeLinkDomainServices {
     });
   }
 
-  public getShipmentTrackingWithWaypoints(shipmentId: string) {
+  public getShipmentTrackingWithWaypoints(
+    shipmentId: string,
+    actor?: NonNullable<ServerRequestContext['user']>
+  ) {
     const shipment = this.repo.getSnapshot().shipments.find((s) => s.id === shipmentId || s.trackingNumber === shipmentId);
     if (!shipment) {
       throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Expédition introuvable.');
+    }
+
+    if (actor) {
+      const allowedRoles = ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN'];
+      if (!allowedRoles.includes(actor.role)) {
+        throw new AppError(403, 'RBAC_FORBIDDEN_ROLE', 'Rôle non autorisé pour le suivi d’expédition.');
+      }
+      const isOwner =
+        actor.role === 'ADMIN' ||
+        actor.role === 'COMPTABLE' ||
+        (actor.role === 'CLIENT' && shipment.clientId === actor.id) ||
+        (actor.role === 'FOURNISSEUR' && shipment.supplierId === actor.id) ||
+        (actor.role === 'TRANSPORTEUR' && shipment.carrierId === actor.id);
+      if (!isOwner) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Accès refusé au suivi de cette expédition.');
+      }
     }
 
     const waypoints: RouteWaypoint[] = INITIAL_SHIPMENT_WAYPOINTS[shipment.trackingNumber] ?? [
@@ -6506,6 +6659,15 @@ export class TradeLinkDomainServices {
         throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Expédition introuvable.');
       }
 
+      const canReport =
+        params.actor.role === 'ADMIN' ||
+        (params.actor.role === 'TRANSPORTEUR' && shipment.carrierId === params.actor.id) ||
+        (params.actor.role === 'FOURNISSEUR' && shipment.supplierId === params.actor.id) ||
+        (params.actor.role === 'CLIENT' && shipment.clientId === params.actor.id);
+      if (!canReport) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez signaler un incident que sur vos expéditions.');
+      }
+
       const inc = LogisticsEngine.logLogisticsIncident({
         shipment,
         title: params.title,
@@ -6579,6 +6741,18 @@ export class TradeLinkDomainServices {
       const incident = tx.incidents.find((i) => i.id === params.incidentId);
       if (!incident) {
         throw new AppError(404, 'INCIDENT_NOT_FOUND', 'Incident logistique introuvable.');
+      }
+
+      const linkedShipment = tx.shipments.find(
+        (s) => s.id === incident.shipmentId || s.trackingNumber === incident.trackingNumber
+      );
+      const canResolve =
+        params.actor.role === 'ADMIN' ||
+        (linkedShipment &&
+          ((params.actor.role === 'TRANSPORTEUR' && linkedShipment.carrierId === params.actor.id) ||
+            (params.actor.role === 'FOURNISSEUR' && linkedShipment.supplierId === params.actor.id)));
+      if (!canResolve) {
+        throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Vous ne pouvez résoudre que les incidents liés à vos expéditions.');
       }
 
       const resolved = LogisticsEngine.resolveLogisticsIncident(incident, {
@@ -6682,7 +6856,7 @@ export class TradeLinkDomainServices {
         throw new AppError(400, 'FISCAL_PERIOD_LOCKED', err.message);
       }
 
-      const entryNumber = `${params.journalCode}-2026-${Math.floor(10000 + Math.random() * 90000)}`;
+      const entryNumber = `${params.journalCode}-2026-${crypto.randomInt(10000, 100000)}`;
 
       const createdEntry: AccountingEntryRecord = {
         id: `ent-${Date.now()}`,
@@ -7139,10 +7313,21 @@ export class TradeLinkDomainServices {
     return this.repo.setUserLanguagePreference(userId, partial);
   }
 
-  public translateCatalogProduct(productId: string, targetLang: SupportedLocale) {
+  public translateCatalogProduct(
+    productId: string,
+    targetLang: SupportedLocale,
+    actor?: NonNullable<ServerRequestContext['user']>
+  ) {
     const product = this.repo.findActiveProductById(productId);
     if (!product) {
       throw new AppError(404, 'PRODUCT_NOT_FOUND', `Produit introuvable : ${productId}`);
+    }
+    if (actor && actor.role !== 'ADMIN' && product.supplierId !== actor.id) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Vous ne pouvez traduire que vos propres fiches produits.'
+      );
     }
 
     const { translatedProduct, translationRecord } = CentralTranslationService.translateProductSync(
@@ -7612,7 +7797,7 @@ export class TradeLinkDomainServices {
 
     // Audit log de modification du consentement RGPD / CNDP
     this.repo.addAuditLog({
-      id: `audit-voice-consent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `audit-voice-consent-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       action: granted ? 'VOICE_CONSENT_GRANTED' : 'VOICE_CONSENT_REVOKED',
       targetType: 'USER_VOICE_PREFERENCE',
       targetId: actorId,
@@ -7715,7 +7900,7 @@ export class TradeLinkDomainServices {
       payload.autoFormatPunctuation !== false
     );
 
-    const interactionId = `voice-int-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const interactionId = `voice-int-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
 
     // 6. Enregistrement des métadonnées d'interaction vocale SANS le flux audio
     const interactionRecord: VoiceInteractionRecord = {
@@ -7810,7 +7995,7 @@ export class TradeLinkDomainServices {
       );
     }
 
-    const docId = `ocr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const docId = `ocr-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
     const effectiveMime = magicCheck.detectedMimeType || mimeType;
 
     // 4. Extraction textuelle et détection structurée selon profil
@@ -7827,7 +8012,7 @@ export class TradeLinkDomainServices {
 
     if (isHeavyDocument) {
       job = this.repo.enqueueOcrJob({
-        id: `job-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: `job-ocr-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
         documentId: docId,
         profile,
         status: 'RUNNING',
@@ -7882,7 +8067,7 @@ export class TradeLinkDomainServices {
 
     // 7. Audit log immuable
     this.repo.addAuditLog({
-      id: `audit-ocr-upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `audit-ocr-upload-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       action: 'OCR_DOCUMENT_UPLOADED',
       targetType: 'DOCUMENT_OCR',
       targetId: docId,
@@ -7977,7 +8162,7 @@ export class TradeLinkDomainServices {
 
     // Audit log
     this.repo.addAuditLog({
-      id: `audit-ocr-corr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `audit-ocr-corr-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       action: 'OCR_FIELD_CORRECTED',
       targetType: 'DOCUMENT_OCR',
       targetId: documentId,
@@ -8019,7 +8204,7 @@ export class TradeLinkDomainServices {
 
     // Audit log
     this.repo.addAuditLog({
-      id: `audit-ocr-val-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `audit-ocr-val-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       action: 'OCR_DOCUMENT_VALIDATED',
       targetType: 'DOCUMENT_OCR',
       targetId: documentId,
@@ -8064,7 +8249,7 @@ export class TradeLinkDomainServices {
 
     // Audit log
     this.repo.addAuditLog({
-      id: `audit-ocr-rej-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `audit-ocr-rej-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       action: 'OCR_DOCUMENT_REJECTED',
       targetType: 'DOCUMENT_OCR',
       targetId: documentId,
@@ -8186,8 +8371,19 @@ export class TradeLinkDomainServices {
       recipientPhone?: string;
       recipientName?: string;
     },
-    _actor: NonNullable<ServerRequestContext['user']>
+    actor: NonNullable<ServerRequestContext['user']>
   ) {
+    if (
+      actor.role !== 'ADMIN' &&
+      (actor.role as any) !== 'SUPPORT' &&
+      params.notification.userId !== actor.id
+    ) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Vous ne pouvez pas diffuser de notification à un autre utilisateur.'
+      );
+    }
     const prefs = this.repo.getNotificationPreferences(params.notification.userId);
     const result = defaultNotificationDispatcher.dispatch({
       notification: params.notification,
@@ -8805,14 +9001,38 @@ export class TradeLinkDomainServices {
       endDate?: string;
     }
   ): StockMovementRecord[] {
-    if (actor?.role === 'CLIENT') {
-      throw new AppError(403, 'FORBIDDEN_CLIENT_STOCK_MOVEMENTS', 'Les clients n’ont pas accès aux mouvements internes de stock.');
+    if (actor && !['FOURNISSEUR', 'COMPTABLE', 'ADMIN'].includes(actor.role)) {
+      throw new AppError(403, 'FORBIDDEN_CLIENT_STOCK_MOVEMENTS', 'Accès interdit aux mouvements internes de stock.');
     }
     const effectiveFilter = { ...(filter || {}) };
     if (actor?.role === 'FOURNISSEUR') {
       effectiveFilter.supplierId = actor.id;
     }
-    return defaultStockEngine.listMovements(effectiveFilter);
+
+    const engineList = defaultStockEngine.listMovements(effectiveFilter);
+    const supplierProductIds =
+      actor?.role === 'FOURNISSEUR'
+        ? new Set(
+            this.repo
+              .getSnapshot()
+              .products.filter((p) => p.supplierId === actor.id)
+              .map((p) => p.id)
+          )
+        : null;
+
+    const repoMovements = (this.repo.getSnapshot().stockMovements || []).filter((m) => {
+      if (effectiveFilter.productId && m.productId !== effectiveFilter.productId) return false;
+      if (effectiveFilter.movementType && m.movementType !== effectiveFilter.movementType) return false;
+      if (supplierProductIds && !supplierProductIds.has(m.productId)) return false;
+      return true;
+    });
+
+    const mergedMap = new Map<string, StockMovementRecord>();
+    for (const m of engineList) mergedMap.set(m.id, m);
+    for (const m of repoMovements) {
+      if (!mergedMap.has(m.id)) mergedMap.set(m.id, m);
+    }
+    return Array.from(mergedMap.values());
   }
 
   public recordInboundStockService(
@@ -9195,7 +9415,17 @@ export class TradeLinkDomainServices {
     if (actor?.role === 'CLIENT') {
       effectiveFilter.clientId = actor.id;
     }
-    return defaultStockEngine.listReservations(effectiveFilter);
+    const list = defaultStockEngine.listReservations(effectiveFilter);
+    if (actor?.role === 'FOURNISSEUR') {
+      const supplierProductIds = new Set(
+        this.repo
+          .getSnapshot()
+          .products.filter((p) => p.supplierId === actor.id)
+          .map((p) => p.id)
+      );
+      return list.filter((r) => supplierProductIds.has(r.productId));
+    }
+    return list;
   }
 
   public createInventorySessionService(
@@ -9471,7 +9701,7 @@ export class TradeLinkDomainServices {
 
     // Audit log
     this.repo.addAuditLog({
-      id: `aud-doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      id: `aud-doc-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       timestamp: new Date().toISOString(),
       actorName: params.actor.email,
       actorRole: params.actor.role,
@@ -9525,7 +9755,7 @@ export class TradeLinkDomainServices {
 
     // Audit log
     this.repo.addAuditLog({
-      id: `aud-doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      id: `aud-doc-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       timestamp: new Date().toISOString(),
       actorName: params.actor.email,
       actorRole: params.actor.role,
@@ -9585,15 +9815,16 @@ export class TradeLinkDomainServices {
   public createDocumentDownloadTokenService(
     actor: NonNullable<ServerRequestContext['user']>,
     documentId: string,
-    secretKey = 'tradelink_doc_secret_key_9944'
+    secretKey?: string
   ): TemporaryDownloadTokenPayload & { downloadUrl: string } {
     const doc = this.getCommercialDocumentByIdService(actor, documentId);
     BillingDocumentEngine.enforceDocumentAccess(actor, doc, 'DOWNLOAD');
+    const resolvedSecret = secretKey ?? getServiceHmacSecret('DOCUMENT_DOWNLOAD_SECRET');
     const tokenPayload = BillingDocumentEngine.generateTemporaryDownloadToken(
       doc.id,
       doc.documentNumber,
       actor.id,
-      secretKey,
+      resolvedSecret,
       900 // 15 min
     );
     const downloadUrl = `/api/v1/documents/${doc.id}/download?token=${tokenPayload.hmacSignature}&expires=${tokenPayload.expiresAt}&user=${actor.id}`;
@@ -9608,20 +9839,21 @@ export class TradeLinkDomainServices {
     token: string,
     expiresAt: number,
     userId: string,
-    secretKey = 'tradelink_doc_secret_key_9944',
+    secretKey?: string,
     targetLocale: Locale = 'fr'
   ): { pdfBuffer: Buffer; filename: string; mimeType: string } {
     const doc = this.repo.findCommercialDocumentById(documentId);
     if (!doc) {
       throw new AppError(404, 'DOCUMENT_NOT_FOUND', 'Document introuvable.');
     }
+    const resolvedSecret = secretKey ?? getServiceHmacSecret('DOCUMENT_DOWNLOAD_SECRET');
     const check = BillingDocumentEngine.verifyTemporaryDownloadToken(
       documentId,
       doc.documentNumber,
       userId,
       expiresAt,
       token,
-      secretKey
+      resolvedSecret
     );
     if (!check.valid) {
       throw new AppError(403, 'INVALID_OR_EXPIRED_DOWNLOAD_TOKEN', `Lien de téléchargement invalide ou expiré (${check.reason}).`);
@@ -9664,7 +9896,7 @@ export class TradeLinkDomainServices {
     details: string
   ): void {
     const entry: AuditLogRecord = {
-      id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `audit-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
       actorName: actor.companyName || actor.email || actor.id,
       actorRole: actor.role,
@@ -9711,12 +9943,26 @@ export class TradeLinkDomainServices {
     return job;
   }
 
+  private assertImportJobOwnership(
+    actor: NonNullable<ServerRequestContext['user']>,
+    job: SecureImportPipelineJob
+  ): void {
+    if (actor.role !== 'ADMIN' && (!job.createdByUserId || job.createdByUserId !== actor.id)) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Accès refusé : vous ne pouvez manipuler que vos propres tâches d’importation.'
+      );
+    }
+  }
+
   public identifyImportFormatService(
     actor: NonNullable<ServerRequestContext['user']>,
     jobId: string
   ): SecureImportPipelineJob {
     const job = this.repo.getSecureImportJob(jobId);
     if (!job) throw new AppError(404, 'JOB_NOT_FOUND', 'Session d’importation introuvable.');
+    this.assertImportJobOwnership(actor, job);
     ImportExportEngine.enforceImportPermission(actor.role, job.entity);
 
     const updated = ImportExportEngine.step2_identifyFormat(job);
@@ -9730,6 +9976,7 @@ export class TradeLinkDomainServices {
   ): SecureImportPipelineJob {
     const job = this.repo.getSecureImportJob(jobId);
     if (!job) throw new AppError(404, 'JOB_NOT_FOUND', 'Session d’importation introuvable.');
+    this.assertImportJobOwnership(actor, job);
     ImportExportEngine.enforceImportPermission(actor.role, job.entity);
 
     const updated = ImportExportEngine.step3_validate(job);
@@ -9743,6 +9990,7 @@ export class TradeLinkDomainServices {
   ): { job: SecureImportPipelineJob; columns: string[]; parsedRowsCount: number; previewRows: any[] } {
     const job = this.repo.getSecureImportJob(jobId);
     if (!job) throw new AppError(404, 'JOB_NOT_FOUND', 'Session d’importation introuvable.');
+    this.assertImportJobOwnership(actor, job);
     ImportExportEngine.enforceImportPermission(actor.role, job.entity);
 
     const step4 = ImportExportEngine.step4_analyzeContent(job);
@@ -9764,6 +10012,7 @@ export class TradeLinkDomainServices {
   ): SecureImportPipelineJob {
     const job = this.repo.getSecureImportJob(jobId);
     if (!job) throw new AppError(404, 'JOB_NOT_FOUND', 'Session d’importation introuvable.');
+    this.assertImportJobOwnership(actor, job);
     ImportExportEngine.enforceImportPermission(actor.role, job.entity);
 
     const step4 = ImportExportEngine.step4_analyzeContent(job);
@@ -9780,6 +10029,7 @@ export class TradeLinkDomainServices {
   ): { job: SecureImportPipelineJob; duplicates: any[] } {
     const job = this.repo.getSecureImportJob(jobId);
     if (!job) throw new AppError(404, 'JOB_NOT_FOUND', 'Session d’importation introuvable.');
+    this.assertImportJobOwnership(actor, job);
     ImportExportEngine.enforceImportPermission(actor.role, job.entity);
 
     job.duplicateStrategy = duplicateStrategy;
@@ -9812,6 +10062,7 @@ export class TradeLinkDomainServices {
   ): { job: SecureImportPipelineJob; errors: any[] } {
     const job = this.repo.getSecureImportJob(jobId);
     if (!job) throw new AppError(404, 'JOB_NOT_FOUND', 'Session d’importation introuvable.');
+    this.assertImportJobOwnership(actor, job);
     ImportExportEngine.enforceImportPermission(actor.role, job.entity);
 
     const step4 = ImportExportEngine.step4_analyzeContent(job);
@@ -9830,6 +10081,7 @@ export class TradeLinkDomainServices {
   ): SecureImportPipelineJob {
     const job = this.repo.getSecureImportJob(jobId);
     if (!job) throw new AppError(404, 'JOB_NOT_FOUND', 'Session d’importation introuvable.');
+    this.assertImportJobOwnership(actor, job);
     ImportExportEngine.enforceImportPermission(actor.role, job.entity);
 
     const step4 = ImportExportEngine.step4_analyzeContent(job);
@@ -9853,6 +10105,7 @@ export class TradeLinkDomainServices {
   ): SecureImportPipelineJob {
     const job = this.repo.getSecureImportJob(jobId);
     if (!job) throw new AppError(404, 'JOB_NOT_FOUND', 'Session d’importation introuvable.');
+    this.assertImportJobOwnership(actor, job);
     ImportExportEngine.enforceImportPermission(actor.role, job.entity);
 
     const updated = ImportExportEngine.step10_confirm({
@@ -9870,6 +10123,7 @@ export class TradeLinkDomainServices {
   ): ImportFinalReport {
     const job = this.repo.getSecureImportJob(jobId);
     if (!job) throw new AppError(404, 'JOB_NOT_FOUND', 'Session d’importation introuvable.');
+    this.assertImportJobOwnership(actor, job);
     ImportExportEngine.enforceImportPermission(actor.role, job.entity);
 
     if (job.status === 'AWAITING_APPROVAL' && job.requiresDualAdmin) {
@@ -9892,7 +10146,7 @@ export class TradeLinkDomainServices {
 
         if (job.entity === 'CATALOG_PRODUCTS') {
           for (const r of rowsToCreate) {
-            const pId = `prod-imp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            const pId = `prod-imp-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
             const pName = r['name.fr'] || r.name || 'Produit Importé';
             const newP: any = {
               id: pId,
@@ -10031,11 +10285,27 @@ export class TradeLinkDomainServices {
 
     let records: any[] = [];
     if (params.entity === 'PRODUCTS') {
-      records = this.repo.getSnapshot().products.filter((p) => !p.deletedAt);
+      const allProducts = this.repo.getSnapshot().products.filter((p) => !p.deletedAt);
+      records =
+        actor.role === 'FOURNISSEUR'
+          ? allProducts.filter((p) => p.supplierId === actor.id)
+          : allProducts;
     } else if (params.entity === 'ORDERS') {
-      records = this.repo.getSnapshot().orders.filter((o) => !o.deletedAt);
+      const allOrders = this.repo.getSnapshot().orders.filter((o) => !o.deletedAt);
+      records =
+        actor.role === 'CLIENT'
+          ? allOrders.filter((o) => o.clientId === actor.id)
+          : actor.role === 'FOURNISSEUR'
+          ? allOrders.filter((o) => o.supplierId === actor.id)
+          : allOrders;
     } else if (params.entity === 'INVOICES') {
-      records = this.repo.getSnapshot().invoices;
+      const allInvoices = this.repo.getSnapshot().invoices;
+      records =
+        actor.role === 'CLIENT'
+          ? allInvoices.filter((i) => i.clientId === actor.id)
+          : actor.role === 'FOURNISSEUR'
+          ? allInvoices.filter((i) => i.supplierId === actor.id)
+          : allInvoices;
     } else if (params.entity === 'ENTRIES') {
       records = this.repo.getSnapshot().accountingEntries;
     } else if (params.entity === 'AUDIT_LOGS') {
@@ -10385,7 +10655,7 @@ export class TradeLinkDomainServices {
     details: Record<string, unknown>
   ): void {
     const entry: AuditLogRecord = {
-      id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+      id: `audit-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       timestamp: new Date().toISOString(),
       actorName: actorId,
       actorRole: 'ADMIN',
@@ -10779,6 +11049,14 @@ export class TradeLinkDomainServices {
     if (!ticket) {
       throw new AppError(404, 'TICKET_NOT_FOUND', `Ticket support introuvable : ${ticketId}`);
     }
+    const isSupportOrAdmin = actor.role === 'ADMIN' || (actor.role as any) === 'SUPPORT';
+    if (!isSupportOrAdmin && ticket.requesterId !== actor.id) {
+      throw new AppError(
+        403,
+        'RESOURCE_OWNERSHIP_VIOLATION',
+        'Vous ne pouvez ouvrir une session Room Live que pour vos propres tickets support.'
+      );
+    }
 
     const session = SupportEngine.createSupportRoomLiveSession(ticket, {
       id: actor.id,
@@ -10958,6 +11236,17 @@ export class TradeLinkDomainServices {
       roleOverride?: UserRoleCode;
     }
   ): RoleSpecificAnalytics {
+    if (
+      !['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'SUPPORT', 'ADMIN'].includes(
+        actor.role
+      )
+    ) {
+      throw new AppError(
+        403,
+        'RBAC_FORBIDDEN_ROLE',
+        `Le rôle ${actor.role} n'est pas autorisé à accéder au tableau de bord analytique.`
+      );
+    }
     const snapshot = this.buildDatasetSnapshotForAnalytics();
     const period = params?.period || '30D';
     const targetRole = actor.role === 'ADMIN' && params?.roleOverride ? params.roleOverride : (actor.role as UserRoleCode);
@@ -10976,7 +11265,7 @@ export class TradeLinkDomainServices {
       case 'SUPPORT' as any:
         return AnalyticsEngine.computeSupportDashboard(snapshot, period);
       default:
-        return AnalyticsEngine.computeAdminDashboard(snapshot, period);
+        throw new AppError(403, 'RBAC_FORBIDDEN_ROLE', 'Rôle analytique non autorisé.');
     }
   }
 

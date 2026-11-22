@@ -21,6 +21,7 @@ import {
   SupportResolutionPayload,
   UserRoleCode,
 } from '../types';
+import { getSecureRandomAlphanumeric } from './securityCrypto';
 
 export type {
   SupportTicketPriority,
@@ -1010,7 +1011,7 @@ export class SupportEngine {
     const scanStatus: 'CLEAN' | 'INFECTED' = isDangerous ? 'INFECTED' : 'CLEAN';
 
     return {
-      id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `att-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       name: attachment.name,
       size: `${(attachment.size / 1024).toFixed(1)} Ko`,
       mimeType: ext === 'PDF' ? 'application/pdf' : ext === 'PNG' ? 'image/png' : ext === 'JPG' || ext === 'JPEG' ? 'image/jpeg' : 'application/octet-stream',

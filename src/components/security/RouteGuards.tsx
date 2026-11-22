@@ -66,7 +66,7 @@ export const RoleGuard: React.FC<{
             <code>403 RBAC_FORBIDDEN_ROLE</code>.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-            {DEMO_USERS[recommendedDemoKey] && (
+            {!import.meta.env.PROD && DEMO_USERS[recommendedDemoKey] && (
               <Button
                 variant="primary"
                 onClick={() => switchUserAccount(recommendedDemoKey)}

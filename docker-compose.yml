@@ -1,11 +1,10 @@
 # ============================================================================
 # TRADELINK V6.1 — ARCHITECTURE COMPLÈTE DOCKER COMPOSE MULTI-SERVICES
 # Zéro secret codé en dur : toutes les clés et mots de passe proviennent de .env
-# Services : Frontend, Backend Express, PostgreSQL 16, Redis 7, MinIO S3,
-#            HashiCorp Vault KMS, Prometheus, Grafana & Sandbox Isolée
+# Services : Nginx TLS, Frontend, Backend Express, PostgreSQL 16, Redis 7,
+#            MinIO S3, HashiCorp Vault KMS, ClamAV, Exporters, Prometheus,
+#            Grafana & Sandbox Isolée
 # ============================================================================
-
-version: '3.8'
 
 networks:
   tradelink-internal:
@@ -18,10 +17,38 @@ volumes:
   redis_data:
   minio_data:
   vault_data:
+  clamav_data:
   prometheus_data:
   grafana_data:
 
 services:
+  # --------------------------------------------------------------------------
+  # 0. NGINX TLS REVERSE PROXY (POINT D'ENTRÉE UNIQUE DMZ -> INTERNAL)
+  # --------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: tradelink-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/nginx-health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tradelink-dmz
+      - tradelink-internal
+
   # --------------------------------------------------------------------------
   # 1A. BACKEND EXPRESS API GATEWAY TRADELINK V6.1 (PORT 3000)
   # --------------------------------------------------------------------------
@@ -38,21 +65,48 @@ services:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=3000
       - HOST=0.0.0.0
+      - TRUST_PROXY=${TRUST_PROXY:-1}
+      - APP_BASE_URL=${APP_BASE_URL:-https://app.tradelink.ma}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://app.tradelink.ma,https://admin.tradelink.ma}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-tradelink_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_REQUIRED}@postgres:5432/${POSTGRES_DB:-tradelink_db}?schema=public
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD_REQUIRED}@redis:6379/0
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET_REQUIRED}
       - ATTACHMENT_SECRET=${ATTACHMENT_SECRET:?ATTACHMENT_SECRET_REQUIRED}
+      - DOCUMENT_DOWNLOAD_SECRET=${DOCUMENT_DOWNLOAD_SECRET:?DOCUMENT_DOWNLOAD_SECRET_REQUIRED}
+      - METRICS_SCRAPE_TOKEN=${METRICS_SCRAPE_TOKEN:-dev-local-metrics-token}
       - KYC_SIGNING_SECRET=${KYC_SIGNING_SECRET:?KYC_SIGNING_SECRET_REQUIRED}
       - OCR_HMAC_SECRET=${OCR_HMAC_SECRET:?OCR_HMAC_SECRET_REQUIRED}
       - ROOM_ACCESS_TOKEN_SECRET=${ROOM_ACCESS_TOKEN_SECRET:?ROOM_ACCESS_TOKEN_SECRET_REQUIRED}
+      - SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-86400}
+      - ARGON2_MEMORY_COST=${ARGON2_MEMORY_COST:-65536}
+      - ARGON2_TIME_COST=${ARGON2_TIME_COST:-3}
+      - ARGON2_PARALLELISM=${ARGON2_PARALLELISM:-4}
+      - RATE_LIMIT_AUTH_MAX=${RATE_LIMIT_AUTH_MAX:-40}
+      - RATE_LIMIT_API_MAX=${RATE_LIMIT_API_MAX:-400}
+      - RATE_LIMIT_AI_MAX=${RATE_LIMIT_AI_MAX:-60}
+      - RATE_LIMIT_EXPORT_MAX=${RATE_LIMIT_EXPORT_MAX:-30}
+      - RATE_LIMIT_TRANSLATION_MAX=${RATE_LIMIT_TRANSLATION_MAX:-100}
       - S3_ENDPOINT=http://minio:9000
       - S3_BUCKET_DOCS=${S3_BUCKET_DOCS:-tradelink-encrypted-documents}
       - S3_BUCKET_BACKUPS=${S3_BUCKET_BACKUPS:-tradelink-encrypted-backups}
       - S3_ACCESS_KEY=${S3_ACCESS_KEY:?S3_ACCESS_KEY_REQUIRED}
       - S3_SECRET_KEY=${S3_SECRET_KEY:?S3_SECRET_KEY_REQUIRED}
+      - KMS_PROVIDER=${KMS_PROVIDER:-HASHICORP_VAULT_KMS}
       - KMS_VAULT_ADDR=http://vault:8200
       - KMS_VAULT_TOKEN=${KMS_VAULT_TOKEN:?KMS_VAULT_TOKEN_REQUIRED}
       - KMS_MASTER_KEY_ALIAS=${KMS_MASTER_KEY_ALIAS:-alias/tradelink-prod-kek-v6}
+      - KMS_ALGORITHM=${KMS_ALGORITHM:-AES-256-GCM}
+      - CLAMAV_HOST=clamav
+      - CLAMAV_PORT=3310
+      - CLAMAV_TIMEOUT_MS=${CLAMAV_TIMEOUT_MS:-5000}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GOOGLE_MEET_CLIENT_ID=${GOOGLE_MEET_CLIENT_ID:-}
+      - GOOGLE_MEET_CLIENT_SECRET=${GOOGLE_MEET_CLIENT_SECRET:-}
+      - GOOGLE_MEET_REFRESH_TOKEN=${GOOGLE_MEET_REFRESH_TOKEN:-}
+      - GOOGLE_SERVICE_ACCOUNT_EMAIL=${GOOGLE_SERVICE_ACCOUNT_EMAIL:-}
+      - GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY=${GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY:-}
+      - TURN_USERNAME=${TURN_USERNAME:-tradelink-live-sfu}
+      - TURN_CREDENTIAL=${TURN_CREDENTIAL:-}
       - STRIPE_MODE=${STRIPE_MODE:-test}
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:?STRIPE_SECRET_KEY_REQUIRED}
       - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:?STRIPE_WEBHOOK_SECRET_REQUIRED}
@@ -65,9 +119,16 @@ services:
         condition: service_healthy
       vault:
         condition: service_healthy
+      clamav:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
     networks:
       - tradelink-internal
-      - tradelink-dmz
 
   # --------------------------------------------------------------------------
   # 1B. FRONTEND SPA REACT TRADELINK V6.1 (PORT 5173)
@@ -86,9 +147,16 @@ services:
       - PORT=5173
       - HOST=0.0.0.0
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:5173/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     networks:
-      - tradelink-dmz
+      - tradelink-internal
 
   # --------------------------------------------------------------------------
   # 2. BASE DE DONNÉES POSTGRESQL 16 (RÉSEAU INTERNE UNIQUEMENT)
@@ -140,6 +208,8 @@ services:
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:?S3_ACCESS_KEY_REQUIRED}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?S3_SECRET_KEY_REQUIRED}
+      HOME: /tmp
+      MC_CONFIG_DIR: /tmp/.mc
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
@@ -158,12 +228,14 @@ services:
     image: hashicorp/vault:1.16.2
     container_name: tradelink-vault-kms
     restart: unless-stopped
+    command: ["server", "-config=/vault/config/vault.hcl"]
     environment:
       VAULT_ADDR: http://127.0.0.1:8200
     volumes:
       - vault_data:/vault/file
+      - ./infra/vault/vault.hcl:/vault/config/vault.hcl:ro
     healthcheck:
-      test: ["CMD", "vault", "status"]
+      test: ["CMD-SHELL", "vault status >/dev/null 2>&1; rc=$$?; [ $$rc -eq 0 ] || [ $$rc -eq 2 ]"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -171,20 +243,89 @@ services:
       - tradelink-internal
 
   # --------------------------------------------------------------------------
-  # 6. MÉTRIQUES ET SURVEILLANCE SYSTÈME PROMETHEUS
+  # 5B. ANTIVIRUS CLAMAV DAEMON (SCAN PIÈCES JOINTES PORT 3310)
+  # --------------------------------------------------------------------------
+  clamav:
+    image: clamav/clamav:1.4
+    container_name: tradelink-clamav
+    restart: unless-stopped
+    expose:
+      - "3310"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdcheck.sh || (echo PING | nc -w 3 127.0.0.1 3310 | grep -q PONG)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - tradelink-internal
+
+  # --------------------------------------------------------------------------
+  # 6A. EXPORTEURS MÉTRIQUES HTTP POUR POSTGRESQL 16 & REDIS 7
+  # --------------------------------------------------------------------------
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: tradelink-postgres-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-tradelink_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_REQUIRED}@postgres:5432/${POSTGRES_DB:-tradelink_db}?sslmode=disable
+    expose:
+      - "9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - tradelink-internal
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.61.0
+    container_name: tradelink-redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD_REQUIRED}
+    expose:
+      - "9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - tradelink-internal
+
+  # --------------------------------------------------------------------------
+  # 6B. MÉTRIQUES ET SURVEILLANCE SYSTÈME PROMETHEUS
   # --------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:v2.52.0
     container_name: tradelink-prometheus
     restart: unless-stopped
+    environment:
+      - METRICS_SCRAPE_TOKEN=${METRICS_SCRAPE_TOKEN:-}
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
+    entrypoint: ["/bin/sh", "-ec"]
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - |
+        TOKEN="$${METRICS_SCRAPE_TOKEN:-dev-local-metrics-token}"
+        printf '%s' "$$TOKEN" > /tmp/metrics_scrape_token
+        chmod 0400 /tmp/metrics_scrape_token
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --web.console.libraries=/usr/share/prometheus/console_libraries \
+          --web.console.templates=/usr/share/prometheus/consoles
+    depends_on:
+      backend:
+        condition: service_healthy
+      postgres-exporter:
+        condition: service_started
+      redis-exporter:
+        condition: service_started
+      vault:
+        condition: service_healthy
     networks:
       - tradelink-internal
 
@@ -210,6 +351,8 @@ services:
   # 8. SANDBOX ISOLÉE D'ANALYSE DE DUMPS (RÉSEAU STRICTEMENT COUPÉ)
   # --------------------------------------------------------------------------
   sandbox:
+    profiles:
+      - sandbox
     build:
       context: .
       dockerfile: Dockerfile.sandbox
@@ -217,5 +360,6 @@ services:
     network_mode: "none"
     read_only: true
     tmpfs:
-      - /sandbox/input:rw,noexec,nosuid,size=64m
-      - /sandbox/output:rw,noexec,nosuid,size=64m
+      - /tmp:rw,noexec,nosuid,size=32m
+      - /sandbox/input:rw,noexec,nosuid,size=64m,uid=20001,gid=20001
+      - /sandbox/output:rw,noexec,nosuid,size=64m,uid=20001,gid=20001

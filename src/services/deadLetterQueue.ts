@@ -4,6 +4,8 @@
 // Traitement des échecs asynchrones, archivage diagnostique & rejeu résilient
 // ============================================================================
 
+import { getSecureRandomAlphanumeric } from './securityCrypto';
+
 export type DlqJobStatus = 'FAILED' | 'REPLAYED' | 'DISCARDED';
 
 export interface DeadLetterJob<T = any> {
@@ -34,7 +36,7 @@ export class DeadLetterQueueManager {
     metadata?: Record<string, unknown>;
   }): DeadLetterJob<T> {
     const err = params.error instanceof Error ? params.error : new Error(String(params.error));
-    const id = `dlq-${params.queueName.toLowerCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const id = `dlq-${params.queueName.toLowerCase()}-${Date.now()}-${getSecureRandomAlphanumeric(5)}`;
 
     const job: DeadLetterJob<T> = {
       id,

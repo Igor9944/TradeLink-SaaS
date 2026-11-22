@@ -15,6 +15,8 @@ import {
   TradeLinkRepositoryStore,
 } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
+import { registerSingleActiveSession } from '../middlewares/errorAndSecurity.middleware';
+import { computeCurrentTotpCode } from '../../services/securityCrypto';
 import { translateStatus } from '../../i18n/translations';
 import { KYC_CANONICAL_STATUSES, KYC_JURISDICTION_REGISTRY } from '../../services/kycEngine';
 import { KYCPresignedUrlResponse } from '../../types';
@@ -94,25 +96,49 @@ export function runKycModuleTests(): {
   const app = new TradeLinkApiApplication(repo);
   const results: KycTestAssertionResult[] = [];
 
-  // Ouverture des sessions de test
+  // Ouverture des sessions de test via /api/v1/auth/login (Argon2id + TOTP MFA Admin)
   const adminLogin = app.handleRequest({
     method: 'POST',
     path: '/api/v1/auth/login',
     headers: {},
     query: {},
     params: {},
-    body: { userId: 'usr-admin-01', email: 'admin@tradelink.com', role: 'ADMIN' },
+    body: { email: 'k.benali@tradelink-global.com', password: 'AdminTradeLink!2026' },
     correlationId: 'kyc-corr-admin',
     ipAddress: '10.0.0.1',
   });
-  const adminSessionId = (adminLogin.body.data as { sessionId: string }).sessionId;
+  const adminData = adminLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const adminUser = {
-    id: 'usr-admin-01',
-    email: 'admin@tradelink.com',
+    id: adminData.userId,
+    email: adminData.email,
     role: 'ADMIN' as const,
-    sessionId: adminSessionId,
-    companyName: 'TradeLink HQ',
+    sessionId: adminData.sessionId,
+    companyName: adminData.companyName,
+    mfaVerified: true,
   };
+  const adminMfaSetup = app.handleRequest({
+    method: 'POST',
+    path: '/api/v1/auth/mfa/setup',
+    headers: {},
+    query: {},
+    params: {},
+    body: {},
+    correlationId: 'kyc-corr-admin-mfa-setup',
+    ipAddress: '10.0.0.1',
+    user: adminUser,
+  });
+  const adminMfaCode = computeCurrentTotpCode((adminMfaSetup.body.data as { secretBase32: string }).secretBase32);
+  app.handleRequest({
+    method: 'POST',
+    path: '/api/v1/auth/mfa/verify',
+    headers: {},
+    query: {},
+    params: {},
+    body: { code: adminMfaCode },
+    correlationId: 'kyc-corr-admin-mfa-verify',
+    ipAddress: '10.0.0.1',
+    user: adminUser,
+  });
 
   const clientLogin = app.handleRequest({
     method: 'POST',
@@ -120,36 +146,29 @@ export function runKycModuleTests(): {
     headers: {},
     query: {},
     params: {},
-    body: { userId: 'usr-client-01', email: 'achats@atlas-import.ma', role: 'CLIENT' },
+    body: { email: 's.mansouri@atlas-import.ma', password: 'ClientAtlas!2026' },
     correlationId: 'kyc-corr-client',
     ipAddress: '41.214.0.10',
   });
-  const clientSessionId = (clientLogin.body.data as { sessionId: string }).sessionId;
+  const clientData = clientLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const clientUser = {
-    id: 'usr-client-01',
-    email: 'achats@atlas-import.ma',
+    id: clientData.userId,
+    email: clientData.email,
     role: 'CLIENT' as const,
-    sessionId: clientSessionId,
-    companyName: 'Atlas Import & Distribution S.A.',
+    sessionId: clientData.sessionId,
+    companyName: clientData.companyName,
+    mfaVerified: true,
   };
 
-  const otherLogin = app.handleRequest({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    headers: {},
-    query: {},
-    params: {},
-    body: { userId: 'usr-other-02', email: 'other@intruder.com', role: 'CLIENT' },
-    correlationId: 'kyc-corr-other',
-    ipAddress: '192.168.1.100',
-  });
-  const otherSessionId = (otherLogin.body.data as { sessionId: string }).sessionId;
+  const otherSessionId = 'sess-other-kyc-02';
+  registerSingleActiveSession('usr-other-02', otherSessionId, true);
   const otherUser = {
     id: 'usr-other-02',
     email: 'other@intruder.com',
     role: 'CLIENT' as const,
     sessionId: otherSessionId,
     companyName: 'Intruder Corp',
+    mfaVerified: true,
   };
 
   // TEST 1 : Référentiel des documents requis selon le profil (CLIENT, FOURNISSEUR, TRANSPORTEUR)
@@ -287,11 +306,11 @@ export function runKycModuleTests(): {
       headers: {},
       query: {},
       params: {},
-      body: { userId: 'usr-trans-01', email: 'dispatch@medfreight.com', role: 'TRANSPORTEUR' },
+      body: { email: 't.alami@logistrading.ma', password: 'CarrierLogis!2026' },
       correlationId: 'kyc-t3-login-other',
       ipAddress: '34.10.0.5',
     });
-    const otherSessionId = (otherLogin.body.data as { sessionId: string }).sessionId;
+    const otherData = otherLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
 
     const idorPreview = app.handleRequest({
       method: 'GET',
@@ -303,11 +322,11 @@ export function runKycModuleTests(): {
       correlationId: 'kyc-t3-idor',
       ipAddress: '34.10.0.5',
       user: {
-        id: 'usr-trans-01',
-        email: 'dispatch@medfreight.com',
+        id: otherData.userId,
+        email: otherData.email,
         role: 'TRANSPORTEUR',
-        sessionId: otherSessionId,
-        companyName: 'MedFreight',
+        sessionId: otherData.sessionId,
+        companyName: otherData.companyName,
       },
     });
 

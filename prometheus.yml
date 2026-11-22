@@ -1,6 +1,6 @@
 # ============================================================================
-# TRADELINK V6.0 — CONFIGURATION SCRAPING PROMETHEUS (PROMPT 12)
-# Fréquence de collecte, cibles et surveillance de la disponibilité 99.9%
+# TRADELINK V6.1 — CONFIGURATION SCRAPING PROMETHEUS
+# Fréquence de collecte, cibles HTTP/Exporters et surveillance disponibilité
 # ============================================================================
 
 global:
@@ -16,34 +16,40 @@ alerting:
 rule_files: []
 
 scrape_configs:
-  # 1. Métriques Applicatives TRADELINK V6.0
-  - job_name: 'tradelink-app'
-    metrics_path: '/api/v1/health'
+  # 1. Métriques Applicatives Backend Express TRADELINK V6.1
+  - job_name: 'tradelink-backend'
+    metrics_path: '/metrics'
     scrape_interval: 10s
+    authorization:
+      type: 'Bearer'
+      credentials_file: '/tmp/metrics_scrape_token'
     static_configs:
-      - targets: ['app:5173']
+      - targets: ['backend:3000']
         labels:
           environment: 'production'
           service: 'tradelink-core-api'
 
-  # 2. Métriques Base de Données PostgreSQL 16
+  # 2. Métriques Base de Données PostgreSQL 16 (via postgres-exporter)
   - job_name: 'postgres'
     scrape_interval: 15s
     static_configs:
-      - targets: ['postgres:5432']
+      - targets: ['postgres-exporter:9187']
         labels:
           role: 'primary-db'
 
-  # 3. Métriques Cache & Sessions Redis 7
+  # 3. Métriques Cache & Sessions Redis 7 (via redis-exporter)
   - job_name: 'redis'
     scrape_interval: 15s
     static_configs:
-      - targets: ['redis:6379']
+      - targets: ['redis-exporter:9121']
         labels:
           role: 'session-store'
 
   # 4. Métriques Gestionnaire KMS Vault
   - job_name: 'vault-kms'
+    metrics_path: '/v1/sys/metrics'
+    params:
+      format: ['prometheus']
     scrape_interval: 30s
     static_configs:
       - targets: ['vault:8200']

@@ -4,6 +4,7 @@
 // Conforme aux Chapitres 2, 6, 7, 9, 10, PROMPT 4 et PROMPT 5
 // ============================================================================
 
+import crypto from 'node:crypto';
 import {
   AppError,
   checkIdempotencyCache,
@@ -16,11 +17,40 @@ import {
   storeIdempotencyResult,
 } from '../middlewares/errorAndSecurity.middleware';
 import {
+  assertFlatStringQuery,
+  AuthForgotPasswordZodSchema,
+  AuthLoginZodSchema,
+  AuthMfaVerifyZodSchema,
+  AuthRefreshZodSchema,
+  AuthRegisterZodSchema,
+  AuthResetPasswordZodSchema,
+  AuthVerifyOtpZodSchema,
+  AuthVerifyPhoneZodSchema,
+  CartValidateZodSchema,
+  InvoiceGenerateZodSchema,
+  LogisticsIncidentCreateZodSchema,
+  OrderDisputeCreateZodSchema,
+  OrderStatusUpdateZodSchema,
+  parseWithZod,
+  PaymentInitiateZodSchema,
+  QuoteCreateZodSchema,
+  ShipmentGpsZodSchema,
+  StockMovementLegacyZodSchema,
+  StripeCheckoutSessionZodSchema,
+  StripeWebhookZodSchema,
+  TranslationDetectZodSchema,
+  TranslationTextZodSchema,
   validateCalculationPayload,
   validateKycDecisionPayload,
   validateOrderCreatePayload,
   validatePaginationAndFilters,
 } from '../validators/schema.validator';
+import {
+  constantTimeEqual,
+  getServiceHmacSecret,
+  isWeakOrExposedSecret,
+} from '../../services/securityCrypto';
+import { GeminiAiService } from '../../services/geminiAiService';
 import { TradeLinkRepositoryStore } from '../repositories/domain.repositories';
 import { TradeLinkDomainServices } from '../services/domain.services';
 import { buildOpenApiSpecification } from '../openapi/openapi.spec';
@@ -85,8 +115,14 @@ export class TradeLinkApiApplication {
   public handleRequest(ctx: ServerRequestContext): ServerResponsePayload {
     const start = performance.now();
     try {
-      // Assainissement XSS préventif de l'intégralité du payload entrant
-      if (ctx.body && typeof ctx.body === 'object') {
+      // Protection Express 5 contre les paramètres de requête non scalaires (?search[x]=1)
+      ctx.query = assertFlatStringQuery(ctx.query);
+
+      // Assainissement XSS préventif (exclu sur les webhooks signés HMAC afin de préserver la charge utile brute)
+      const isSignedWebhookRoute =
+        ctx.path === '/api/v1/payments/stripe/webhook' ||
+        ctx.path.startsWith('/api/v1/webhooks/payments/');
+      if (!isSignedWebhookRoute && ctx.body && typeof ctx.body === 'object') {
         ctx.body = sanitizeObjectFields(ctx.body);
       }
 
@@ -133,6 +169,15 @@ export class TradeLinkApiApplication {
       const pgAvailable = TradeLinkPostgresManager.isDatabaseAvailable();
       const redisHealth = TradeLinkRedisManager.checkRedisHealth();
       const isHealthy = pgAvailable && redisHealth.status === 'UP';
+      const kmsConfigured = Boolean(
+        process.env.KMS_VAULT_ADDR &&
+          process.env.KMS_VAULT_TOKEN &&
+          !isWeakOrExposedSecret(process.env.KMS_VAULT_TOKEN, 20)
+      );
+      const clamConfigured = Boolean(process.env.CLAMAV_HOST?.trim());
+      const clamBreaker = clamAvCircuitBreaker.getState();
+      const geminiConfigured = GeminiAiService.getInstance().isConfigured();
+      const geminiBreaker = geminiCircuitBreaker.getState();
       return this.ok(
         ctx,
         {
@@ -142,9 +187,19 @@ export class TradeLinkApiApplication {
           checks: {
             database: pgAvailable ? 'UP' : 'DOWN',
             redis: redisHealth.status,
-            vault: 'UP',
-            clamav: 'UP',
-            gemini: 'UP',
+            vault: kmsConfigured ? 'UP (Configured)' : 'NOT_CONFIGURED',
+            clamav:
+              clamBreaker === 'OPEN'
+                ? 'DEGRADED (Circuit Open)'
+                : clamConfigured
+                ? 'CONFIGURED'
+                : 'NOT_CONFIGURED',
+            gemini:
+              geminiBreaker === 'OPEN'
+                ? 'DEGRADED (Circuit Open)'
+                : geminiConfigured
+                ? 'UP (Configured)'
+                : 'NOT_CONFIGURED',
           },
         },
         isHealthy ? 200 : 503
@@ -155,6 +210,15 @@ export class TradeLinkApiApplication {
       const pgAvailable = TradeLinkPostgresManager.isDatabaseAvailable();
       const redisHealth = TradeLinkRedisManager.checkRedisHealth();
       const isReady = pgAvailable && redisHealth.status === 'UP';
+      const kmsConfigured = Boolean(
+        process.env.KMS_VAULT_ADDR &&
+          process.env.KMS_VAULT_TOKEN &&
+          !isWeakOrExposedSecret(process.env.KMS_VAULT_TOKEN, 20)
+      );
+      const clamConfigured = Boolean(process.env.CLAMAV_HOST?.trim());
+      const clamBreaker = clamAvCircuitBreaker.getState();
+      const geminiConfigured = GeminiAiService.getInstance().isConfigured();
+      const geminiBreaker = geminiCircuitBreaker.getState();
       return this.ok(
         ctx,
         {
@@ -162,9 +226,19 @@ export class TradeLinkApiApplication {
           checks: {
             postgresql16: pgAvailable ? 'READY' : 'UNAVAILABLE',
             redis7Cluster: redisHealth.status === 'UP' ? 'READY' : 'UNAVAILABLE',
-            clamAvDaemon: 'READY',
-            hashiCorpVaultKms: 'READY',
-            googleGeminiAi: 'READY',
+            clamAvDaemon:
+              clamBreaker === 'OPEN'
+                ? 'DEGRADED'
+                : clamConfigured
+                ? 'CONFIGURED'
+                : 'NOT_CONFIGURED',
+            hashiCorpVaultKms: kmsConfigured ? 'READY' : 'NOT_CONFIGURED',
+            googleGeminiAi:
+              geminiBreaker === 'OPEN'
+                ? 'DEGRADED'
+                : geminiConfigured
+                ? 'READY'
+                : 'NOT_CONFIGURED',
           },
         },
         isReady ? 200 : 503
@@ -180,10 +254,22 @@ export class TradeLinkApiApplication {
     }
 
     if (method === 'GET' && (path === '/api/v1/metrics' || path === '/api/v1/system/metrics')) {
+      const scrapeToken = process.env.METRICS_SCRAPE_TOKEN?.trim();
+      const authHeader = String(ctx.headers?.authorization || '');
+      const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      const hasValidScrapeToken =
+        Boolean(scrapeToken) &&
+        scrapeToken!.length >= 16 &&
+        Boolean(bearer) &&
+        constantTimeEqual(bearer, scrapeToken!);
+      if (!hasValidScrapeToken) {
+        enforceRBACAndOwnership(ctx, ['ADMIN']);
+      }
       return this.ok(ctx, observabilityMetrics.getSnapshot());
     }
 
     if (method === 'GET' && path === '/api/v1/circuit-breakers') {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
       return this.ok(ctx, {
         gemini: geminiCircuitBreaker.getStats(),
         meet: meetCircuitBreaker.getStats(),
@@ -193,6 +279,7 @@ export class TradeLinkApiApplication {
     }
 
     if (method === 'GET' && path === '/api/v1/dlq/jobs') {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
       return this.ok(ctx, DeadLetterQueueManager.listJobs());
     }
 
@@ -202,6 +289,7 @@ export class TradeLinkApiApplication {
 
     // 2A. Inscription Visiteur (Argon2id + OTP + Conditions Générales + Interdiction d'inscription publique ADMIN/COMPTABLE/SUPPORT)
     if (method === 'POST' && path === '/api/v1/auth/register') {
+      const parsedBody = parseWithZod(AuthRegisterZodSchema, ctx.body, 'VALIDATION_REGISTER_FIELDS');
       const {
         email,
         password,
@@ -218,15 +306,7 @@ export class TradeLinkApiApplication {
         requestedRole,
         termsAccepted,
         privacyAccepted,
-      } = ctx.body;
-
-      if (!email || !password || !companyName) {
-        throw new AppError(
-          400,
-          'VALIDATION_REGISTER_FIELDS',
-          'email, password et companyName sont obligatoires.'
-        );
-      }
+      } = parsedBody;
 
       const created = this.services.registerVisitorAccount({
         email: String(email),
@@ -252,10 +332,11 @@ export class TradeLinkApiApplication {
 
     // 2B. Vérification OTP Email (6 chiffres, expiration 10 min, max 5 essais, transition Visiteur -> Profil métier)
     if (method === 'POST' && (path === '/api/v1/auth/verify-otp' || path === '/api/v1/auth/verify-email')) {
-      const { email, code, approveClientOnboarding } = ctx.body;
-      if (!email || !code) {
-        throw new AppError(400, 'VALIDATION_OTP_FIELDS', 'email et code OTP sont requis.');
-      }
+      const { email, code, approveClientOnboarding } = parseWithZod(
+        AuthVerifyOtpZodSchema,
+        ctx.body,
+        'VALIDATION_OTP_FIELDS'
+      );
       const verified = this.services.verifyOtpChallenge({
         email: String(email),
         code: String(code),
@@ -269,10 +350,11 @@ export class TradeLinkApiApplication {
 
     // 2B-bis. Vérification SMS OTP Téléphone
     if (method === 'POST' && path === '/api/v1/auth/verify-phone') {
-      const { phone, code } = ctx.body;
-      if (!phone || !code) {
-        throw new AppError(400, 'VALIDATION_PHONE_OTP_FIELDS', 'phone et code SMS OTP sont requis.');
-      }
+      const { phone, code } = parseWithZod(
+        AuthVerifyPhoneZodSchema,
+        ctx.body,
+        'VALIDATION_PHONE_OTP_FIELDS'
+      );
       const verified = this.services.verifyPhoneOtpChallenge({
         phone: String(phone),
         code: String(code),
@@ -284,29 +366,20 @@ export class TradeLinkApiApplication {
 
     // 2C. Connexion (Argon2id + Protection Brute-Force + Session Unique Redis + JWT + Refresh Token + Cookie Sécurisé)
     if (method === 'POST' && path === '/api/v1/auth/login') {
-      const { userId, email, password, role, companyName, deviceName, userAgent, mfaCode } =
-        ctx.body;
-      if (!email || (!password && (!userId || !role))) {
-        throw new AppError(
-          400,
-          'VALIDATION_LOGIN_FIELDS',
-          'email et password (ou contexte userId/role) sont requis.'
-        );
-      }
+      const parsedLogin = parseWithZod(AuthLoginZodSchema, ctx.body, 'VALIDATION_LOGIN_FIELDS');
+      const { email, password, companyName, deviceName, userAgent, mfaCode } = parsedLogin;
       const sessionData = this.services.loginAndCreateSingleSession({
-        userId,
         email: String(email),
-        password: password !== undefined ? String(password) : undefined,
-        role,
+        password: String(password),
         companyName: companyName ?? 'TradeLink Partner',
         deviceName,
         userAgent,
-        mfaCode,
+        mfaCode: mfaCode ? String(mfaCode) : undefined,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
       });
 
-      const sessionCookie = `tradelink_session=${sessionData.sessionId}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Strict`;
+      const sessionCookie = `tradelink_session=${sessionData.accessToken}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Strict`;
 
       return this.ok(ctx, sessionData, 200, undefined, {
         'Set-Cookie': sessionCookie,
@@ -367,9 +440,11 @@ export class TradeLinkApiApplication {
 
     // 2C-quater. Protection anti-CSRF & Redirection intelligente
     if (method === 'GET' && path === '/api/v1/auth/csrf-token') {
-      const csrfToken = `csrf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const csrfToken = `csrf-${crypto.randomBytes(32).toString('hex')}`;
+      const isProdEnv = process.env.NODE_ENV === 'production';
       return this.ok(ctx, { csrfToken }, 200, undefined, {
         'X-CSRF-Token': csrfToken,
+        'Set-Cookie': `tradelink_csrf=${csrfToken}; Path=/; SameSite=Strict${isProdEnv ? '; Secure' : ''}`,
       });
     }
 
@@ -406,10 +481,7 @@ export class TradeLinkApiApplication {
 
     if (method === 'POST' && path === '/api/v1/auth/mfa/verify') {
       const user = requireAuthenticatedSession(ctx);
-      const { code } = ctx.body;
-      if (!code) {
-        throw new AppError(400, 'VALIDATION_MFA_CODE', 'Le code TOTP à 6 chiffres est requis.');
-      }
+      const { code } = parseWithZod(AuthMfaVerifyZodSchema, ctx.body, 'VALIDATION_MFA_CODE');
       const verified = this.services.verifyAdminTotpMfa({
         user,
         code: String(code),
@@ -421,10 +493,7 @@ export class TradeLinkApiApplication {
 
     // 2E. Rotation des Refresh Tokens & Détection de vol de jeton
     if (method === 'POST' && path === '/api/v1/auth/refresh') {
-      const { refreshToken } = ctx.body;
-      if (!refreshToken) {
-        throw new AppError(400, 'VALIDATION_REFRESH_TOKEN', 'refreshToken est requis.');
-      }
+      const { refreshToken } = parseWithZod(AuthRefreshZodSchema, ctx.body, 'VALIDATION_REFRESH_TOKEN');
       const rotated = this.services.rotateRefreshToken({
         refreshToken: String(refreshToken),
         correlationId: ctx.correlationId,
@@ -435,10 +504,7 @@ export class TradeLinkApiApplication {
 
     // 2F. Mot de passe oublié & Réinitialisation sécurisée à usage unique
     if (method === 'POST' && path === '/api/v1/auth/forgot-password') {
-      const { email } = ctx.body;
-      if (!email) {
-        throw new AppError(400, 'VALIDATION_EMAIL_REQUIRED', 'L’adresse email est requise.');
-      }
+      const { email } = parseWithZod(AuthForgotPasswordZodSchema, ctx.body, 'VALIDATION_EMAIL_REQUIRED');
       const res = this.services.requestPasswordReset({
         email: String(email),
         correlationId: ctx.correlationId,
@@ -448,14 +514,11 @@ export class TradeLinkApiApplication {
     }
 
     if (method === 'POST' && path === '/api/v1/auth/reset-password') {
-      const { token, newPassword } = ctx.body;
-      if (!token || !newPassword) {
-        throw new AppError(
-          400,
-          'VALIDATION_RESET_FIELDS',
-          'Le jeton et le nouveau mot de passe sont requis.'
-        );
-      }
+      const { token, newPassword } = parseWithZod(
+        AuthResetPasswordZodSchema,
+        ctx.body,
+        'VALIDATION_RESET_FIELDS'
+      );
       const res = this.services.confirmPasswordReset({
         token: String(token),
         newPassword: String(newPassword),
@@ -926,13 +989,7 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, prod, 201);
     }
 
-    // 3B. Mouvements de stock
-    if (method === 'GET' && path === '/api/v1/stocks/movements') {
-      requireAuthenticatedSession(ctx);
-      const list = this.services.listStockMovements(ctx.query?.productId);
-      return this.ok(ctx, list);
-    }
-
+    // 3B. Mouvements de stock (POST uniquement ici; GET unifié et protégé dans section Stocks ci-dessous)
     if (method === 'POST' && path === '/api/v1/stocks/movements') {
       const user = requireAuthenticatedSession(ctx);
       if (user.role === 'COMPTABLE') {
@@ -943,18 +1000,15 @@ export class TradeLinkApiApplication {
         );
       }
       enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'ADMIN'], undefined, 'stocks:write');
-      const { productId, movementType, quantity, reason, referenceDocument } = ctx.body;
-      if (!productId || !movementType || quantity === undefined || !reason) {
-        throw new AppError(
-          400,
-          'VALIDATION_STOCK_MOVEMENT_FIELDS',
-          'productId, movementType, quantity et reason sont requis.'
-        );
-      }
+      const { productId, movementType, quantity, reason, referenceDocument } = parseWithZod(
+        StockMovementLegacyZodSchema,
+        ctx.body,
+        'VALIDATION_STOCK_MOVEMENT_FIELDS'
+      );
       const res = this.services.recordStockMovementTransactional({
         actor: user,
         productId: String(productId),
-        movementType,
+        movementType: movementType as any,
         quantity: Number(quantity),
         reason: String(reason),
         referenceDocument: referenceDocument ? String(referenceDocument) : undefined,
@@ -965,18 +1019,21 @@ export class TradeLinkApiApplication {
     }
 
     if (method === 'DELETE' && path.startsWith('/api/v1/products/')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'ADMIN'], undefined, 'products:write');
       const productId = path.split('/').pop() ?? '';
       const product = this.repo.findActiveProductById(productId);
       if (!product) {
         throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Produit introuvable ou déjà supprimé.');
       }
       // Protection IDOR : un Fournisseur ne peut supprimer que ses propres produits
-      enforceRBACAndOwnership(
-        ctx,
-        ['FOURNISSEUR', 'ADMIN'],
-        ctx.user?.role === 'FOURNISSEUR' ? product.supplierId : undefined,
-        'products:write'
-      );
+      if (user.role === 'FOURNISSEUR' && product.supplierId !== user.id) {
+        throw new AppError(
+          403,
+          'RESOURCE_OWNERSHIP_VIOLATION',
+          'Accès refusé (Protection IDOR) : vous ne pouvez supprimer que vos propres produits.'
+        );
+      }
       if (this.services.hasActiveOrdersForProduct(productId)) {
         throw new AppError(
           409,
@@ -1181,13 +1238,17 @@ export class TradeLinkApiApplication {
 
     // 1. Vue d'ensemble consolidée des stocks
     if (method === 'GET' && path === '/api/v1/stocks/overview') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const supplierId = ctx.query?.supplierId;
-      const overview = this.services.getStockOverviewService(ctx.user, supplierId);
+      const overview = this.services.getStockOverviewService(user, supplierId);
       return this.ok(ctx, overview);
     }
 
     // 2. Historique des mouvements de stock
     if (method === 'GET' && path === '/api/v1/stocks/movements') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const filter = {
         productId: ctx.query?.productId,
         supplierId: ctx.query?.supplierId,
@@ -1196,7 +1257,7 @@ export class TradeLinkApiApplication {
         startDate: ctx.query?.startDate,
         endDate: ctx.query?.endDate,
       };
-      const movements = this.services.listStockMovementsService(ctx.user, filter);
+      const movements = this.services.listStockMovementsService(user, filter);
       return this.ok(ctx, movements);
     }
 
@@ -1269,13 +1330,15 @@ export class TradeLinkApiApplication {
 
     // 9. Liste des réservations de stock
     if (method === 'GET' && path === '/api/v1/stocks/reservations') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const filter = {
         orderId: ctx.query?.orderId,
         clientId: ctx.query?.clientId,
         productId: ctx.query?.productId,
         status: ctx.query?.status as any,
       };
-      const reservations = this.services.listStockReservationsService(ctx.user, filter);
+      const reservations = this.services.listStockReservationsService(user, filter);
       return this.ok(ctx, reservations);
     }
 
@@ -1291,7 +1354,9 @@ export class TradeLinkApiApplication {
     }
 
     if (method === 'GET' && path === '/api/v1/stocks/inventory') {
-      const sessions = this.services.listInventorySessionsService(ctx.user, ctx.query?.supplierId);
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
+      const sessions = this.services.listInventorySessionsService(user, ctx.query?.supplierId);
       return this.ok(ctx, sessions);
     }
 
@@ -1315,15 +1380,19 @@ export class TradeLinkApiApplication {
     }
 
     if (method === 'GET' && path.startsWith('/api/v1/stocks/inventory/')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const sessionId = path.replace('/api/v1/stocks/inventory/', '');
-      const session = this.services.getInventorySessionDetailService(ctx.user, sessionId);
+      const session = this.services.getInventorySessionDetailService(user, sessionId);
       return this.ok(ctx, session);
     }
 
     // 11. Alertes de stock faible & ruptures
     if (method === 'GET' && path === '/api/v1/stocks/alerts') {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const alerts = this.services.listStockAlertsService(
-        ctx.user,
+        user,
         ctx.query?.supplierId,
         ctx.query?.resolved === 'true' ? false : true
       );
@@ -1339,7 +1408,9 @@ export class TradeLinkApiApplication {
 
     // 12. Rapport financier de valorisation & rotation des stocks
     if (method === 'GET' && path === '/api/v1/stocks/reports/valuation') {
-      const report = this.services.getStockValuationReportService(ctx.user, ctx.query?.supplierId);
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
+      const report = this.services.getStockValuationReportService(user, ctx.query?.supplierId);
       return this.ok(ctx, report);
     }
 
@@ -1347,18 +1418,19 @@ export class TradeLinkApiApplication {
     // 4A. PANIER CLIENT (Validation serveur, prix déterministes, devises, persistance)
     // ============================================================================
     if (method === 'POST' && path === '/api/v1/cart/validate') {
-      const user = ctx.user;
-      const { items, currency, vatRatePct, shippingFlatRate, persist } = ctx.body || {};
-      if (!Array.isArray(items)) {
-        throw new AppError(400, 'INVALID_CART_PAYLOAD', 'La liste items est obligatoire.');
-      }
+      const user = requireAuthenticatedSession(ctx);
+      const { items, currency, vatRatePct, shippingFlatRate, persist } = parseWithZod(
+        CartValidateZodSchema,
+        ctx.body,
+        'INVALID_CART_PAYLOAD'
+      );
 
       const res = this.services.validateCartService({
-        items,
+        items: items as any,
         currency: currency ? String(currency) : 'EUR',
-        vatRatePct: vatRatePct ? String(vatRatePct) : '20.00',
-        shippingFlatRate: shippingFlatRate ? String(shippingFlatRate) : '650.00',
-        saveForUserId: persist && user ? user.id : undefined,
+        vatRatePct: vatRatePct !== undefined ? String(vatRatePct) : '20.00',
+        shippingFlatRate: shippingFlatRate !== undefined ? String(shippingFlatRate) : '650.00',
+        saveForUserId: persist ? user.id : undefined,
       });
 
       return this.ok(ctx, res, 200);
@@ -1389,6 +1461,7 @@ export class TradeLinkApiApplication {
     // 4. Commandes Transactionnelles, Ownership & Réservation de Stock
     if (method === 'GET' && path === '/api/v1/orders') {
       const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const pagination = validatePaginationAndFilters(ctx.query);
       const res = this.repo.getActiveOrdersForActor(user.id, user.role, pagination);
       return this.ok(ctx, res.items, 200, {
@@ -1410,15 +1483,16 @@ export class TradeLinkApiApplication {
       }
       const parts = path.split('/');
       const orderId = parts[parts.length - 2];
-      const { status, reason } = ctx.body || {};
-      if (!status) {
-        throw new AppError(400, 'STATUS_REQUIRED', 'Le statut cible est obligatoire.');
-      }
+      const { status, reason } = parseWithZod(
+        OrderStatusUpdateZodSchema,
+        ctx.body,
+        'STATUS_REQUIRED'
+      );
 
       const updated = this.services.updateOrderStatusTransactional({
         actor: user,
         orderId,
-        targetStatus: status,
+        targetStatus: status as any,
         reason,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
@@ -1457,15 +1531,16 @@ export class TradeLinkApiApplication {
       enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR']);
       const parts = path.split('/');
       const orderId = parts[parts.length - 2];
-      const { reason, description } = ctx.body || {};
-      if (!reason || !description) {
-        throw new AppError(400, 'DISPUTE_FIELDS_REQUIRED', 'reason et description sont obligatoires.');
-      }
+      const { reason, description } = parseWithZod(
+        OrderDisputeCreateZodSchema,
+        ctx.body,
+        'DISPUTE_FIELDS_REQUIRED'
+      );
 
       const result = this.services.openOrderDisputeTransactional({
         actor: user,
         orderId,
-        reason,
+        reason: reason as any,
         description,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
@@ -1475,21 +1550,23 @@ export class TradeLinkApiApplication {
     }
 
     if (method === 'GET' && path.startsWith('/api/v1/orders/')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN'], undefined, 'orders:read_own');
       const orderId = path.split('/').pop() ?? '';
       const order = this.repo.findActiveOrderById(orderId);
       if (!order) {
         throw new AppError(404, 'ORDER_NOT_FOUND', 'Commande introuvable.');
       }
-      enforceRBACAndOwnership(
-        ctx,
-        ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN'],
-        ctx.user?.role === 'CLIENT'
-          ? order.clientId
-          : ctx.user?.role === 'FOURNISSEUR'
-          ? order.supplierId
-          : undefined,
-        'orders:read_own'
-      );
+      if (
+        (user.role === 'CLIENT' && order.clientId !== user.id) ||
+        (user.role === 'FOURNISSEUR' && order.supplierId !== user.id)
+      ) {
+        throw new AppError(
+          403,
+          'RESOURCE_OWNERSHIP_VIOLATION',
+          'Accès refusé (Protection IDOR) : vous ne pouvez consulter que vos propres commandes.'
+        );
+      }
       return this.ok(ctx, order);
     }
 
@@ -1521,6 +1598,7 @@ export class TradeLinkApiApplication {
     // 4B. Devis (Quotes) — Création, Chiffrage Fournisseur, Acceptation Client & Conversion en Commande
     if (method === 'GET' && path === '/api/v1/quotes') {
       const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const allQuotes = this.repo.getSnapshot().quotes;
       const scoped =
         user.role === 'ADMIN' || user.role === 'COMPTABLE'
@@ -1529,7 +1607,7 @@ export class TradeLinkApiApplication {
           ? allQuotes.filter((q) => q.clientId === user.id)
           : user.role === 'FOURNISSEUR'
           ? allQuotes.filter((q) => q.supplierId === user.id)
-          : allQuotes;
+          : [];
       return this.ok(ctx, scoped);
     }
 
@@ -1543,9 +1621,10 @@ export class TradeLinkApiApplication {
         );
       }
       enforceRBACAndOwnership(ctx, ['CLIENT', 'ADMIN']);
+      const validatedQuote = parseWithZod(QuoteCreateZodSchema, ctx.body, 'VALIDATION_QUOTE_FIELDS');
       const quote = this.services.createQuoteTransactional({
         actor: user,
-        quoteInput: ctx.body as any,
+        quoteInput: validatedQuote as any,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
       });
@@ -1585,6 +1664,7 @@ export class TradeLinkApiApplication {
 
     if (method === 'GET' && path.startsWith('/api/v1/quotes/') && !path.replace('/api/v1/quotes/', '').includes('/')) {
       const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const quoteId = path.split('/').pop() || '';
       const quote = this.repo.findQuoteById(quoteId);
       if (!quote) {
@@ -1709,10 +1789,11 @@ export class TradeLinkApiApplication {
     if (method === 'POST' && path === '/api/v1/invoices/generate') {
       const user = requireAuthenticatedSession(ctx);
       enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
-      const { orderId, dueInDays, jurisdiction } = ctx.body;
-      if (!orderId) {
-        throw new AppError(400, 'VALIDATION_INVOICE_FIELDS', 'orderId est obligatoire.');
-      }
+      const { orderId, dueInDays, jurisdiction } = parseWithZod(
+        InvoiceGenerateZodSchema,
+        ctx.body,
+        'VALIDATION_INVOICE_FIELDS'
+      );
       const inv = this.services.generateInvoiceFromOrderTransactional({
         actor: user,
         orderId: String(orderId),
@@ -1727,14 +1808,11 @@ export class TradeLinkApiApplication {
     if (method === 'POST' && path === '/api/v1/payments/stripe/checkout-session') {
       const user = requireAuthenticatedSession(ctx);
       enforceRBACAndOwnership(ctx, ['CLIENT', 'ADMIN']);
-      const { orderId, invoiceId } = ctx.body;
-      if (!orderId || !invoiceId) {
-        throw new AppError(
-          400,
-          'VALIDATION_PAYMENT_SESSION_FIELDS',
-          'orderId et invoiceId sont requis.'
-        );
-      }
+      const { orderId, invoiceId } = parseWithZod(
+        StripeCheckoutSessionZodSchema,
+        ctx.body,
+        'VALIDATION_PAYMENT_SESSION_FIELDS'
+      );
       const session = this.services.createStripeCheckoutSessionTransactional({
         actor: user,
         orderId: String(orderId),
@@ -1746,16 +1824,20 @@ export class TradeLinkApiApplication {
     }
 
     if (method === 'POST' && path === '/api/v1/payments/stripe/webhook') {
-      const payload = ctx.body;
-      if (!payload?.id || !payload?.type || !payload?.data?.object) {
-        throw new AppError(
-          400,
-          'VALIDATION_STRIPE_WEBHOOK_PAYLOAD',
-          'Payload de webhook Stripe invalide.'
-        );
-      }
+      const signatureHeader = String(ctx.headers['stripe-signature'] || '');
+      const timestampHeader = (
+        ctx.headers['x-timestamp'] || ctx.headers['x-tradelink-timestamp']
+      ) as string | undefined;
+      const payload = parseWithZod(
+        StripeWebhookZodSchema,
+        ctx.body,
+        'VALIDATION_STRIPE_WEBHOOK_PAYLOAD'
+      );
       const res = this.services.processStripeWebhookTransactional({
         webhookPayload: payload as any,
+        rawPayload: ctx.rawBody ?? ctx.body,
+        signatureHeader,
+        timestampHeader,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
       });
@@ -1764,6 +1846,7 @@ export class TradeLinkApiApplication {
 
     if (method === 'GET' && path === '/api/v1/payments') {
       const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const allPayments = this.repo.getSnapshot().payments;
       const scoped =
         user.role === 'ADMIN' || user.role === 'COMPTABLE'
@@ -1772,7 +1855,7 @@ export class TradeLinkApiApplication {
           ? allPayments.filter((p) => p.clientId === user.id)
           : user.role === 'FOURNISSEUR'
           ? allPayments.filter((p) => p.supplierId === user.id)
-          : allPayments;
+          : [];
       return this.ok(ctx, scoped);
     }
 
@@ -1782,10 +1865,11 @@ export class TradeLinkApiApplication {
     if (method === 'POST' && path === '/api/v1/payments/initiate') {
       const user = requireAuthenticatedSession(ctx);
       enforceRBACAndOwnership(ctx, ['CLIENT', 'ADMIN']);
-      const { orderId, invoiceId, provider, customerEmail, currency } = ctx.body || {};
-      if (!orderId || !provider) {
-        throw new AppError(400, 'PAYMENT_INITIATE_VALIDATION', 'orderId et provider sont obligatoires.');
-      }
+      const { orderId, invoiceId, provider, customerEmail, currency } = parseWithZod(
+        PaymentInitiateZodSchema,
+        ctx.body,
+        'PAYMENT_INITIATE_VALIDATION'
+      );
 
       const idempotencyKey = ctx.headers['idempotency-key'] as string | undefined;
 
@@ -1881,7 +1965,23 @@ export class TradeLinkApiApplication {
     // 4E. WEBHOOKS DE PAIEMENT SÉCURISÉS (HMAC-SHA256 & Anti-Rejeu)
     // ============================================================================
     if (method === 'POST' && path.startsWith('/api/v1/webhooks/payments/')) {
-      const provider = path.split('/').pop()?.toUpperCase() as any;
+      const rawProvider = path.split('/').pop()?.toUpperCase() || '';
+      const ALLOWED_WEBHOOK_PROVIDERS = new Set([
+        'STRIPE',
+        'KONNECT',
+        'FLOUCI',
+        'CMI',
+        'WIRE_TRANSFER',
+        'LETTER_OF_CREDIT',
+      ]);
+      if (!ALLOWED_WEBHOOK_PROVIDERS.has(rawProvider)) {
+        throw new AppError(
+          400,
+          'INVALID_PAYMENT_PROVIDER',
+          `Fournisseur de paiement webhook non autorisé : ${rawProvider || 'EMPTY'}`
+        );
+      }
+      const provider = rawProvider as any;
       const signatureHeader = (
         ctx.headers['stripe-signature'] ||
         ctx.headers['x-tradelink-signature'] ||
@@ -1897,11 +1997,11 @@ export class TradeLinkApiApplication {
         ctx.headers['x-tradelink-timestamp']
       ) as string | undefined;
 
-      const webhookSecret = `whsec_${provider ? String(provider).toLowerCase() : 'gateway'}_secret_key_v6`;
+      const webhookSecret = getServiceHmacSecret(`${rawProvider}_WEBHOOK_SECRET`);
 
       const result = this.services.processSecureMultiProviderWebhookTransactional({
         provider,
-        rawPayload: ctx.body,
+        rawPayload: ctx.rawBody ?? ctx.body,
         signatureHeader,
         timestampHeader,
         webhookSecret,
@@ -1917,6 +2017,7 @@ export class TradeLinkApiApplication {
     // ============================================================================
     if (method === 'GET' && path === '/api/v1/disputes') {
       const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'COMPTABLE', 'ADMIN']);
       const pagination = validatePaginationAndFilters(ctx.query);
       const disputes = this.repo.getDisputesForActor(user.id, user.role, pagination);
       return this.ok(ctx, disputes, 200);
@@ -2316,24 +2417,37 @@ export class TradeLinkApiApplication {
 
     // 6.11. Lever / Abaisser la main
     if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/raise-hand')) {
-      requireAuthenticatedSession(ctx);
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'SUPPORT', 'ADMIN']);
       const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/raise-hand', '');
+      const participantId = typeof ctx.body?.participantId === 'string' ? ctx.body.participantId.trim() : '';
+      if (!participantId) {
+        throw new AppError(400, 'VALIDATION_PARTICIPANT_ID', 'Identifiant participantId requis.');
+      }
       const session = this.services.raiseHandRoomService(
         roomIdOrCode,
-        String(ctx.body?.participantId),
-        ctx.body?.isRaised
+        participantId,
+        typeof ctx.body?.isRaised === 'boolean' ? ctx.body.isRaised : undefined,
+        user
       );
       return this.ok(ctx, { session }, 200);
     }
 
     // 6.12. Diffusion de réactions interactives
     if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/reactions')) {
-      requireAuthenticatedSession(ctx);
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'SUPPORT', 'ADMIN']);
       const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/reactions', '');
+      const participantId = typeof ctx.body?.participantId === 'string' ? ctx.body.participantId.trim() : '';
+      const emoji = typeof ctx.body?.emoji === 'string' ? ctx.body.emoji.trim() : '';
+      if (!participantId || !emoji) {
+        throw new AppError(400, 'VALIDATION_REACTION_PAYLOAD', 'participantId et emoji valides requis.');
+      }
       const res = this.services.broadcastRoomReactionService(
         roomIdOrCode,
-        String(ctx.body?.participantId),
-        String(ctx.body?.emoji)
+        participantId,
+        emoji,
+        user
       );
       return this.ok(ctx, res, 200);
     }
@@ -2389,8 +2503,11 @@ export class TradeLinkApiApplication {
     // ============================================================================
 
     if (method === 'GET' && path === '/api/v1/logistics/vehicles') {
-      requireAuthenticatedSession(ctx);
-      const vehicles = this.services.listVehicles(ctx.query?.carrierId);
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'TRANSPORTEUR', 'ADMIN']);
+      const targetCarrierId =
+        user.role === 'TRANSPORTEUR' ? user.id : ctx.query?.carrierId;
+      const vehicles = this.services.listVehicles(targetCarrierId);
       return this.ok(ctx, vehicles);
     }
 
@@ -2447,6 +2564,7 @@ export class TradeLinkApiApplication {
 
     if (method === 'GET' && path === '/api/v1/logistics/shipments') {
       const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN']);
       const allShipments = this.repo.getSnapshot().shipments;
       const scoped =
         user.role === 'ADMIN' || user.role === 'COMPTABLE'
@@ -2456,16 +2574,16 @@ export class TradeLinkApiApplication {
           : user.role === 'TRANSPORTEUR'
           ? allShipments.filter((s) => s.carrierId === user.id)
           : user.role === 'FOURNISSEUR'
-          ? allShipments.filter((s) => !s.supplierId || s.supplierId === user.id)
-          : allShipments;
+          ? allShipments.filter((s) => s.supplierId === user.id)
+          : [];
       return this.ok(ctx, scoped);
     }
 
     if (method === 'GET' && path.startsWith('/api/v1/logistics/shipments/') && path.endsWith('/tracking')) {
-      requireAuthenticatedSession(ctx);
+      const user = requireAuthenticatedSession(ctx);
       const parts = path.split('/');
       const shipmentId = parts[parts.length - 2];
-      const res = this.services.getShipmentTrackingWithWaypoints(shipmentId);
+      const res = this.services.getShipmentTrackingWithWaypoints(shipmentId, user);
       return this.ok(ctx, res);
     }
 
@@ -2481,6 +2599,7 @@ export class TradeLinkApiApplication {
       !path.endsWith('/pod')
     ) {
       const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN']);
       const shipmentId = path.split('/').pop() || '';
       const shipment = this.repo.getSnapshot().shipments.find((s) => s.id === shipmentId || s.trackingNumber === shipmentId);
       if (!shipment) {
@@ -2492,7 +2611,7 @@ export class TradeLinkApiApplication {
       if (user.role === 'TRANSPORTEUR' && shipment.carrierId !== user.id) {
         throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Accès interdit à cette expédition.');
       }
-      if (user.role === 'FOURNISSEUR' && shipment.supplierId && shipment.supplierId !== user.id) {
+      if (user.role === 'FOURNISSEUR' && shipment.supplierId !== user.id) {
         throw new AppError(403, 'RESOURCE_OWNERSHIP_VIOLATION', 'Accès interdit à cette expédition.');
       }
       return this.ok(ctx, shipment);
@@ -2539,19 +2658,20 @@ export class TradeLinkApiApplication {
     if (method === 'POST' && path.startsWith('/api/v1/logistics/shipments/') && path.endsWith('/gps')) {
       const user = requireAuthenticatedSession(ctx);
       enforceRBACAndOwnership(ctx, ['TRANSPORTEUR', 'ADMIN']);
+      const gpsBody = parseWithZod(ShipmentGpsZodSchema, ctx.body, 'VALIDATION_GPS_PAYLOAD');
       const parts = path.split('/');
       const shipmentId = parts[parts.length - 2];
       const res = this.services.recordShipmentGpsLocationTransactional({
         actor: user,
         shipmentId,
-        latitude: Number(ctx.body?.latitude),
-        longitude: Number(ctx.body?.longitude),
-        altitudeMeters: ctx.body?.altitudeMeters,
-        speedKmh: ctx.body?.speedKmh,
-        headingDeg: ctx.body?.headingDeg,
-        ambientTempCelsius: ctx.body?.ambientTempCelsius,
-        batteryLevelPct: ctx.body?.batteryLevelPct,
-        addressDescription: ctx.body?.addressDescription,
+        latitude: Number(gpsBody.latitude),
+        longitude: Number(gpsBody.longitude),
+        altitudeMeters: (gpsBody as any).altitudeMeters,
+        speedKmh: gpsBody.speedKmh,
+        headingDeg: (gpsBody as any).headingDeg,
+        ambientTempCelsius: (gpsBody as any).ambientTempCelsius,
+        batteryLevelPct: (gpsBody as any).batteryLevelPct,
+        addressDescription: (gpsBody as any).addressDescription,
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
       });
@@ -2590,12 +2710,17 @@ export class TradeLinkApiApplication {
     if (method === 'POST' && path === '/api/v1/logistics/incidents') {
       const user = requireAuthenticatedSession(ctx);
       enforceRBACAndOwnership(ctx, ['TRANSPORTEUR', 'CLIENT', 'FOURNISSEUR', 'ADMIN']);
+      const incidentPayload = parseWithZod(
+        LogisticsIncidentCreateZodSchema,
+        ctx.body,
+        'VALIDATION_INCIDENT_PAYLOAD'
+      );
       const inc = this.services.reportLogisticsIncidentTransactional({
         actor: user,
-        ...ctx.body,
+        ...(incidentPayload as any),
         correlationId: ctx.correlationId,
         ipAddress: ctx.ipAddress,
-      } as any);
+      });
       return this.ok(ctx, inc, 201);
     }
 
@@ -2618,8 +2743,27 @@ export class TradeLinkApiApplication {
     }
 
     if (method === 'GET' && path === '/api/v1/logistics/incidents') {
-      requireAuthenticatedSession(ctx);
-      return this.ok(ctx, this.repo.getSnapshot().incidents);
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'ADMIN']);
+      const snapshot = this.repo.getSnapshot();
+      const allIncidents = snapshot.incidents;
+      if (user.role === 'ADMIN' || user.role === 'COMPTABLE') {
+        return this.ok(ctx, allIncidents);
+      }
+      const allowedShipments = new Set(
+        snapshot.shipments
+          .filter(
+            (s) =>
+              (user.role === 'CLIENT' && s.clientId === user.id) ||
+              (user.role === 'FOURNISSEUR' && s.supplierId === user.id) ||
+              (user.role === 'TRANSPORTEUR' && s.carrierId === user.id)
+          )
+          .map((s) => s.id)
+      );
+      const scoped = allIncidents.filter(
+        (inc) => allowedShipments.has(inc.shipmentId) || inc.reporterId === user.id
+      );
+      return this.ok(ctx, scoped);
     }
 
     // ============================================================================
@@ -2950,22 +3094,27 @@ export class TradeLinkApiApplication {
 
     // 21A. Détection de langue
     if (method === 'POST' && path === '/api/v1/translation/detect') {
-      const text = ctx.body?.text || '';
+      requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'SUPPORT', 'ADMIN']);
+      const { text } = parseWithZod(TranslationDetectZodSchema, ctx.body, 'INVALID_PAYLOAD');
       const result = CentralTranslationService.detectLanguage(text);
       return this.ok(ctx, result, 200);
     }
 
     // 21B. Traduction de texte générique / B2B
     if (method === 'POST' && path === '/api/v1/translation/text') {
-      const { text, sourceLang, targetLang, domain, preserveTerms, bypassCache } = ctx.body || {};
-      if (!text || !targetLang) {
-        throw new AppError(400, 'INVALID_PAYLOAD', 'Paramètres requis : text et targetLang.');
-      }
+      requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'SUPPORT', 'ADMIN']);
+      const { text, sourceLang, targetLang, domain, preserveTerms, bypassCache } = parseWithZod(
+        TranslationTextZodSchema,
+        ctx.body,
+        'INVALID_PAYLOAD'
+      );
       const result = CentralTranslationService.translateTextSync({
         text,
         sourceLang,
         targetLang,
-        domain,
+        domain: domain as any,
         preserveTerms,
         bypassCache,
       });
@@ -3021,17 +3170,21 @@ export class TradeLinkApiApplication {
 
     // 21D. Traduction de produit de catalogue
     if (method === 'POST' && path.startsWith('/api/v1/translation/product/')) {
+      const user = requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['FOURNISSEUR', 'ADMIN']);
       const productId = path.replace('/api/v1/translation/product/', '');
       const targetLang = ctx.body?.targetLang;
       if (!targetLang) {
         throw new AppError(400, 'INVALID_PAYLOAD', 'targetLang requis.');
       }
-      const result = this.services.translateCatalogProduct(productId, targetLang);
+      const result = this.services.translateCatalogProduct(productId, targetLang, user);
       return this.ok(ctx, result, 200);
     }
 
     // 21E. Consultation et filtrage du glossaire officiel TradeLink
     if (method === 'GET' && path === '/api/v1/translation/glossary') {
+      requireAuthenticatedSession(ctx);
+      enforceRBACAndOwnership(ctx, ['CLIENT', 'FOURNISSEUR', 'TRANSPORTEUR', 'COMPTABLE', 'SUPPORT', 'ADMIN']);
       const { category, status, search } = ctx.query || {};
       const terms = this.services.listGlossaryTermsService({
         category: category as any,
@@ -3111,6 +3264,7 @@ export class TradeLinkApiApplication {
 
     // 21G. Métriques et quotas du moteur de traduction
     if (method === 'GET' && path === '/api/v1/translation/metrics') {
+      enforceRBACAndOwnership(ctx, ['ADMIN']);
       const metrics = CentralTranslationService.getEngineMetrics();
       return this.ok(ctx, metrics, 200);
     }
@@ -3599,17 +3753,26 @@ export class TradeLinkApiApplication {
     // 26D. Téléchargement sécurisé via Token temporaire (Public / No session required if valid token)
     if (method === 'GET' && path.startsWith('/api/v1/documents/') && path.endsWith('/download')) {
       const docId = path.replace('/api/v1/documents/', '').replace('/download', '');
-      const token = ctx.query?.token || '';
-      const expires = parseInt(ctx.query?.expires || '0', 10);
-      const userId = ctx.query?.user || '';
+      const token = (ctx.query?.token || '').trim();
+      const expiresRaw = ctx.query?.expires || '';
+      const expires = Number(expiresRaw);
+      const userId = (ctx.query?.user || '').trim();
       const locale = (ctx.query?.locale as any) || 'fr';
+
+      if (!token || !userId || !Number.isFinite(expires) || expires <= 0) {
+        throw new AppError(
+          400,
+          'INVALID_DOWNLOAD_TOKEN_PARAMS',
+          'Paramètres de téléchargement temporaire invalides ou manquants (token, expires, user).'
+        );
+      }
 
       const resPdf = this.services.verifyAndDownloadDocumentWithTokenService(
         docId,
         token,
         expires,
         userId,
-        'tradelink_doc_secret_key_9944',
+        undefined,
         locale
       );
 

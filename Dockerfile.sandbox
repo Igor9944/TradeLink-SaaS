@@ -1,5 +1,5 @@
 # ============================================================================
-# TRADELINK V6.0 — DOCKERFILE SANDBOX ISOLÉE (PROMPT 11 & 12)
+# TRADELINK V6.1 — DOCKERFILE SANDBOX ISOLÉE (PROMPT 11 & 12)
 # Conteneur éphémère d'analyse de données legacy sans accès réseau
 # - Isolation réseau stricte (Network: none)
 # - Système de fichiers en lecture seule (read-only rootfs)
@@ -22,11 +22,17 @@ RUN addgroup -g 20001 sandboxgroup && \
 
 WORKDIR /sandbox
 
+ENV HOME=/sandbox/output \
+    TMPDIR=/tmp
+
 # Création du point de montage éphémère pour les fichiers temporaires
 RUN mkdir -p /sandbox/input /sandbox/output && \
-    chown -R sandboxuser:sandboxgroup /sandbox
+    chown -R 20001:20001 /sandbox && \
+    chmod 0750 /sandbox /sandbox/input /sandbox/output
 
-USER sandboxuser
+USER 20001:20001
+
+HEALTHCHECK NONE
 
 # Point d'entrée de traitement sécurisé
 ENTRYPOINT ["/bin/bash", "-c"]

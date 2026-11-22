@@ -18,7 +18,32 @@ import {
   BackupRestoreDrillResult,
   LoginAttemptRecord,
 } from '../types';
-import { generateSha256Hash } from './securityCrypto';
+import {
+  generateSha256Hash,
+  getSecureRandomAlphanumeric,
+  getSecureRandomHex,
+  getSecureRandomInt,
+} from './securityCrypto';
+
+function escapeXml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+const SPREADSHEET_FORMULA_REGEX = /^(?:[\t\r\n]|[\s\u0000-\u001F]*[=+\-@|%])/;
+
+export function neutralizeSpreadsheetFormula(value: unknown): { value: string; neutralized: boolean } {
+  const str = String(value ?? '');
+  if (SPREADSHEET_FORMULA_REGEX.test(str)) {
+    return { value: `'${str}`, neutralized: true };
+  }
+  return { value: str, neutralized: false };
+}
 
 // ============================================================================
 // 1. TYPES & CONSTANTES : FORMATS D'IMPORT / EXPORT
@@ -136,13 +161,16 @@ export function exportDatasetToFormat(params: {
   switch (format) {
     case 'CSV': {
       mimeType = 'text/csv;charset=utf-8;';
-      const header = keys.join(';');
+      const header = keys
+        .map((k) => `"${neutralizeSpreadsheetFormula(k).value.replace(/"/g, '""')}"`)
+        .join(';');
       const rows = records.map((r) =>
         keys
           .map((k) => {
             const val = r[k] ?? '';
             const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
-            return `"${str.replace(/"/g, '""')}"`;
+            const safeStr = neutralizeSpreadsheetFormula(str).value;
+            return `"${safeStr.replace(/"/g, '""')}"`;
           })
           .join(';')
       );
@@ -228,15 +256,15 @@ export function exportDatasetToFormat(params: {
 
     case 'XLSX': {
       mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;';
-      // Format XML SpreadsheetML standard ouvrable par Excel
+      // Format XML SpreadsheetML standard ouvrable par Excel avec échappement XML strict et protection CWE-1236
       outputContent = `<?xml version="1.0"?>\n` +
         `<?mso-application progid="Excel.Sheet"?>\n` +
         `<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n` +
         ` xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n` +
-        `  <Worksheet ss:Name="${entityName}">\n` +
+        `  <Worksheet ss:Name="${escapeXml(entityName)}">\n` +
         `    <Table>\n` +
         `      <Row>\n` +
-        keys.map((k) => `        <Cell><Data ss:Type="String">${k}</Data></Cell>\n`).join('') +
+        keys.map((k) => `        <Cell><Data ss:Type="String">${escapeXml(neutralizeSpreadsheetFormula(k).value)}</Data></Cell>\n`).join('') +
         `      </Row>\n` +
         records
           .map(
@@ -246,7 +274,8 @@ export function exportDatasetToFormat(params: {
                 .map((k) => {
                   const val = r[k] ?? '';
                   const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
-                  return `        <Cell><Data ss:Type="String">${str.replace(/[<>&]/g, '')}</Data></Cell>\n`;
+                  const safeStr = neutralizeSpreadsheetFormula(str).value;
+                  return `        <Cell><Data ss:Type="String">${escapeXml(safeStr)}</Data></Cell>\n`;
                 })
                 .join('') +
               `      </Row>\n`
@@ -485,9 +514,9 @@ export interface EnvelopeCipherResult {
 }
 
 export function simulateEnvelopeEncryption(plainText: string, kek: KMSKeyRecord): EnvelopeCipherResult {
-  // 1. Simulation génération DEK aléatoire en mémoire vive (256 bits = 32 octets)
-  const plainDek = `dek-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const ivHex = computeSha256Hex(`iv:${Date.now()}:${plainText.length}`).slice(0, 24); // 12 octets IV
+  // 1. Génération DEK CSPRNG aléatoire (256 bits = 32 octets) & IV CSPRNG (96 bits = 12 octets)
+  const plainDek = `dek-${getSecureRandomHex(32)}`;
+  const ivHex = getSecureRandomHex(12); // 12 octets IV CSPRNG
 
   // 2. Chiffrement du texte sous la DEK
   const cipherText = Buffer.from(plainText, 'utf-8').toString('base64');
@@ -546,7 +575,7 @@ export function createSystemBackupRecord(params: {
   creatorName: string;
   creatorId: string;
 }): BackupRecord {
-  const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const timestamp = new Date().toISOString().replace(/[-]/g, '').replace(/[:T]/g, '').slice(0, 14);
   const code = `BKP-${params.type === 'FULL_SCHEDULED' ? 'FULL' : 'MANUAL'}-${timestamp}`;
   const sha256 = computeSha256Hex(`backup-data:${code}:${timestamp}`);
 
@@ -700,8 +729,8 @@ export function verifyAuditLogChainIntegrity(chain: AuditLogChainEntry[]): {
 export function performBackupRestoreDrill(backup: BackupRecord): BackupRestoreDrillResult {
   const startTime = Date.now();
   const integrity = verifyBackupCryptographicIntegrity(backup);
-  const drillId = `drill-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const containerId = `sandbox-drill-${Math.random().toString(36).slice(2, 8)}`;
+  const drillId = `drill-${Date.now()}-${getSecureRandomAlphanumeric(5)}`;
+  const containerId = `sandbox-drill-${getSecureRandomAlphanumeric(6)}`;
 
   if (!integrity.isValid) {
     return {
@@ -723,7 +752,7 @@ export function performBackupRestoreDrill(backup: BackupRecord): BackupRestoreDr
   // Simulation restauration dans container sandbox isolé
   const tablesCount = 18;
   const rowsCount = backup.type === 'FULL_SCHEDULED' ? 42500 : 16800;
-  const durationMs = Math.round(180 + Math.random() * 60);
+  const durationMs = 180 + getSecureRandomInt(0, 61);
 
   return {
     drillId,
@@ -814,7 +843,7 @@ export function detectSecurityAnomalies(params: {
     if (count >= 5) {
       const [ip, email] = key.split('|');
       alerts.push({
-        id: `alert-bf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: `alert-bf-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
         timestamp: now,
         severity: 'CRITICAL',
         type: 'BRUTE_FORCE_ATTEMPT',

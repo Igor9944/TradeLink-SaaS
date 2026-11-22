@@ -4,6 +4,7 @@
 // ============================================================================
 
 import Decimal from 'decimal.js';
+import { getSecureRandomInt } from './securityCrypto';
 import {
   CalculationResultRecord,
   DayCountBasis,
@@ -271,7 +272,7 @@ export async function executeWithTimeoutAndRetry<T>(
       lastError = err;
       if (attempt < maxRetries) {
         // Exponentielle avec jitter
-        const delay = backoffMs * Math.pow(2, attempt - 1) + Math.random() * 50;
+        const delay = backoffMs * Math.pow(2, attempt - 1) + getSecureRandomInt(0, 50);
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }

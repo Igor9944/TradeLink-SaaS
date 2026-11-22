@@ -7,6 +7,7 @@
 // - Support complet des agrégats Commerciaux, Logistiques et Comptables
 // ============================================================================
 
+import crypto from 'node:crypto';
 import {
   AuditLogRecord,
   AuthSessionDetail,
@@ -143,7 +144,7 @@ export class TradeLinkRepositoryStore {
   private state: Required<DatabaseStateSnapshot>;
   public readonly isProductionDatabaseConnected: boolean;
   private persistenceFilePath?: string;
-  private readonly instanceId = `repo-inst-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  private readonly instanceId = `repo-inst-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   private userPreferences: Map<string, UserLanguagePreferenceRecord> = new Map();
   private translationsMap: Map<string, TranslationRecord> = new Map();
   private loginAttemptsList: LoginAttemptRecord[] = [];
@@ -418,7 +419,7 @@ export class TradeLinkRepositoryStore {
         ? active.filter((o) => o.clientId === actorId)
         : role === 'FOURNISSEUR'
         ? active.filter((o) => o.supplierId === actorId)
-        : active;
+        : [];
     const filtered = params.status
       ? scoped.filter((o) => o.status === params.status)
       : scoped;
@@ -539,7 +540,7 @@ export class TradeLinkRepositoryStore {
   public recordLoginAttempt(attempt: Omit<LoginAttemptRecord, 'id' | 'attemptedAt'>): LoginAttemptRecord {
     const record: LoginAttemptRecord = {
       ...attempt,
-      id: `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `att-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`,
       attemptedAt: new Date().toISOString(),
     };
     this.loginAttemptsList.unshift(record);
@@ -1125,7 +1126,7 @@ export class TradeLinkRepositoryStore {
             const ord = (this.state.orders || []).find((o) => o.id === d.orderId);
             return ord?.supplierId === actorId;
           })
-        : disputes;
+        : [];
 
     if (!params) return scoped;
 
@@ -1401,7 +1402,7 @@ export class TradeLinkRepositoryStore {
       const newVal = String(patch[k] ?? '');
       if (oldVal !== newVal) {
         const audit: FinancialConfigAuditRecord = {
-          id: `audit-cfg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: `audit-cfg-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
           paramKey: String(k),
           oldValue: oldVal,
           newValue: newVal,

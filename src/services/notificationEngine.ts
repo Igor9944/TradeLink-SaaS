@@ -9,6 +9,34 @@ import type {
   NotificationDispatchResult,
   NotificationDispatchChannelResult,
 } from '../types';
+import { getSecureRandomAlphanumeric } from './securityCrypto';
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function sanitizeActionUrl(url?: string): string | null {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (/^\/(?!\/)/.test(trimmed)) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 // ============================================================================
 // DÉDUPLICATEUR INTELLIGENT DE NOTIFICATIONS (Fenêtre glissante 5 minutes)
@@ -128,9 +156,10 @@ export class NotificationTemplateEngine {
         : '#0D9488';
 
     const subject = `[TRADELINK ${notification.category}] ${notification.title}`;
-    const actionButton = notification.actionUrl
+    const safeActionUrl = sanitizeActionUrl(notification.actionUrl);
+    const actionButton = safeActionUrl
       ? `<div style="margin: 28px 0; text-align: center;">
-          <a href="${notification.actionUrl}" style="background-color: #E85D22; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
+          <a href="${escapeHtml(safeActionUrl)}" style="background-color: #E85D22; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
             Accéder à l'action &rarr;
           </a>
         </div>`
@@ -140,7 +169,7 @@ export class NotificationTemplateEngine {
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <title>${notification.title}</title>
+  <title>${escapeHtml(notification.title)}</title>
 </head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #F8FAFC; margin: 0; padding: 24px; color: #1E293B;">
   <table width="100%" border="0" cellspacing="0" cellpadding="0">
@@ -158,22 +187,22 @@ export class NotificationTemplateEngine {
           <tr>
             <td style="padding: 32px;">
               <div style="display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 700; background-color: ${priorityColor}15; color: ${priorityColor}; text-transform: uppercase; margin-bottom: 12px;">
-                ${notification.category} • ${notification.priority}
+                ${escapeHtml(notification.category)} • ${escapeHtml(notification.priority)}
               </div>
-              <h2 style="font-size: 18px; color: #0F172A; margin: 0 0 16px 0; font-weight: 600;">${notification.title}</h2>
+              <h2 style="font-size: 18px; color: #0F172A; margin: 0 0 16px 0; font-weight: 600;">${escapeHtml(notification.title)}</h2>
               <p style="font-size: 14px; line-height: 1.6; color: #475569; margin: 0 0 20px 0;">
-                Bonjour ${recipientName},
+                Bonjour ${escapeHtml(recipientName)},
               </p>
               <div style="background-color: #F8FAFC; border-left: 4px solid ${priorityColor}; padding: 16px; border-radius: 4px; margin-bottom: 24px;">
                 <p style="font-size: 14px; line-height: 1.6; color: #334155; margin: 0;">
-                  ${notification.body}
+                  ${escapeHtml(notification.body)}
                 </p>
               </div>
               ${actionButton}
               <hr style="border: none; border-top: 1px solid #F1F5F9; margin: 24px 0;" />
               <p style="font-size: 12px; color: #94A3B8; margin: 0;">
-                ID Notification : <code style="background-color: #F1F5F9; padding: 2px 4px; border-radius: 4px;">${notification.id}</code><br>
-                Date de notification : ${notification.createdAt}
+                ID Notification : <code style="background-color: #F1F5F9; padding: 2px 4px; border-radius: 4px;">${escapeHtml(notification.id)}</code><br>
+                Date de notification : ${escapeHtml(notification.createdAt)}
               </p>
             </td>
           </tr>
@@ -195,7 +224,7 @@ export class NotificationTemplateEngine {
       `${notification.title}\n\n` +
       `Bonjour ${recipientName},\n\n` +
       `${notification.body}\n\n` +
-      (notification.actionUrl ? `Lien d'action : ${notification.actionUrl}\n\n` : '') +
+      (safeActionUrl ? `Lien d'action : ${safeActionUrl}\n\n` : '') +
       `ID Notification : ${notification.id} | Date : ${notification.createdAt}\n`;
 
     return {
@@ -214,7 +243,7 @@ export class NotificationTemplateEngine {
       icon: '/icons/icon-192x192.png',
       badge: '/icons/badge-72x72.png',
       data: {
-        actionUrl: notification.actionUrl,
+        actionUrl: sanitizeActionUrl(notification.actionUrl) ?? undefined,
         notificationId: notification.id,
         category: notification.category,
         priority: notification.priority,
@@ -278,7 +307,7 @@ export class NotificationJobQueue {
     maxAttempts = 3
   ): NotificationQueueJob {
     const job: NotificationQueueJob = {
-      id: `job-notif-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `job-notif-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       notificationId,
       channel,
       payload,
@@ -547,7 +576,7 @@ export class CentralNotificationDispatcher {
       params.eventType === 'NEW_LOGIN_DEVICE' || params.eventType === 'PASSWORD_RESET';
 
     return {
-      id: `notif-auth-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-auth-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'SÉCURITÉ',
       priority: isSecurityAlert ? 'HIGH' : 'LOW',
@@ -595,7 +624,7 @@ export class CentralNotificationDispatcher {
     }
 
     return {
-      id: `notif-kyc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-kyc-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'KYC',
       priority: isCritical ? 'CRITICAL' : isReminder ? 'HIGH' : 'MEDIUM',
@@ -627,7 +656,7 @@ export class CentralNotificationDispatcher {
     };
 
     return {
-      id: `notif-ord-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-ord-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'COMMERCIAL',
       priority: params.status === 'CANCELLED' ? 'HIGH' : 'MEDIUM',
@@ -655,7 +684,7 @@ export class CentralNotificationDispatcher {
     };
 
     return {
-      id: `notif-quo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-quo-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'COMMERCIAL',
       priority: 'MEDIUM',
@@ -685,7 +714,7 @@ export class CentralNotificationDispatcher {
     };
 
     return {
-      id: `notif-pay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-pay-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'FINANCE',
       priority: params.status === 'DISPUTED' ? 'CRITICAL' : 'HIGH',
@@ -709,7 +738,7 @@ export class CentralNotificationDispatcher {
     const isCritical = params.status === 'TEMPERATURE_ALERT';
 
     return {
-      id: `notif-shp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-shp-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'LOGISTIQUE',
       priority: isCritical ? 'CRITICAL' : 'MEDIUM',
@@ -732,7 +761,7 @@ export class CentralNotificationDispatcher {
     description: string;
   }): NotificationRecord {
     return {
-      id: `notif-inc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-inc-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'LOGISTIQUE',
       priority: params.severity,
@@ -754,7 +783,7 @@ export class CentralNotificationDispatcher {
     snippet: string;
   }): NotificationRecord {
     return {
-      id: `notif-msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-msg-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'MESSAGE',
       priority: 'MEDIUM',
@@ -782,7 +811,7 @@ export class CentralNotificationDispatcher {
     };
 
     return {
-      id: `notif-room-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-room-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'ROOM_LIVE',
       priority: 'MEDIUM',
@@ -810,7 +839,7 @@ export class CentralNotificationDispatcher {
     };
 
     return {
-      id: `notif-sup-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-sup-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'SUPPORT',
       priority: 'MEDIUM',
@@ -831,7 +860,7 @@ export class CentralNotificationDispatcher {
     details: string;
   }): NotificationRecord {
     return {
-      id: `notif-sec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `notif-sec-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       userId: params.userId,
       category: 'SÉCURITÉ',
       priority: 'CRITICAL',

@@ -18,6 +18,7 @@ import {
   generateSha256Hash,
   hmacSha256Hex,
   constantTimeEqual,
+  getSecureRandomAlphanumeric,
 } from './securityCrypto';
 
 // ============================================================================
@@ -208,6 +209,117 @@ export class ClamAvDaemonClient {
           engine: `ClamAV-clamd/${cfg.host}:${cfg.port}`,
           scannedAt: new Date().toISOString(),
           errorReason: `CLAMD_CONNECTION_ERROR:${err?.code || err?.message || 'UNREACHABLE'}`,
+        });
+      });
+    });
+  }
+
+  /**
+   * Sonde de disponibilité réelle du démon ClamAV via commande TCP zPING\0 -> PONG.
+   */
+  public static async pingClamd(
+    customConfig?: Partial<ClamAvDaemonConfig>
+  ): Promise<{ status: 'UP' | 'DOWN' | 'NOT_CONFIGURED'; latencyMs: number; detail: string }> {
+    const t0 = Date.now();
+    const hasConfiguredHost =
+      Boolean(customConfig?.host) ||
+      Boolean(typeof process !== 'undefined' && process.env?.CLAMAV_HOST?.trim());
+    const isProd = typeof process !== 'undefined' && process.env?.NODE_ENV === 'production';
+
+    if (!hasConfiguredHost && !isProd) {
+      return {
+        status: 'NOT_CONFIGURED',
+        latencyMs: 0,
+        detail: 'CLAMAV_HOST non configuré (fallback sandbox)',
+      };
+    }
+
+    const cfg = { ...this.getDefaultConfig(), ...customConfig };
+    const timeoutMs = Math.min(cfg.timeoutMs || 1000, 1000);
+
+    let netModule: any = null;
+    try {
+      const dynamicReq = typeof require === 'function' ? require : null;
+      if (dynamicReq) {
+        netModule = dynamicReq('net');
+      }
+    } catch {
+      netModule = null;
+    }
+
+    if (!netModule || typeof netModule.createConnection !== 'function') {
+      return {
+        status: 'NOT_CONFIGURED',
+        latencyMs: Date.now() - t0,
+        detail: 'Module net TCP indisponible',
+      };
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      let responseText = '';
+
+      const finish = (res: { status: 'UP' | 'DOWN' | 'NOT_CONFIGURED'; latencyMs: number; detail: string }) => {
+        if (!settled) {
+          settled = true;
+          resolve(res);
+        }
+      };
+
+      const socket = netModule.createConnection({ host: cfg.host, port: cfg.port }, () => {
+        try {
+          socket.write(Buffer.from('zPING\0', 'ascii'));
+        } catch (err: any) {
+          socket.destroy();
+          finish({
+            status: 'DOWN',
+            latencyMs: Date.now() - t0,
+            detail: `CLAMD_PING_WRITE_ERROR:${err?.message || 'WRITE_FAILED'}`,
+          });
+        }
+      });
+
+      socket.setTimeout(timeoutMs);
+
+      socket.on('data', (chunk: Buffer) => {
+        responseText += chunk.toString('utf-8');
+        if (responseText.includes('PONG')) {
+          socket.end();
+        }
+      });
+
+      socket.on('end', () => {
+        const cleaned = responseText.replace(/\0/g, '').trim();
+        if (cleaned.includes('PONG')) {
+          finish({
+            status: 'UP',
+            latencyMs: Date.now() - t0,
+            detail: 'ClamAV zPING PONG',
+          });
+        } else {
+          finish({
+            status: 'DOWN',
+            latencyMs: Date.now() - t0,
+            detail: `CLAMD_UNEXPECTED_PING_RESPONSE:${cleaned || 'EMPTY'}`,
+          });
+        }
+      });
+
+      socket.on('timeout', () => {
+        socket.destroy();
+        finish({
+          status: 'DOWN',
+          latencyMs: Date.now() - t0,
+          detail: 'CLAMD_PING_TIMEOUT',
+        });
+      });
+
+      socket.on('error', (err: any) => {
+        socket.destroy();
+        finish({
+          status: 'DOWN',
+          latencyMs: Date.now() - t0,
+          detail: `CLAMD_PING_ERROR:${err?.code || err?.message || 'UNREACHABLE'}`,
         });
       });
     });
@@ -767,7 +879,7 @@ export class B2BMessagingEngine {
       throw err;
     }
 
-    const conversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const conversationId = `conv-${Date.now()}-${getSecureRandomAlphanumeric(5)}`;
     const now = new Date().toISOString();
 
     const unreadCountByUser: Record<string, number> = {};
@@ -853,7 +965,7 @@ export class B2BMessagingEngine {
       }
     }
 
-    const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const messageId = `msg-${Date.now()}-${getSecureRandomAlphanumeric(5)}`;
     const now = new Date().toISOString();
 
     const messageRecord: ConversationMessageRecord = {

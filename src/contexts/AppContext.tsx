@@ -144,6 +144,31 @@ import {
   verifyAuditLogChainIntegrity,
   verifyBackupCryptographicIntegrity,
 } from '../services/adminAdvancedEngine';
+import {
+  getSecureRandomAlphanumeric,
+  getSecureRandomHex,
+  getSecureRandomInt,
+} from '../services/securityCrypto';
+
+export const IS_PROD_BUILD = import.meta.env.PROD;
+
+export const GUEST_UNAUTHENTICATED_USER: UserProfile = {
+  id: 'guest-unauthenticated',
+  email: 'guest@tradelink.local',
+  phone: '',
+  firstName: 'Visiteur',
+  lastName: 'Non Authentifié',
+  companyName: 'TradeLink Guest',
+  role: 'VISITEUR',
+  permissions: [],
+  mfaEnabled: false,
+  mfaVerified: false,
+  activeSessionId: '',
+  kycStatus: 'NON_COMMENCE',
+  kycDaysRemaining: 7,
+  jurisdiction: 'INTL',
+  avatarInitials: 'VT',
+};
 
 export type UXPreviewState = 'normal' | 'loading' | 'empty' | 'error';
 
@@ -2190,7 +2215,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return 'light';
   });
 
-  const [currentUser, setCurrentUser] = useState<UserProfile>(DEMO_USERS.ADMIN_1);
+  const [currentUser, setCurrentUser] = useState<UserProfile>(
+    import.meta.env.PROD ? GUEST_UNAUTHENTICATED_USER : DEMO_USERS.ADMIN_1
+  );
   const [products, setProducts] = useState<ProductItem[]>(INITIAL_PRODUCTS);
   const [categories, setCategories] = useState<ProductCategoryRecord[]>(INITIAL_CATALOG_CATEGORIES);
   const [catalogFavorites, setCatalogFavorites] = useState<string[]>(['prod-01']);
@@ -2625,7 +2652,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetType,
       targetId,
       result,
-      correlationId: `corr-${Math.random().toString(36).slice(2, 8)}`,
+      correlationId: `corr-${getSecureRandomAlphanumeric(6)}`,
       ipAddress: '195.154.122.10',
       details,
     };
@@ -2633,9 +2660,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const switchUserAccount = (userKey: keyof typeof DEMO_USERS) => {
+    if (import.meta.env.PROD) {
+      addAuditLog(
+        'DEMO_IMPERSONATION_BLOCKED_IN_PRODUCTION',
+        'Session',
+        String(userKey),
+        'DENIED',
+        'Tentative de bascule simulateur DEMO_USERS bloquée en build de production.'
+      );
+      notifyToast('Bascule de profil simulé interdite en production.', 'error');
+      return;
+    }
     const nextUser = {
       ...DEMO_USERS[userKey],
-      activeSessionId: `sess-redis-${Math.random().toString(36).slice(2, 7)}`,
+      activeSessionId: `sess-redis-${getSecureRandomAlphanumeric(6)}`,
       previousSessionRevoked: true,
     };
     setCurrentUser(nextUser);
@@ -2721,7 +2759,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     const movId = `stkm-${Date.now()}`;
-    const movNumber = `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+    const movNumber = `MOV-2026-${getSecureRandomInt(100000, 1000000)}`;
     const newMovement: StockMovementRecord = {
       id: movId,
       movementNumber: movNumber,
@@ -2774,7 +2812,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const movId = `stkm-${Date.now()}`;
     const newMovement: StockMovementRecord = {
       id: movId,
-      movementNumber: `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+      movementNumber: `MOV-2026-${getSecureRandomInt(100000, 1000000)}`,
       productId: target.id,
       sku: target.sku,
       movementType,
@@ -2826,7 +2864,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const sessionId = `inv-sess-${Date.now()}`;
     const session: PhysicalInventorySession = {
       id: sessionId,
-      sessionNumber: `INV-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+      sessionNumber: `INV-2026-${getSecureRandomInt(1000, 10000)}`,
       supplierId: currentUser.id,
       supplierName: currentUser.companyName,
       title: title || `Session Inventaire ${new Date().toLocaleDateString('fr-FR')}`,
@@ -2912,7 +2950,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         adjustments.push({
           id: `stkm-inv-${Date.now()}-${l.productId}`,
-          movementNumber: `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+          movementNumber: `MOV-2026-${getSecureRandomInt(100000, 1000000)}`,
           productId: l.productId,
           sku: l.sku,
           movementType: 'INVENTORY_ADJUSTMENT',
@@ -3240,7 +3278,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const taxNum = subtotalNum * 0.2;
     const shippingNum = 650;
     const totalNum = subtotalNum + taxNum + shippingNum;
-    const orderNumber = `CMD-2026-${Math.floor(9000 + Math.random() * 900)}`;
+    const orderNumber = `CMD-2026-${getSecureRandomInt(9000, 9900)}`;
     const newOrderId = `ord-${Date.now()}`;
     const nowIso = new Date().toISOString();
 
@@ -3258,7 +3296,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           newReservations.push({
             id: `res-${Date.now()}-${p.id}`,
-            reservationNumber: `RES-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+            reservationNumber: `RES-2026-${getSecureRandomInt(100000, 1000000)}`,
             orderId: newOrderId,
             orderNumber,
             clientId: currentUser.id,
@@ -3273,7 +3311,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           newMovements.push({
             id: `stkm-res-${Date.now()}-${p.id}`,
-            movementNumber: `MOV-2026-${Math.floor(100000 + Math.random() * 900000)}`,
+            movementNumber: `MOV-2026-${getSecureRandomInt(100000, 1000000)}`,
             productId: p.id,
             sku: p.sku,
             movementType: 'ORDER_RESERVATION',
@@ -3420,7 +3458,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const createQuote = (q: Omit<QuoteRecord, 'id' | 'quoteNumber' | 'createdAt'>) => {
-    const quoteNumber = `DEV-2026-${Math.floor(400 + Math.random() * 500)}`;
+    const quoteNumber = `DEV-2026-${getSecureRandomInt(400, 900)}`;
     const newQuote: QuoteRecord = {
       ...q,
       id: `quo-${Date.now()}`,
@@ -3436,7 +3474,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const q = quotes.find((item) => item.id === quoteId);
     if (!q) return;
     setQuotes((prev) => prev.map((item) => (item.id === quoteId ? { ...item, status: 'CONVERTED' } : item)));
-    const orderNumber = `CMD-2026-${Math.floor(9100 + Math.random() * 800)}`;
+    const orderNumber = `CMD-2026-${getSecureRandomInt(9100, 9900)}`;
     const newOrder: OrderRecord = {
       id: `ord-${Date.now()}`,
       orderNumber,
@@ -3683,7 +3721,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     const newPay: PaymentRecord = {
       id: `pay-${Date.now()}`,
-      paymentReference: `PAY-STRP-${Math.floor(10000 + Math.random() * 89999)}`,
+      paymentReference: `PAY-STRP-${getSecureRandomInt(10000, 99999)}`,
       invoiceId: inv.id,
       invoiceNumber: inv.invoiceNumber,
       clientId: inv.clientId,
@@ -3692,7 +3730,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       amount: inv.totalAmount,
       currency: inv.currency,
       status: 'SUCCEEDED',
-      webhookEventId: `evt_${Math.random().toString(36).slice(2, 14)}`,
+      webhookEventId: `evt_${getSecureRandomAlphanumeric(12)}`,
       idempotencyVerified: true,
       reconciled: true,
       createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
@@ -4304,7 +4342,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const newVal = String(updates[k] ?? '');
       if (oldVal !== newVal) {
         newAudits.push({
-          id: `audit-fincfg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          id: `audit-fincfg-${Date.now()}-${getSecureRandomInt(0, 1000)}`,
           paramKey: k,
           oldValue: oldVal,
           newValue: newVal,
@@ -4443,7 +4481,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         : ['usr-admin-01', 'usr-client-01', 'usr-supp-01', 'usr-trans-01', currentUser.id];
     const invitedEmails = typeof titleOrParams === 'object' ? titleOrParams.invitedEmails || [] : [];
 
-    const roomCode = `RM-LIVE-${Math.floor(1000 + Math.random() * 8999)}`;
+    const roomCode = `RM-LIVE-${getSecureRandomInt(1000, 10000)}`;
     const requestedProvider: MeetingProvider =
       typeof titleOrParams === 'object' && titleOrParams.meetingProvider
         ? titleOrParams.meetingProvider
@@ -4519,10 +4557,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `imp-${Date.now().toString().slice(-4)}`,
       fileName,
       format,
-      sha256Checksum: `${Math.random().toString(16).slice(2)}9f86d081884c7d659a2feaa0c55ad015`,
+      sha256Checksum: getSecureRandomHex(32),
       avScanStatus: 'CLEAN',
       sandboxStatus: 'SANDBOX_READY',
-      rowsDetected: Math.floor(800 + Math.random() * 9000),
+      rowsDetected: getSecureRandomInt(800, 9800),
       tablesDetected: [`sandbox.${fileName.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 18)}`],
       compatibilityScore: 99.2,
       initiatedBy: `${currentUser.firstName} ${currentUser.lastName}`,
@@ -4541,7 +4579,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const createManualBackup = () => {
-    const code = `BKP-MANUAL-20261118-${Math.floor(1000 + Math.random() * 8999)}`;
+    const code = `BKP-MANUAL-20261118-${getSecureRandomInt(1000, 10000)}`;
     const newBkp: BackupRecord = {
       id: `bkp-${Date.now()}`,
       backupCode: code,
@@ -4553,7 +4591,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       restoreStatus: 'PENDING_SECOND_APPROVAL',
       restoreInitiatorId: currentUser.id,
       restoreInitiatorName: `${currentUser.firstName} ${currentUser.lastName}`,
-      planHash: `PLAN-IMMUTABLE-${Math.floor(10000 + Math.random() * 89999)}`,
+      planHash: `PLAN-IMMUTABLE-${getSecureRandomInt(10000, 100000)}`,
       createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
     };
     setBackups((prev) => [newBkp, ...prev]);
@@ -4623,7 +4661,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const analyzeSandboxFile = (fileName: string, format?: ImportExportFormat): SandboxAnalysisReport => {
     const rep = analyzeFileInIsolatedSandbox({
       fileName,
-      fileSize: Math.floor(102400 + Math.random() * 5000000),
+      fileSize: getSecureRandomInt(102400, 5102400),
       format,
     });
     setSandboxReports((prev) => ({ ...prev, [rep.jobId]: rep }));

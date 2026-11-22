@@ -17,6 +17,7 @@ import {
   ShipmentStatus,
   UserRoleCode,
 } from '../types';
+import { getSecureRandomAlphanumeric, getSecureRandomInt } from './securityCrypto';
 
 export type TransportMode = 'ROAD' | 'AIR' | 'SEA' | 'RAIL';
 
@@ -538,7 +539,7 @@ export class LogisticsEngine {
     customsNotes?: string;
     transportMode?: TransportMode;
   }): ShipmentRecord {
-    const trackingNumber = `TRK-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+    const trackingNumber = `TRK-2026-${getSecureRandomInt(100000, 1000000)}`;
     const colisage = this.calculateColisageTotals(params.packages);
     const transportMode = params.transportMode ?? 'ROAD';
 
@@ -687,7 +688,7 @@ export class LogisticsEngine {
       respondedAt: nowStr,
     };
 
-    const trackingNumber = `TRK-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+    const trackingNumber = `TRK-2026-${getSecureRandomInt(100000, 1000000)}`;
 
     const createdShipment: ShipmentRecord = {
       id: `shp-${Date.now()}`,
@@ -793,7 +794,7 @@ export class LogisticsEngine {
     const recordedAt = gpsData.recordedAt || new Date().toISOString().replace('T', ' ').slice(0, 19);
 
     const gpsRecord: ShipmentGpsLocationRecord = {
-      id: `gps-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `gps-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       shipmentId: shipment.id,
       latitude: gpsData.latitude,
       longitude: gpsData.longitude,
@@ -972,7 +973,7 @@ export class LogisticsEngine {
       carrier: shipment.carrierName,
       grossWeightKg: shipment.weightKg,
       volumeM3: shipment.volumeM3,
-      customsSealNumber: `SEAL-MA-${Math.floor(100000 + Math.random() * 900000)}`,
+      customsSealNumber: `SEAL-MA-${getSecureRandomInt(100000, 1000000)}`,
       temperatureControlled: isColdChain,
       requiredTempCelsius: isColdChain ? '-20°C à -18°C' : undefined,
       carrierReservations: 'Marchandises chargées en bon état apparent, conditionnement standard vérifié.',

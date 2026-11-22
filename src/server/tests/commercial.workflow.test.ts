@@ -8,9 +8,11 @@
 // - Facturation légale & Paiements Stripe Idempotents (prévention double débit)
 // ============================================================================
 
+import crypto from 'node:crypto';
 import { TradeLinkRepositoryStore } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
 import { ServerRequestContext, ServerResponsePayload } from '../middlewares/errorAndSecurity.middleware';
+import { getServiceHmacSecret } from '../../services/securityCrypto';
 import { ProductItem, UserRoleCode } from '../../types';
 
 function assert(condition: boolean, message: string) {
@@ -94,49 +96,49 @@ export function runCommercialWorkflowTests(): { passed: number; results: string[
     return app.handleRequest(ctx);
   };
 
-  // 1. Initialisation des sessions actives via /api/v1/auth/login
+  // 1. Initialisation des sessions actives via /api/v1/auth/login (Argon2id)
   const clientLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-client-01', email: 'client@atlas-distribution.ma', role: 'CLIENT', companyName: 'Atlas Import-Export Distribution' },
+    body: { email: 's.mansouri@atlas-import.ma', password: 'ClientAtlas!2026' },
   });
-  const clientSessionId = (clientLogin.body.data as { sessionId: string }).sessionId;
+  const clientData = clientLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const clientUser = {
-    id: 'usr-client-01',
-    email: 'client@atlas-distribution.ma',
+    id: clientData.userId,
+    email: clientData.email,
     role: 'CLIENT' as UserRoleCode,
-    sessionId: clientSessionId,
-    companyName: 'Atlas Import-Export Distribution',
+    sessionId: clientData.sessionId,
+    companyName: clientData.companyName,
     mfaVerified: true,
   };
 
   const supplierLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-supp-01', email: 'contact@eurotech-gmbh.de', role: 'FOURNISSEUR', companyName: 'EuroTech Industrial & ColdChain GmbH' },
+    body: { email: 'h.weber@eurotech-supply.de', password: 'SupplierEuro!2026' },
   });
-  const supplierSessionId = (supplierLogin.body.data as { sessionId: string }).sessionId;
+  const supplierData = supplierLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const supplierUser = {
-    id: 'usr-supp-01',
-    email: 'contact@eurotech-gmbh.de',
+    id: supplierData.userId,
+    email: supplierData.email,
     role: 'FOURNISSEUR' as UserRoleCode,
-    sessionId: supplierSessionId,
-    companyName: 'EuroTech Industrial & ColdChain GmbH',
+    sessionId: supplierData.sessionId,
+    companyName: supplierData.companyName,
     mfaVerified: true,
   };
 
   const accountantLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-acct-01', email: 'comptable@cabinet-audit.fr', role: 'COMPTABLE', companyName: 'Audit & Expertise Internationale' },
+    body: { email: 'c.dupont@tradelink-audit.fr', password: 'ComptableSecure!2026' },
   });
-  const accountantSessionId = (accountantLogin.body.data as { sessionId: string }).sessionId;
+  const accountantData = accountantLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const accountantUser = {
-    id: 'usr-acct-01',
-    email: 'comptable@cabinet-audit.fr',
+    id: accountantData.userId,
+    email: accountantData.email,
     role: 'COMPTABLE' as UserRoleCode,
-    sessionId: accountantSessionId,
-    companyName: 'Audit & Expertise Internationale',
+    sessionId: accountantData.sessionId,
+    companyName: accountantData.companyName,
     mfaVerified: true,
   };
 
@@ -403,9 +405,20 @@ export function runCommercialWorkflowTests(): { passed: number; results: string[
     },
   };
 
+  const stripeWebhookSecret = getServiceHmacSecret('STRIPE_WEBHOOK_SECRET');
+  const webhookTs = Math.floor(Date.now() / 1000);
+  const webhookHmac = crypto
+    .createHmac('sha256', stripeWebhookSecret)
+    .update(`${webhookTs}.${JSON.stringify(webhookPayload)}`)
+    .digest('hex');
+  const stripeSignatureHeader = `t=${webhookTs},v1=${webhookHmac}`;
+
   const webhookRes = makeReq({
     method: 'POST',
     path: '/api/v1/payments/stripe/webhook',
+    headers: {
+      'stripe-signature': stripeSignatureHeader,
+    },
     body: webhookPayload,
   });
   assert(webhookRes.statusCode === 200, 'Webhook Stripe traité avec 200');
@@ -417,6 +430,9 @@ export function runCommercialWorkflowTests(): { passed: number; results: string[
   const replayWebhookRes = makeReq({
     method: 'POST',
     path: '/api/v1/payments/stripe/webhook',
+    headers: {
+      'stripe-signature': stripeSignatureHeader,
+    },
     body: webhookPayload,
   });
   assert(replayWebhookRes.statusCode === 200, 'Rejeu webhook retourne 200');

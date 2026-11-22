@@ -27,6 +27,9 @@ export class TradeLinkPostgresManager {
   private static pgliteInstance: PGlite | null = null;
   private static isSchemaMigrated = false;
   private static simulatedOutage = false;
+  private static externalPostgresConnected = false;
+  private static externalPostgresInitialized = false;
+  private static lastExternalError: string | null = null;
   private static defaultSnapshotFilePath = path.join(process.cwd(), 'dist', '.tradelink-pg16-persistent-state.json');
 
   /**
@@ -41,12 +44,63 @@ export class TradeLinkPostgresManager {
     return this.prismaInstance;
   }
 
+  public static isExternalPostgresConnected(): boolean {
+    return this.externalPostgresConnected;
+  }
+
+  public static getLastExternalError(): string | null {
+    return this.lastExternalError;
+  }
+
+  /**
+   * Initialise la connexion PostgreSQL 16 (PrismaClient externe si DATABASE_URL valide, sinon PGlite en dev/test; fail-closed en production).
+   */
+  public static async initDatabaseConnection(): Promise<'PRISMA_POSTGRESQL_16' | 'PGLITE_POSTGRESQL_16'> {
+    this.externalPostgresInitialized = true;
+    const isProd = process.env.NODE_ENV === 'production';
+    const url = process.env.DATABASE_URL?.trim();
+    const hasConfiguredExternalUrl =
+      Boolean(url) &&
+      url!.startsWith('postgresql://') &&
+      !url!.includes('REPLACE_WITH') &&
+      !url!.includes('CHANGE_ME');
+
+    if (hasConfiguredExternalUrl) {
+      try {
+        const prisma = this.getPrismaClient();
+        await prisma.$connect();
+        await prisma.$queryRawUnsafe('SELECT 1');
+        this.externalPostgresConnected = true;
+        this.lastExternalError = null;
+        return 'PRISMA_POSTGRESQL_16';
+      } catch (err: any) {
+        this.externalPostgresConnected = false;
+        this.lastExternalError = err?.message || 'POSTGRES_CONNECTION_FAILED';
+        if (isProd) {
+          throw new Error(`FATAL_DATABASE_CONNECTION_ERROR: ${this.lastExternalError}`);
+        }
+        console.warn(`[TradeLinkPostgresManager] Connexion PostgreSQL externe indisponible (${this.lastExternalError}), bascule sur PGlite PostgreSQL 16.`);
+      }
+    } else if (isProd) {
+      this.externalPostgresConnected = false;
+      this.lastExternalError = 'DATABASE_URL_NOT_CONFIGURED';
+      throw new Error('FATAL_DATABASE_CONNECTION_ERROR: DATABASE_URL PostgreSQL manquant en production.');
+    }
+
+    await this.getOrInitPostgres16Engine();
+    return 'PGLITE_POSTGRESQL_16';
+  }
+
   public static setDatabaseUnavailableForTest(unavailable: boolean): void {
     this.simulatedOutage = unavailable;
   }
 
   public static isDatabaseAvailable(): boolean {
-    return !this.simulatedOutage;
+    if (this.simulatedOutage) return false;
+    if (process.env.NODE_ENV === 'production' && this.externalPostgresInitialized && !this.externalPostgresConnected) {
+      return false;
+    }
+    return true;
   }
 
   public static assertDatabaseAvailable(): void {
@@ -350,10 +404,44 @@ export class TradeLinkPostgresManager {
     if (this.simulatedOutage) {
       return {
         status: 'DOWN',
-        engine: 'PGLITE_POSTGRESQL_16',
+        engine: this.externalPostgresConnected ? 'PRISMA_POSTGRESQL_16' : 'PGLITE_POSTGRESQL_16',
         tablesCount: 0,
         latencyMs: Date.now() - t0,
         error: 'POSTGRESQL_DATABASE_UNAVAILABLE',
+      };
+    }
+
+    if (this.externalPostgresConnected && this.prismaInstance) {
+      try {
+        const rows = await this.prismaInstance.$queryRawUnsafe<Array<{ cnt: string }>>(
+          `SELECT COUNT(*)::text AS cnt FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`
+        );
+        return {
+          status: 'UP',
+          engine: 'PRISMA_POSTGRESQL_16',
+          tablesCount: Number(rows?.[0]?.cnt ?? 0),
+          latencyMs: Date.now() - t0,
+        };
+      } catch (err: any) {
+        this.externalPostgresConnected = false;
+        this.lastExternalError = err?.message || 'PRISMA_HEALTHCHECK_FAILED';
+        return {
+          status: 'DOWN',
+          engine: 'PRISMA_POSTGRESQL_16',
+          tablesCount: 0,
+          latencyMs: Date.now() - t0,
+          error: this.lastExternalError ?? 'PRISMA_HEALTHCHECK_FAILED',
+        };
+      }
+    }
+
+    if (process.env.NODE_ENV === 'production' && this.externalPostgresInitialized && !this.externalPostgresConnected) {
+      return {
+        status: 'DOWN',
+        engine: 'PRISMA_POSTGRESQL_16',
+        tablesCount: 0,
+        latencyMs: Date.now() - t0,
+        error: this.lastExternalError || 'POSTGRESQL_NOT_CONNECTED',
       };
     }
 
@@ -379,10 +467,15 @@ export class TradeLinkPostgresManager {
     }
   }
 
+  public static async checkPostgresHealthAsync(): Promise<PostgresHealthReport> {
+    return this.checkPostgresHealth();
+  }
+
   public static async shutdownDatabase(): Promise<void> {
     if (this.prismaInstance) {
       await this.prismaInstance.$disconnect().catch(() => {});
       this.prismaInstance = null;
+      this.externalPostgresConnected = false;
     }
     if (this.pgliteInstance) {
       await this.pgliteInstance.close().catch(() => {});

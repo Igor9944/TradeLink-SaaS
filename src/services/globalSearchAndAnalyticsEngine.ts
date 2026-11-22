@@ -15,6 +15,16 @@
 // ============================================================================
 
 import { Decimal } from 'decimal.js';
+
+function escapeXml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 import {
   GlobalSearchDomain,
   GlobalSearchQuery,
@@ -35,7 +45,7 @@ import {
   SupportTicketRecord,
   ConversationRecord,
 } from '../types';
-import { computeSha256Hex } from './adminAdvancedEngine';
+import { computeSha256Hex, neutralizeSpreadsheetFormula } from './adminAdvancedEngine';
 
 // ============================================================================
 // 1. UTILITAIRES DE RECHERCHE INTELLIGENTE & FUZZY MATCHING (LEVENSHTEIN)
@@ -1188,7 +1198,10 @@ export class AnalyticsEngine {
       case 'CSV': {
         mimeType = 'text/csv;charset=utf-8;';
         const headers = ['Indicateur', 'Valeur', 'Tendance', 'Description'];
-        const rows = analytics.kpis.map((k) => `"${k.title}";"${k.value}";"${k.trend}";"${k.description || ''}"`);
+        const csvCell = (val: unknown) => `"${neutralizeSpreadsheetFormula(val).value.replace(/"/g, '""')}"`;
+        const rows = analytics.kpis.map((k) =>
+          [csvCell(k.title), csvCell(k.value), csvCell(k.trend), csvCell(k.description || '')].join(';')
+        );
         content = [headers.join(';'), ...rows].join('\r\n');
         break;
       }
@@ -1199,7 +1212,7 @@ export class AnalyticsEngine {
           `  <Worksheet ss:Name="KPIs">\n    <Table>\n` +
           `      <Row><Cell><Data ss:Type="String">Indicateur</Data></Cell><Cell><Data ss:Type="String">Valeur</Data></Cell></Row>\n` +
           analytics.kpis
-            .map((k) => `      <Row><Cell><Data ss:Type="String">${k.title}</Data></Cell><Cell><Data ss:Type="String">${k.value}</Data></Cell></Row>\n`)
+            .map((k) => `      <Row><Cell><Data ss:Type="String">${escapeXml(neutralizeSpreadsheetFormula(k.title).value)}</Data></Cell><Cell><Data ss:Type="String">${escapeXml(neutralizeSpreadsheetFormula(k.value).value)}</Data></Cell></Row>\n`)
             .join('') +
           `    </Table>\n  </Worksheet>\n</Workbook>`;
         break;

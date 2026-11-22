@@ -205,7 +205,7 @@ export class GeminiAiService {
           });
 
           if (res.status === 429 || res.status >= 500) {
-            const delay = Math.pow(2, attempt) * 200 + Math.random() * 100;
+            const delay = Math.pow(2, attempt) * 200 + crypto.randomInt(0, 100);
             await new Promise((r) => setTimeout(r, delay));
             continue;
           }

@@ -418,8 +418,18 @@ export async function runTranslationTestSuite() {
       mfaVerified: true,
     };
 
+    const supplierUser: ServerRequestContext['user'] = {
+      id: 'usr-supp-01',
+      email: 'export@eurotech.de',
+      sessionId: 'sess-supp-trad-01',
+      companyName: 'EuroTech Pharma Logistique SAS',
+      role: 'FOURNISSEUR',
+      mfaVerified: true,
+    };
+
     registerSingleActiveSession(testUser.id, testUser.sessionId, true);
     registerSingleActiveSession(adminUser.id, adminUser.sessionId, true);
+    registerSingleActiveSession(supplierUser.id, supplierUser.sessionId, true);
 
     const makeReq = (params: Partial<ServerRequestContext>): ServerRequestContext => ({
       method: params.method || 'GET',
@@ -438,6 +448,7 @@ export async function runTranslationTestSuite() {
       makeReq({
         method: 'POST',
         path: '/api/v1/translation/detect',
+        user: testUser,
         body: { text: 'مرحبا بكم في منصة تريد لينك' },
       })
     );
@@ -449,6 +460,7 @@ export async function runTranslationTestSuite() {
       makeReq({
         method: 'POST',
         path: '/api/v1/translation/text',
+        user: testUser,
         body: {
           text: 'La facture a été émise avec succès.',
           sourceLang: 'fr',
@@ -480,6 +492,7 @@ export async function runTranslationTestSuite() {
       makeReq({
         method: 'POST',
         path: '/api/v1/translation/product/prod-trad-01',
+        user: supplierUser,
         body: { targetLang: 'ar' },
       })
     );
@@ -491,6 +504,7 @@ export async function runTranslationTestSuite() {
       makeReq({
         method: 'GET',
         path: '/api/v1/translation/glossary',
+        user: testUser,
       })
     );
     assert(glossRes.statusCode === 200, 'Statut 200 sur consultation glossaire');

@@ -14,7 +14,8 @@
 import assert from 'node:assert/strict';
 import { TradeLinkRepositoryStore, DatabaseStateSnapshot } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
-import { ServerRequestContext } from '../middlewares/errorAndSecurity.middleware';
+import { ServerRequestContext, registerSingleActiveSession } from '../middlewares/errorAndSecurity.middleware';
+import { computeCurrentTotpCode } from '../../services/securityCrypto';
 
 function createInitialTestDatabase(): DatabaseStateSnapshot {
   return {
@@ -161,7 +162,7 @@ export function runBackendIntegrationTests(): { passed: number; results: string[
       makeReq({
         method: 'POST',
         path: '/api/v1/auth/login',
-        body: { userId: 'usr-client-01', email: 'client@atlas.ma', role: 'CLIENT', companyName: 'Atlas Import' },
+        body: { email: 's.mansouri@atlas-import.ma', password: 'ClientAtlas!2026' },
       })
     );
     assert.equal(login1.statusCode, 200);
@@ -171,7 +172,7 @@ export function runBackendIntegrationTests(): { passed: number; results: string[
       makeReq({
         method: 'POST',
         path: '/api/v1/auth/login',
-        body: { userId: 'usr-client-01', email: 'client@atlas.ma', role: 'CLIENT', companyName: 'Atlas Import' },
+        body: { email: 's.mansouri@atlas-import.ma', password: 'ClientAtlas!2026' },
       })
     );
     assert.equal(login2.statusCode, 200);
@@ -204,10 +205,10 @@ export function runBackendIntegrationTests(): { passed: number; results: string[
       makeReq({
         method: 'POST',
         path: '/api/v1/auth/login',
-        body: { userId: 'usr-compta-01', email: 'compta@cabinet.fr', role: 'COMPTABLE' },
+        body: { email: 'c.dupont@tradelink-audit.fr', password: 'ComptableSecure!2026' },
       })
     );
-    const comptaSession = (comptaLogin.body.data as any).sessionId;
+    const comptaData = comptaLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
 
     // Comptable tente de créer un produit -> 403 COMPTABLE_STAGE3_READONLY_SOURCE_DATA
     const comptaWrite = app.handleRequest(
@@ -215,11 +216,11 @@ export function runBackendIntegrationTests(): { passed: number; results: string[
         method: 'POST',
         path: '/api/v1/products',
         user: {
-          id: 'usr-compta-01',
-          email: 'compta@cabinet.fr',
+          id: comptaData.userId,
+          email: comptaData.email,
           role: 'COMPTABLE',
-          sessionId: comptaSession,
-          companyName: 'Cabinet Compta',
+          sessionId: comptaData.sessionId,
+          companyName: comptaData.companyName,
         },
       })
     );
@@ -346,10 +347,22 @@ export function runBackendIntegrationTests(): { passed: number; results: string[
       makeReq({
         method: 'POST',
         path: '/api/v1/auth/login',
-        body: { userId: 'usr-admin-01', email: 'admin1@tradelink.com', role: 'ADMIN' },
+        body: { email: 'k.benali@tradelink-global.com', password: 'AdminTradeLink!2026' },
       })
     );
+    assert.equal(adminLogin.statusCode, 200);
     admin1Session = (adminLogin.body.data as any).sessionId;
+    const adminActor = {
+      id: 'usr-admin-01',
+      email: 'k.benali@tradelink-global.com',
+      role: 'ADMIN' as const,
+      sessionId: admin1Session,
+      companyName: 'TradeLink Global HQ',
+    };
+    const mfaSetup = app.handleRequest(makeReq({ method: 'POST', path: '/api/v1/auth/mfa/setup', user: adminActor }));
+    const adminMfaCode = computeCurrentTotpCode((mfaSetup.body.data as { secretBase32: string }).secretBase32);
+    const mfaVerify = app.handleRequest(makeReq({ method: 'POST', path: '/api/v1/auth/mfa/verify', user: adminActor, body: { code: adminMfaCode } }));
+    assert.equal(mfaVerify.statusCode, 200);
 
     const kycStatusRes = app.handleRequest(
       makeReq({
@@ -439,15 +452,9 @@ export function runBackendIntegrationTests(): { passed: number; results: string[
     assert.equal(selfApprove.statusCode, 403);
     assert.equal(selfApprove.body.error?.code, 'SELF_APPROVAL_FORBIDDEN');
 
-    // Admin #2 (distinct) se connecte et approuve -> 200 APPROVED_READY
-    const admin2Login = app.handleRequest(
-      makeReq({
-        method: 'POST',
-        path: '/api/v1/auth/login',
-        body: { userId: 'usr-admin-02', email: 'admin2@tradelink.com', role: 'ADMIN' },
-      })
-    );
-    const admin2Session = (admin2Login.body.data as any).sessionId;
+    // Admin #2 (distinct) se connecte avec session MFA vérifiée et approuve -> 200 APPROVED_READY
+    const admin2Session = 'sess-admin-02-backend-test';
+    registerSingleActiveSession('usr-admin-02', admin2Session, true);
 
     const dualApprove = app.handleRequest(
       makeReq({

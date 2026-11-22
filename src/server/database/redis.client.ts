@@ -111,6 +111,22 @@ export class TradeLinkRedisManager {
     }
   }
 
+  public static async pingExternalRedis(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+    const t0 = Date.now();
+    if (!this.ioRedisClient) {
+      return { ok: false, latencyMs: 0, error: 'EXTERNAL_REDIS_NOT_CONFIGURED' };
+    }
+    try {
+      const pong = await this.ioRedisClient.ping();
+      const ok = pong === 'PONG';
+      this.isExternalRedisConnected = ok;
+      return { ok, latencyMs: Date.now() - t0, ...(ok ? {} : { error: `UNEXPECTED_PING:${pong}` }) };
+    } catch (err: any) {
+      this.isExternalRedisConnected = false;
+      return { ok: false, latencyMs: Date.now() - t0, error: err?.message || 'REDIS_PING_FAILED' };
+    }
+  }
+
   public static checkRedisHealth(): {
     status: 'UP' | 'DOWN';
     mode: 'EXTERNAL_IOREDIS_7' | 'SHARED_CLUSTER_ENGINE_7';
@@ -128,6 +144,53 @@ export class TradeLinkRedisManager {
     return {
       status: 'UP',
       mode: this.isExternalRedisConnected ? 'EXTERNAL_IOREDIS_7' : 'SHARED_CLUSTER_ENGINE_7',
+      activeKeysCount: sharedCluster.kvStore.size,
+      activeLocksCount: sharedCluster.locks.size,
+    };
+  }
+
+  public static async checkRedisHealthAsync(): Promise<{
+    status: 'UP' | 'DOWN';
+    mode: 'EXTERNAL_IOREDIS_7' | 'SHARED_CLUSTER_ENGINE_7';
+    activeKeysCount: number;
+    activeLocksCount: number;
+    latencyMs?: number;
+    error?: string;
+  }> {
+    if (sharedCluster.simulatedOutage) {
+      return {
+        status: 'DOWN',
+        mode: this.isExternalRedisConnected ? 'EXTERNAL_IOREDIS_7' : 'SHARED_CLUSTER_ENGINE_7',
+        activeKeysCount: 0,
+        activeLocksCount: 0,
+        error: 'REDIS_CLUSTER_UNAVAILABLE',
+      };
+    }
+    if (this.ioRedisClient) {
+      const ping = await this.pingExternalRedis();
+      if (!ping.ok && (process.env.NODE_ENV === 'production' || this.isExternalRedisConnected)) {
+        return {
+          status: 'DOWN',
+          mode: 'EXTERNAL_IOREDIS_7',
+          activeKeysCount: sharedCluster.kvStore.size,
+          activeLocksCount: sharedCluster.locks.size,
+          latencyMs: ping.latencyMs,
+          error: ping.error,
+        };
+      }
+      if (ping.ok) {
+        return {
+          status: 'UP',
+          mode: 'EXTERNAL_IOREDIS_7',
+          activeKeysCount: sharedCluster.kvStore.size,
+          activeLocksCount: sharedCluster.locks.size,
+          latencyMs: ping.latencyMs,
+        };
+      }
+    }
+    return {
+      status: 'UP',
+      mode: 'SHARED_CLUSTER_ENGINE_7',
       activeKeysCount: sharedCluster.kvStore.size,
       activeLocksCount: sharedCluster.locks.size,
     };

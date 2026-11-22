@@ -14,6 +14,7 @@
 import { TradeLinkRepositoryStore } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
 import { ServerRequestContext, ServerResponsePayload } from '../middlewares/errorAndSecurity.middleware';
+import { computeCurrentTotpCode } from '../../services/securityCrypto';
 import { AccountingEngine } from '../../services/accountingEngine';
 import { InvoiceRecord, PaymentRecord, UserRoleCode } from '../../types';
 
@@ -157,44 +158,43 @@ async function runFinancialEngineTests() {
     return app.handleRequest(ctx);
   };
 
-  // 1. Initialisation des sessions actives via /api/v1/auth/login
+  // 1. Initialisation des sessions actives via /api/v1/auth/login (Argon2id + TOTP MFA Admin)
   const adminLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
     body: {
-      userId: 'usr-admin-01',
-      email: 'admin.finance@tradelink.com',
-      role: 'ADMIN',
-      companyName: 'TradeLink HQ',
+      email: 'k.benali@tradelink-global.com',
+      password: 'AdminTradeLink!2026',
     },
   });
-  const adminSessionId = (adminLogin.body.data as { sessionId: string }).sessionId;
+  const adminData = adminLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const adminUser = {
-    id: 'usr-admin-01',
-    email: 'admin.finance@tradelink.com',
+    id: adminData.userId,
+    email: adminData.email,
     role: 'ADMIN' as UserRoleCode,
-    sessionId: adminSessionId,
-    companyName: 'TradeLink HQ',
+    sessionId: adminData.sessionId,
+    companyName: adminData.companyName,
     mfaVerified: true,
   };
+  const adminMfaSetup = makeReq({ method: 'POST', path: '/api/v1/auth/mfa/setup', user: adminUser });
+  const adminMfaCode = computeCurrentTotpCode((adminMfaSetup.body.data as { secretBase32: string }).secretBase32);
+  makeReq({ method: 'POST', path: '/api/v1/auth/mfa/verify', user: adminUser, body: { code: adminMfaCode } });
 
   const accountantLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
     body: {
-      userId: 'usr-comptable-01',
-      email: 'claire.dubois@tradelink.com',
-      role: 'COMPTABLE',
-      companyName: 'Cabinet Audit & Expertise',
+      email: 'c.dupont@tradelink-audit.fr',
+      password: 'ComptableSecure!2026',
     },
   });
-  const accountantSessionId = (accountantLogin.body.data as { sessionId: string }).sessionId;
+  const accountantData = accountantLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const accountantUser = {
-    id: 'usr-comptable-01',
-    email: 'claire.dubois@tradelink.com',
+    id: accountantData.userId,
+    email: accountantData.email,
     role: 'COMPTABLE' as UserRoleCode,
-    sessionId: accountantSessionId,
-    companyName: 'Cabinet Audit & Expertise',
+    sessionId: accountantData.sessionId,
+    companyName: accountantData.companyName,
     mfaVerified: true,
   };
 

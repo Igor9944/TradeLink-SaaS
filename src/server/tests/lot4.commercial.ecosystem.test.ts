@@ -20,6 +20,7 @@ import Decimal from 'decimal.js';
 import { TradeLinkRepositoryStore, DatabaseStateSnapshot } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
 import { ServerRequestContext, registerSingleActiveSession } from '../middlewares/errorAndSecurity.middleware';
+import { getServiceHmacSecret } from '../../services/securityCrypto';
 
 async function runLot4CommercialEcosystemTests() {
   console.log('================================================================================');
@@ -550,7 +551,7 @@ async function runLot4CommercialEcosystemTests() {
   assert.strictEqual(initPayRes.statusCode, 201, 'Session de paiement initiée');
 
   // Webhook signé HMAC-SHA256 avec protection anti-rejeu et idempotence
-  const webhookSecret = 'whsec_stripe_secret_key_v6';
+  const webhookSecret = getServiceHmacSecret('STRIPE_WEBHOOK_SECRET');
   const nowSec = Math.floor(Date.now() / 1000);
   const webhookEventId = `evt_lot4_${Date.now()}`;
   const webhookPayload = {

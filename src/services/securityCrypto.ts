@@ -42,12 +42,48 @@ export function getSecureRandomBytes(length: number): Uint8Array {
     globalThis.crypto.getRandomValues(bytes);
     return bytes;
   }
-  // Fallback de sécurité (environnement dégradé)
-  const bytes = new Uint8Array(length);
-  for (let i = 0; i < length; i++) {
-    bytes[i] = Math.floor(Math.random() * 256);
+  throw new Error('CSPRNG_UNAVAILABLE: Aucune source aléatoire cryptographique disponible (node:crypto ou WebCrypto requis).');
+}
+
+/**
+ * Génère une chaîne hexadécimale cryptographiquement aléatoire de byteLength octets (compatible Node & Browser).
+ */
+export function getSecureRandomHex(byteLength = 8): string {
+  return bytesToHex(getSecureRandomBytes(byteLength));
+}
+
+/**
+ * Génère un entier cryptographiquement aléatoire dans [minInclusive, maxExclusive[ (compatible Node & Browser).
+ */
+export function getSecureRandomInt(minInclusive: number, maxExclusive: number): number {
+  if (!Number.isInteger(minInclusive) || !Number.isInteger(maxExclusive) || maxExclusive <= minInclusive) {
+    throw new Error(`INVALID_RANDOM_RANGE: [${minInclusive}, ${maxExclusive})`);
   }
-  return bytes;
+  const range = maxExclusive - minInclusive;
+  if (nodeCrypto && typeof nodeCrypto.randomInt === 'function') {
+    return nodeCrypto.randomInt(minInclusive, maxExclusive);
+  }
+  const maxUint32 = 0x100000000;
+  const limit = maxUint32 - (maxUint32 % range);
+  while (true) {
+    const bytes = getSecureRandomBytes(4);
+    const val = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
+    if (val < limit) {
+      return minInclusive + (val % range);
+    }
+  }
+}
+
+/**
+ * Génère un identifiant alphanumérique CSPRNG de longueur souhaitée (compatible Node & Browser).
+ */
+export function getSecureRandomAlphanumeric(length = 8): string {
+  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    out += alphabet[getSecureRandomInt(0, alphabet.length)];
+  }
+  return out;
 }
 
 /**
@@ -199,6 +235,11 @@ const FORBIDDEN_WEAK_PATTERNS = [
   'tradelink-kyc-vault-master-signing-key-v6',
   'tradelink_kms_hmac_secret_key',
   'tradelink-sfu-room-jwt-hmac-sha256-secret-key-enterprise-v6',
+  'tradelink_doc_secret_key_9944',
+  'whsec_stripe_secret_key_v6',
+  'whsec_test_secret_key',
+  'secret_key_v6',
+  'replace_with',
 ];
 
 export function isWeakOrExposedSecret(value: string | undefined | null, minLength = 32): boolean {
@@ -280,6 +321,30 @@ export function validateProductionSecurityEnv(
 
     if (isWeakOrExposedSecret(env.ATTACHMENT_SECRET, 32)) {
       errors.push('ATTACHMENT_SECRET_MISSING_OR_WEAK: Secret HMAC des fichiers (ATTACHMENT_SECRET) absent ou < 32 caractères.');
+    }
+
+    if (isWeakOrExposedSecret(env.KYC_SIGNING_SECRET, 32)) {
+      errors.push('KYC_SIGNING_SECRET_MISSING_OR_WEAK: Secret HMAC KYC (KYC_SIGNING_SECRET) absent ou < 32 caractères.');
+    }
+
+    if (isWeakOrExposedSecret(env.OCR_HMAC_SECRET, 32)) {
+      errors.push('OCR_HMAC_SECRET_MISSING_OR_WEAK: Secret HMAC OCR (OCR_HMAC_SECRET) absent ou < 32 caractères.');
+    }
+
+    if (isWeakOrExposedSecret(env.ROOM_ACCESS_TOKEN_SECRET, 32)) {
+      errors.push('ROOM_ACCESS_TOKEN_SECRET_MISSING_OR_WEAK: Secret JWT Room Live (ROOM_ACCESS_TOKEN_SECRET) absent ou < 32 caractères.');
+    }
+
+    if (isWeakOrExposedSecret(env.STRIPE_WEBHOOK_SECRET, 32)) {
+      errors.push('STRIPE_WEBHOOK_SECRET_MISSING_OR_WEAK: Secret Webhook Stripe (STRIPE_WEBHOOK_SECRET) absent ou < 32 caractères.');
+    }
+
+    if (isWeakOrExposedSecret(env.DOCUMENT_DOWNLOAD_SECRET, 32)) {
+      errors.push('DOCUMENT_DOWNLOAD_SECRET_MISSING_OR_WEAK: Secret de téléchargement documentaire (DOCUMENT_DOWNLOAD_SECRET) absent ou < 32 caractères.');
+    }
+
+    if (isWeakOrExposedSecret(env.STRIPE_SECRET_KEY, 24)) {
+      errors.push('STRIPE_SECRET_KEY_MISSING_OR_WEAK: Clé secrète API Stripe (STRIPE_SECRET_KEY) absente ou compromise.');
     }
   }
 
@@ -651,10 +716,11 @@ function getJwtSecret(): string {
   if (cachedJwtSecret) return cachedJwtSecret;
 
   const envSecret =
-    (typeof process !== 'undefined' && (process.env?.JWT_SECRET || process.env?.SERVER_JWT_SECRET)) ||
+    (typeof process !== 'undefined' &&
+      (process.env?.JWT_SECRET || process.env?.JWT_ACCESS_SECRET || process.env?.SERVER_JWT_SECRET)) ||
     null;
 
-  if (envSecret && envSecret.length >= 32) {
+  if (envSecret && !isWeakOrExposedSecret(envSecret, 32)) {
     cachedJwtSecret = envSecret;
     return cachedJwtSecret;
   }

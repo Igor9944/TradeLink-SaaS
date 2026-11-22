@@ -62,6 +62,7 @@ import {
   SUPPORT_AGENTS,
   KnowledgeArticleRecord,
 } from '../services/supportEngine';
+import { getSecureRandomInt } from '../services/securityCrypto';
 
 export const SupportWorkspacePage: React.FC<{
   section:
@@ -192,7 +193,7 @@ export const SupportWorkspacePage: React.FC<{
     const aiAnalysis = SupportEngine.classifyTicketWithAi(newSubject, newDescription);
 
     const newTicket: SupportTicketRecord = {
-      id: `TCK-2026-${Math.floor(450 + Math.random() * 400)}`,
+      id: `TCK-2026-${getSecureRandomInt(450, 850)}`,
       subject: newSubject,
       description: newDescription,
       category: newCategory || aiAnalysis.suggestedCategory,

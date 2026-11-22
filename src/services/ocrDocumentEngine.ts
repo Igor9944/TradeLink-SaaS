@@ -7,7 +7,7 @@
 
 import crypto from 'crypto';
 import Decimal from 'decimal.js';
-import { getServiceHmacSecret } from './securityCrypto';
+import { getServiceHmacSecret, getSecureRandomAlphanumeric } from './securityCrypto';
 import type {
   OcrDocumentDetail,
   OcrDocumentProfile,
@@ -597,7 +597,7 @@ export class OcrAsyncQueueManager {
 
   public enqueueJob(documentId: string, profile: OcrDocumentProfile): OcrQueueJob {
     const job: OcrQueueJob = {
-      id: `job-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: `job-ocr-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       documentId,
       profile,
       status: 'PENDING',

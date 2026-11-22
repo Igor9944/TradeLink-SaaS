@@ -12,7 +12,12 @@
 
 import { TradeLinkRepositoryStore } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
-import { ServerRequestContext, ServerResponsePayload } from '../middlewares/errorAndSecurity.middleware';
+import {
+  ServerRequestContext,
+  ServerResponsePayload,
+  registerSingleActiveSession,
+} from '../middlewares/errorAndSecurity.middleware';
+import { computeCurrentTotpCode } from '../../services/securityCrypto';
 import { OrderRecord, ShipmentPackageDetail, ShipmentAddressDetail, UserRoleCode } from '../../types';
 import {
   calculateHaversineDistanceKm,
@@ -124,18 +129,9 @@ export function runAdvancedLogisticsTests(): { passed: number; results: string[]
     return app.handleRequest(ctx);
   };
 
-  // Sessions d'authentification réelles des 4 acteurs via /api/v1/auth/login
-  const carrierLogin = makeReq({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: {
-      userId: 'usr-carr-01',
-      email: 'dispatch@medfreight-logistics.com',
-      role: 'TRANSPORTEUR',
-      companyName: 'MedFreight Multimodal Logistics & Transport S.A.',
-    },
-  });
-  const carrierSessionId = (carrierLogin.body.data as { sessionId: string }).sessionId;
+  // Sessions d'authentification réelles des acteurs (Argon2id + TOTP MFA Admin + sessions multi-acteurs)
+  const carrierSessionId = 'sess-carr-01-adv-test';
+  registerSingleActiveSession('usr-carr-01', carrierSessionId, true);
   const carrierUser = {
     id: 'usr-carr-01',
     email: 'dispatch@medfreight-logistics.com',
@@ -145,17 +141,8 @@ export function runAdvancedLogisticsTests(): { passed: number; results: string[]
     mfaVerified: true,
   };
 
-  const carrierLogin2 = makeReq({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: {
-      userId: 'usr-carr-02',
-      email: 'ops@trans-gibraltar.com',
-      role: 'TRANSPORTEUR',
-      companyName: 'Trans-Gibraltar Ferry & Roadways',
-    },
-  });
-  const carrierSessionId2 = (carrierLogin2.body.data as { sessionId: string }).sessionId;
+  const carrierSessionId2 = 'sess-carr-02-adv-test';
+  registerSingleActiveSession('usr-carr-02', carrierSessionId2, true);
   const carrierUser2 = {
     id: 'usr-carr-02',
     email: 'ops@trans-gibraltar.com',
@@ -168,54 +155,35 @@ export function runAdvancedLogisticsTests(): { passed: number; results: string[]
   const supplierLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: {
-      userId: 'usr-supp-01',
-      email: 'logistics@eurotech-gmbh.de',
-      role: 'FOURNISSEUR',
-      companyName: 'EuroTech ColdChain & Industrial GmbH',
-    },
+    body: { email: 'h.weber@eurotech-supply.de', password: 'SupplierEuro!2026' },
   });
-  const supplierSessionId = (supplierLogin.body.data as { sessionId: string }).sessionId;
+  const supplierData = supplierLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const supplierUser = {
-    id: 'usr-supp-01',
-    email: 'logistics@eurotech-gmbh.de',
+    id: supplierData.userId,
+    email: supplierData.email,
     role: 'FOURNISSEUR' as UserRoleCode,
-    companyName: 'EuroTech ColdChain & Industrial GmbH',
-    sessionId: supplierSessionId,
+    companyName: supplierData.companyName,
+    sessionId: supplierData.sessionId,
     mfaVerified: true,
   };
 
   const clientLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: {
-      userId: 'usr-client-01',
-      email: 'achats@atlas-distribution.ma',
-      role: 'CLIENT',
-      companyName: 'Atlas Import-Export Distribution S.A.R.L.',
-    },
+    body: { email: 's.mansouri@atlas-import.ma', password: 'ClientAtlas!2026' },
   });
-  const clientSessionId = (clientLogin.body.data as { sessionId: string }).sessionId;
+  const clientData = clientLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const clientUser = {
-    id: 'usr-client-01',
-    email: 'achats@atlas-distribution.ma',
+    id: clientData.userId,
+    email: clientData.email,
     role: 'CLIENT' as UserRoleCode,
-    companyName: 'Atlas Import-Export Distribution S.A.R.L.',
-    sessionId: clientSessionId,
+    companyName: clientData.companyName,
+    sessionId: clientData.sessionId,
     mfaVerified: true,
   };
 
-  const otherClientLogin = makeReq({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: {
-      userId: 'usr-client-02',
-      email: 'purchasing@nordic-retail.dk',
-      role: 'CLIENT',
-      companyName: 'Nordic Retail Group A/S',
-    },
-  });
-  const otherClientSessionId = (otherClientLogin.body.data as { sessionId: string }).sessionId;
+  const otherClientSessionId = 'sess-client-02-adv-test';
+  registerSingleActiveSession('usr-client-02', otherClientSessionId, true);
   const otherClientUser = {
     id: 'usr-client-02',
     email: 'purchasing@nordic-retail.dk',
@@ -229,21 +197,22 @@ export function runAdvancedLogisticsTests(): { passed: number; results: string[]
     method: 'POST',
     path: '/api/v1/auth/login',
     body: {
-      userId: 'usr-admin-01',
-      email: 'supervision@tradelink.int',
-      role: 'ADMIN',
-      companyName: 'TradeLink Global Platform Administration',
+      email: 'k.benali@tradelink-global.com',
+      password: 'AdminTradeLink!2026',
     },
   });
-  const adminSessionId = (adminLogin.body.data as { sessionId: string }).sessionId;
+  const adminData = adminLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const adminUser = {
-    id: 'usr-admin-01',
-    email: 'supervision@tradelink.int',
+    id: adminData.userId,
+    email: adminData.email,
     role: 'ADMIN' as UserRoleCode,
-    companyName: 'TradeLink Global Platform Administration',
-    sessionId: adminSessionId,
+    companyName: adminData.companyName,
+    sessionId: adminData.sessionId,
     mfaVerified: true,
   };
+  const adminMfaSetup = makeReq({ method: 'POST', path: '/api/v1/auth/mfa/setup', user: adminUser });
+  const adminMfaCode = computeCurrentTotpCode((adminMfaSetup.body.data as { secretBase32: string }).secretBase32);
+  makeReq({ method: 'POST', path: '/api/v1/auth/mfa/verify', user: adminUser, body: { code: adminMfaCode } });
 
   // ==========================================================================
   // [LOG-ADV-01] Création d'Expédition avec Colisage Détaillé (Prompt 13 §1)

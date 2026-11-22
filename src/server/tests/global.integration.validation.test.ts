@@ -29,7 +29,9 @@
 // 4. FIABILITÉ, MULTILINGUISME & DÉTERMINISME FINANCIER SANS FLOTTANTS JS
 // ============================================================================
 
+import crypto from 'node:crypto';
 import Decimal from 'decimal.js';
+import { getServiceHmacSecret } from '../../services/securityCrypto';
 import { TradeLinkRepositoryStore, DatabaseStateSnapshot } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
 import {
@@ -191,6 +193,7 @@ export async function runGlobalIntegrationValidationSuite(): Promise<{ passedTes
   const apiCall = async (req: {
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: string;
+    headers?: Record<string, string>;
     body?: any;
     query?: Record<string, string>;
     user?: NonNullable<ServerRequestContext['user']>;
@@ -202,7 +205,7 @@ export async function runGlobalIntegrationValidationSuite(): Promise<{ passedTes
       params: {},
       body: req.body || {},
       query: req.query || {},
-      headers: {},
+      headers: req.headers || {},
       ipAddress: '127.0.0.1',
       user: req.user,
     };
@@ -606,29 +609,38 @@ export async function runGlobalIntegrationValidationSuite(): Promise<{ passedTes
 
     // B. Traitement du paiement sécurisé Stripe Escrow
     const amountCents = Math.round(parseFloat(createdInvoice.totalAmount) * 100);
+    const stripeWebhookBody = {
+      id: `evt_stripe_test_${Date.now()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: 'cs_test_session_9921',
+          amount_total: amountCents,
+          currency: 'eur',
+          customer_email: CLIENT_ACTOR.email,
+          metadata: {
+            orderId: activeOrderId,
+            invoiceId: activeInvoiceId,
+            clientId: CLIENT_ACTOR.id,
+            supplierId: SUPPLIER_ACTOR.id,
+          },
+          payment_status: 'paid',
+        },
+      },
+    };
+    const stripeTs = Math.floor(Date.now() / 1000);
+    const stripeSig = crypto
+      .createHmac('sha256', getServiceHmacSecret('STRIPE_WEBHOOK_SECRET'))
+      .update(`${stripeTs}.${JSON.stringify(stripeWebhookBody)}`)
+      .digest('hex');
     const webhookRes = await apiCall({
       method: 'POST',
       path: '/api/v1/payments/stripe/webhook',
-      body: {
-        id: `evt_stripe_test_${Date.now()}`,
-        type: 'checkout.session.completed',
-        created: Math.floor(Date.now() / 1000),
-        data: {
-          object: {
-            id: 'cs_test_session_9921',
-            amount_total: amountCents,
-            currency: 'eur',
-            customer_email: CLIENT_ACTOR.email,
-            metadata: {
-              orderId: activeOrderId,
-              invoiceId: activeInvoiceId,
-              clientId: CLIENT_ACTOR.id,
-              supplierId: SUPPLIER_ACTOR.id,
-            },
-            payment_status: 'paid',
-          },
-        },
+      headers: {
+        'stripe-signature': `t=${stripeTs},v1=${stripeSig}`,
       },
+      body: stripeWebhookBody,
     });
     assert(webhookRes.statusCode === 200, 'Traitement du Webhook Stripe Escrow réussi (code 200)');
     console.log('  -> [PASS] Parcours 6 : Facture -> Paiement séquestre -> Quittance scellée validé.\n');

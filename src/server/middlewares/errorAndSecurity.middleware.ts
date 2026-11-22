@@ -34,6 +34,7 @@ export interface ServerRequestContext {
   query: Record<string, string | undefined>;
   params: Record<string, string>;
   body: Record<string, any>;
+  rawBody?: string;
   correlationId: string;
   ipAddress: string;
   user?: {
@@ -299,16 +300,85 @@ export function handleCentralizedServerError(
   };
 }
 
+const NON_SANITIZED_SENSITIVE_FIELDS = new Set([
+  'password',
+  'currentPassword',
+  'newPassword',
+  'confirmPassword',
+  'passwordHash',
+  'secret',
+  'token',
+  'refreshToken',
+  'accessToken',
+  'rawToken',
+  'signature',
+  'hmacSignature',
+  'totpCode',
+  'mfaCode',
+  'code',
+  'otp',
+  'recoveryCode',
+  'webhookSecret',
+  'base64Data',
+  'fileBytesBase64',
+  'audioBase64',
+]);
+
+function decodeHtmlEntitiesForSecurityScan(str: string): string {
+  return str
+    .replace(/&#x([0-9a-f]+);?/gi, (_, hex) => {
+      const code = parseInt(hex, 16);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&#([0-9]+);?/g, (_, dec) => {
+      const code = parseInt(dec, 10);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&colon;/gi, ':')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&amp;/gi, '&');
+}
+
 // Assainissement XSS automatique des entrées utilisateur (DAST / Injection)
 export function sanitizeHtmlInput(input: string): string {
   if (typeof input !== 'string') return input;
-  return input
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
-    .replace(/on\w+\s*=\s*(?:'[^']*'|"[^"]*"|[^\s>]+)/gi, '')
-    .replace(/javascript:[^\s"'>]+/gi, '')
-    .replace(/<svg\b[^>]*>/gi, '')
-    .replace(/<\/svg>/gi, '');
+  let cleaned = input;
+  let prev = '';
+  let iterations = 0;
+
+  do {
+    prev = cleaned;
+    // Neutralise les entités / caractères de contrôle utilisés pour obfusquer javascript:/vbscript:/data:
+    const decodedForCheck = decodeHtmlEntitiesForSecurityScan(cleaned).replace(/[\x00-\x20]+/g, '');
+    if (/(?:javascript|vbscript):/i.test(decodedForCheck) || /data:(?:text\/html|image\/svg\+xml|application\/)/i.test(decodedForCheck)) {
+      cleaned = decodeHtmlEntitiesForSecurityScan(cleaned);
+    }
+
+    cleaned = cleaned
+      // Blocs complets à contenu exécutable / style
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, '')
+      .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe\s*>/gi, '')
+      .replace(/<object\b[^>]*>[\s\S]*?<\/object\s*>/gi, '')
+      .replace(/<math\b[^>]*>[\s\S]*?<\/math\s*>/gi, '')
+      .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript\s*>/gi, '')
+      // Balises dangereuses ouvrantes/fermantes (préserve le contenu interne de <svg>...</svg> tel que <path> pour la POD >= 10 chars avant échappement)
+      .replace(/<\/?(?:script|iframe|object|embed|svg|math|style|link|meta|base|form|img|details|video|audio|source|body|html|head)\b[^>]*>/gi, '')
+      // Gestionnaires d'événements inline (onerror=, onload=, onclick=, etc.)
+      .replace(/\bon[a-z]+\s*=\s*(?:'[^']*'|"[^"]*"|[^\s>]*)/gi, '')
+      .replace(/\bon[a-z]+\s*=/gi, '')
+      // Schémas URI dangereux (y compris avec espaces/contrôles intercalés)
+      .replace(/(?:j[\x00-\x20]*a[\x00-\x20]*v[\x00-\x20]*a[\x00-\x20]*s[\x00-\x20]*c[\x00-\x20]*r[\x00-\x20]*i[\x00-\x20]*p[\x00-\x20]*t|v[\x00-\x20]*b[\x00-\x20]*s[\x00-\x20]*c[\x00-\x20]*r[\x00-\x20]*i[\x00-\x20]*p[\x00-\x20]*t)\s*:/gi, '')
+      .replace(/data\s*:\s*(?:text\/html|image\/svg\+xml|application\/[^\s"'>;,]*)/gi, '');
+
+    iterations += 1;
+  } while (cleaned !== prev && iterations < 10);
+
+  // Neutralise tout résidu '<' ou '>' (ex. balise tronquée ou vecteur <path>/<svg>) afin qu'aucun nœud HTML ne puisse être interprété
+  return cleaned.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 export function sanitizeObjectFields<T>(obj: T): T {
@@ -316,11 +386,15 @@ export function sanitizeObjectFields<T>(obj: T): T {
     return typeof obj === 'string' ? (sanitizeHtmlInput(obj) as unknown as T) : obj;
   }
   if (Array.isArray(obj)) {
-    return obj.map(sanitizeObjectFields) as unknown as T;
+    return obj.map((item) => sanitizeObjectFields(item)) as unknown as T;
   }
   const result: Record<string, any> = {};
   for (const [k, v] of Object.entries(obj)) {
-    result[k] = sanitizeObjectFields(v);
+    if (NON_SANITIZED_SENSITIVE_FIELDS.has(k)) {
+      result[k] = v;
+    } else {
+      result[k] = sanitizeObjectFields(v);
+    }
   }
   return result as T;
 }

@@ -415,8 +415,32 @@ async function runLot1FinalSecurityAudit() {
       S3_SECRET_KEY: strongHex,
       KMS_VAULT_TOKEN: strongHex,
       ATTACHMENT_SECRET: strongHex,
+      KYC_SIGNING_SECRET: strongHex,
+      OCR_HMAC_SECRET: strongHex,
+      ROOM_ACCESS_TOKEN_SECRET: strongHex,
+      STRIPE_WEBHOOK_SECRET: strongHex,
+      DOCUMENT_DOWNLOAD_SECRET: strongHex,
+      STRIPE_SECRET_KEY: `sk_live_${strongHex.slice(0, 32)}`,
     });
     assert.strictEqual(prodCheck.valid, true);
+
+    assert.throws(
+      () =>
+        validateProductionSecurityEnv({
+          NODE_ENV: 'production',
+          JWT_SECRET: strongHex,
+          DATABASE_URL: `postgresql://tradelink_prod:${strongHex}@db.internal:5432/tradelink`,
+          REDIS_URL: `redis://:${strongHex}@redis.internal:6379/0`,
+          S3_SECRET_KEY: strongHex,
+          KMS_VAULT_TOKEN: strongHex,
+          ATTACHMENT_SECRET: strongHex,
+          KYC_SIGNING_SECRET: strongHex,
+          OCR_HMAC_SECRET: strongHex,
+          ROOM_ACCESS_TOKEN_SECRET: strongHex,
+          STRIPE_SECRET_KEY: `sk_live_${strongHex.slice(0, 32)}`,
+        }),
+      (err: any) => String(err.message).includes('STRIPE_WEBHOOK_SECRET_MISSING_OR_WEAK')
+    );
 
     // 5.3 Validation Zod côté serveur
     const validOrder = OrderCreateZodSchema.safeParse({

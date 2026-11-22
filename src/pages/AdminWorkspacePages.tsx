@@ -965,13 +965,15 @@ export const AdminWorkspacePage: React.FC<{
                       <Link to={`/admin/users/${u.id}`}>
                         <Button size="sm" variant="secondary">Fiche Détail</Button>
                       </Link>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => switchUserAccount(u.key as keyof typeof DEMO_USERS)}
-                      >
-                        Incarner
-                      </Button>
+                      {!import.meta.env.PROD && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => switchUserAccount(u.key as keyof typeof DEMO_USERS)}
+                        >
+                          Incarner
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant={u.isSuspended ? 'primary' : 'danger'}
@@ -1103,13 +1105,15 @@ export const AdminWorkspacePage: React.FC<{
                   >
                     {selectedUser.isSuspended ? 'Réactiver ce compte' : 'Suspendre ce compte'}
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => switchUserAccount(selectedUser.key as keyof typeof DEMO_USERS)}
-                  >
-                    Incarner ce profil
-                  </Button>
+                  {!import.meta.env.PROD && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => switchUserAccount(selectedUser.key as keyof typeof DEMO_USERS)}
+                    >
+                      Incarner ce profil
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -3635,20 +3639,24 @@ export const AdminWorkspacePage: React.FC<{
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant={currentUser.id === 'usr-admin-01' ? 'primary' : 'secondary'}
-                        onClick={() => switchUserAccount('ADMIN_1')}
-                      >
-                        Admin #1
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={currentUser.id === 'usr-admin-02' ? 'primary' : 'secondary'}
-                        onClick={() => switchUserAccount('ADMIN_2')}
-                      >
-                        Admin #2
-                      </Button>
+                      {!import.meta.env.PROD && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant={currentUser.id === 'usr-admin-01' ? 'primary' : 'secondary'}
+                            onClick={() => switchUserAccount('ADMIN_1')}
+                          >
+                            Admin #1
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={currentUser.id === 'usr-admin-02' ? 'primary' : 'secondary'}
+                            onClick={() => switchUserAccount('ADMIN_2')}
+                          >
+                            Admin #2
+                          </Button>
+                        </>
+                      )}
                       <Button
                         size="sm"
                         variant="teal"
@@ -3991,20 +3999,24 @@ export const AdminWorkspacePage: React.FC<{
                   <Plus className="w-4 h-4" />
                   Créer Sauvegarde Manuelle
                 </Button>
-                <Button
-                  size="sm"
-                  variant={currentUser.id === 'usr-admin-01' ? 'primary' : 'secondary'}
-                  onClick={() => switchUserAccount('ADMIN_1')}
-                >
-                  Admin #1 (Initiateur)
-                </Button>
-                <Button
-                  size="sm"
-                  variant={currentUser.id === 'usr-admin-02' ? 'primary' : 'secondary'}
-                  onClick={() => switchUserAccount('ADMIN_2')}
-                >
-                  Basculer sur Admin #2 (Approbateur distinct)
-                </Button>
+                {!import.meta.env.PROD && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant={currentUser.id === 'usr-admin-01' ? 'primary' : 'secondary'}
+                      onClick={() => switchUserAccount('ADMIN_1')}
+                    >
+                      Admin #1 (Initiateur)
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={currentUser.id === 'usr-admin-02' ? 'primary' : 'secondary'}
+                      onClick={() => switchUserAccount('ADMIN_2')}
+                    >
+                      Basculer sur Admin #2 (Approbateur distinct)
+                    </Button>
+                  </>
+                )}
               </div>
             }
           >

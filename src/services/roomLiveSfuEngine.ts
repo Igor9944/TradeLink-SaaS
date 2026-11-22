@@ -28,6 +28,7 @@ import {
   generateSha256Hash,
   hmacSha256Hex,
   getServiceHmacSecret,
+  getSecureRandomAlphanumeric,
   constantTimeEqual,
 } from './securityCrypto';
 import { CentralTranslationService } from './translationEngine';
@@ -310,7 +311,7 @@ export class RoomLiveSfuEngine {
   ): RoomLiveSessionState {
     const speaker = session.participants.find((p) => p.id === speakerId || p.userId === speakerId);
     const line = {
-      id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `sub-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       speakerId,
       speakerName: speaker ? speaker.name : 'Intervenant',
       speakerRole: speaker ? speaker.role : 'PARTICIPANT',
@@ -396,7 +397,7 @@ export class RoomLiveSfuEngine {
   ): { session: RoomLiveSessionState; reaction: RoomLiveReaction } {
     const part = session.participants.find((p) => p.id === participantId);
     const reaction: RoomLiveReaction = {
-      id: `react-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `react-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       participantId,
       participantName: part ? part.name : 'Participant',
       emoji,

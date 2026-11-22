@@ -13,6 +13,7 @@ import type {
   Icon3DName,
 } from '../types';
 import { CentralTranslationService } from './translationEngine';
+import { getSecureRandomAlphanumeric } from './securityCrypto';
 
 Decimal.set({ precision: 34, rounding: Decimal.ROUND_HALF_UP });
 
@@ -501,7 +502,7 @@ export class CentralCatalogEngine {
       throw err;
     }
 
-    const id = `prod-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const id = `prod-${Date.now()}-${getSecureRandomAlphanumeric(5)}`;
     const now = new Date().toISOString();
 
     // 3. Traduction automatique si nécessaire (nom et description)

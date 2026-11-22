@@ -107,14 +107,38 @@ async function runExpressIntegrationTests() {
       throw new Error('Échec test /api/v1/health');
     }
 
-    // 3. Test /metrics (Prometheus)
-    const metrics = await requestHttp({
+    // 3. Test /metrics (Prometheus) : bloqué sans auth (401), autorisé avec METRICS_SCRAPE_TOKEN (200)
+    const unauthMetrics = await requestHttp({
       hostname: '127.0.0.1',
       port,
       path: '/metrics',
       method: 'GET',
     });
-    console.log(`✓ TEST 3 /metrics : status=${metrics.statusCode}, content-type=${metrics.headers['content-type']}`);
+    if (unauthMetrics.statusCode !== 401) {
+      throw new Error(`Échec sécurité /metrics sans token : attendu 401, reçu ${unauthMetrics.statusCode}`);
+    }
+
+    const prevScrapeToken = process.env.METRICS_SCRAPE_TOKEN;
+    process.env.METRICS_SCRAPE_TOKEN = 'test-metrics-scrape-token-123456';
+    let metrics: { statusCode: number; headers: http.IncomingHttpHeaders; body: any };
+    try {
+      metrics = await requestHttp({
+        hostname: '127.0.0.1',
+        port,
+        path: '/metrics',
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${process.env.METRICS_SCRAPE_TOKEN}`,
+        },
+      });
+    } finally {
+      if (prevScrapeToken === undefined) {
+        delete process.env.METRICS_SCRAPE_TOKEN;
+      } else {
+        process.env.METRICS_SCRAPE_TOKEN = prevScrapeToken;
+      }
+    }
+    console.log(`✓ TEST 3 /metrics : unauth=${unauthMetrics.statusCode}, auth=${metrics.statusCode}, content-type=${metrics.headers['content-type']}`);
     if (metrics.statusCode !== 200 || !metrics.body.includes('tradelink_uptime_seconds')) {
       throw new Error('Échec test /metrics');
     }

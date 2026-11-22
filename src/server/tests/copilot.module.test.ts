@@ -25,6 +25,7 @@ import {
   DatabaseStateSnapshot,
 } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
+import { computeCurrentTotpCode } from '../../services/securityCrypto';
 import { UserRoleCode } from '../../types';
 
 export interface CopilotTestResult {
@@ -119,25 +120,49 @@ export async function runCopilotModuleTestSuite(): Promise<{
   const repo = new TradeLinkRepositoryStore(snapshot);
   const app = new TradeLinkApiApplication(repo);
 
-  // Authentification et ouverture de sessions réelles pour les tests
+  // Authentification et ouverture de sessions réelles pour les tests (Argon2id + TOTP MFA Admin)
   const adminLogin = app.handleRequest({
     method: 'POST',
     path: '/api/v1/auth/login',
     headers: {},
     query: {},
     params: {},
-    body: { userId: 'usr-admin-01', email: 'direction.sec@tradelink-saas.com', role: 'ADMIN' },
+    body: { email: 'k.benali@tradelink-global.com', password: 'AdminTradeLink!2026' },
     correlationId: 'copilot-init-adm',
     ipAddress: '10.0.0.1',
   });
-  const adminSessionId = (adminLogin.body.data as { sessionId: string }).sessionId;
+  const adminData = adminLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const adminUser = {
-    id: 'usr-admin-01',
-    email: 'direction.sec@tradelink-saas.com',
+    id: adminData.userId,
+    email: adminData.email,
     role: 'ADMIN' as UserRoleCode,
-    companyName: 'TradeLink International Headquarters',
-    sessionId: adminSessionId,
+    companyName: adminData.companyName,
+    sessionId: adminData.sessionId,
+    mfaVerified: true,
   };
+  const adminMfaSetup = app.handleRequest({
+    method: 'POST',
+    path: '/api/v1/auth/mfa/setup',
+    headers: {},
+    query: {},
+    params: {},
+    body: {},
+    correlationId: 'copilot-init-adm-setup',
+    ipAddress: '10.0.0.1',
+    user: adminUser,
+  });
+  const adminMfaCode = computeCurrentTotpCode((adminMfaSetup.body.data as { secretBase32: string }).secretBase32);
+  app.handleRequest({
+    method: 'POST',
+    path: '/api/v1/auth/mfa/verify',
+    headers: {},
+    query: {},
+    params: {},
+    body: { code: adminMfaCode },
+    correlationId: 'copilot-init-adm-verify',
+    ipAddress: '10.0.0.1',
+    user: adminUser,
+  });
 
   const clientLogin = app.handleRequest({
     method: 'POST',
@@ -145,17 +170,18 @@ export async function runCopilotModuleTestSuite(): Promise<{
     headers: {},
     query: {},
     params: {},
-    body: { userId: 'usr-client-01', email: 'achats@atlas-import.ma', role: 'CLIENT' },
+    body: { email: 's.mansouri@atlas-import.ma', password: 'ClientAtlas!2026' },
     correlationId: 'copilot-init-cli',
     ipAddress: '41.214.0.10',
   });
-  const clientSessionId = (clientLogin.body.data as { sessionId: string }).sessionId;
+  const clientData = clientLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const clientUser = {
-    id: 'usr-client-01',
-    email: 'achats@atlas-import.ma',
+    id: clientData.userId,
+    email: clientData.email,
     role: 'CLIENT' as UserRoleCode,
-    companyName: 'Atlas Import S.A.',
-    sessionId: clientSessionId,
+    companyName: clientData.companyName,
+    sessionId: clientData.sessionId,
+    mfaVerified: true,
   };
 
   const suppLogin = app.handleRequest({
@@ -164,17 +190,18 @@ export async function runCopilotModuleTestSuite(): Promise<{
     headers: {},
     query: {},
     params: {},
-    body: { userId: 'usr-supp-01', email: 'export@eurotech.de', role: 'FOURNISSEUR' },
+    body: { email: 'h.weber@eurotech-supply.de', password: 'SupplierEuro!2026' },
     correlationId: 'copilot-init-supp',
     ipAddress: '88.198.0.1',
   });
-  const suppSessionId = (suppLogin.body.data as { sessionId: string }).sessionId;
+  const suppData = suppLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const supplierUser = {
-    id: 'usr-supp-01',
-    email: 'export@eurotech.de',
+    id: suppData.userId,
+    email: suppData.email,
     role: 'FOURNISSEUR' as UserRoleCode,
-    companyName: 'EuroTech Industrial GmbH',
-    sessionId: suppSessionId,
+    companyName: suppData.companyName,
+    sessionId: suppData.sessionId,
+    mfaVerified: true,
   };
 
   console.log('\n================================================================================');

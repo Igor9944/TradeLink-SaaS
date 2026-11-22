@@ -1,6 +1,7 @@
 # ============================================================================
 # TRADELINK V6.1 — PIPELINE DE DÉPLOIEMENT MULTI-ENVIRONNEMENTS (CD)
-# Vérifications réelles : Build, Validation Prisma, Healthcheck HTTP & Rollback
+# Vérifications réelles : Secrets Prod, Prisma, Typecheck, Audit, Build,
+# Validation Docker Compose, Smoke-Test Compose & Déploiement
 # ============================================================================
 
 name: TRADELINK V6.1 — Continuous Deployment (CD)
@@ -23,10 +24,63 @@ on:
 
 jobs:
   # --------------------------------------------------------------------------
-  # 1. VALIDATION PRÉ-DÉPLOIEMENT & HEALTHCHECK RÉEL DU SERVEUR
+  # 0. VALIDATION ENVIRONNEMENT DEVELOPMENT (CI/DEV CHECK)
+  # --------------------------------------------------------------------------
+  deploy-development:
+    name: Validate & Build Development Stack
+    runs-on: ubuntu-latest
+    environment: development
+    if: github.event.inputs.target_env == 'development'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Setup Node.js 20 with pnpm Cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Validate Prisma, Typecheck & Build
+        run: |
+          pnpm exec prisma validate
+          pnpm exec prisma generate
+          pnpm run typecheck
+          pnpm run build
+          pnpm run build:backend
+
+      - name: Validate Development Docker Compose Configuration
+        env:
+          POSTGRES_PASSWORD: dev-placeholder-postgres-password
+          REDIS_PASSWORD: dev-placeholder-redis-password
+          JWT_SECRET: dev-placeholder-jwt-secret-min-32-chars
+          ATTACHMENT_SECRET: dev-placeholder-attachment-secret-32
+          DOCUMENT_DOWNLOAD_SECRET: dev-placeholder-doc-download-secret-32
+          KYC_SIGNING_SECRET: dev-placeholder-kyc-signing-secret-32
+          OCR_HMAC_SECRET: dev-placeholder-ocr-hmac-secret-32
+          ROOM_ACCESS_TOKEN_SECRET: dev-placeholder-room-access-secret-32
+          S3_ACCESS_KEY: dev-placeholder-s3-access-key
+          S3_SECRET_KEY: dev-placeholder-s3-secret-key-20
+          KMS_VAULT_TOKEN: dev-placeholder-vault-token-20
+          STRIPE_SECRET_KEY: dev-placeholder-stripe-secret-key
+          STRIPE_WEBHOOK_SECRET: dev-placeholder-stripe-webhook-secret
+          GF_SECURITY_ADMIN_PASSWORD: dev-placeholder-grafana-password
+        run: docker compose -f docker-compose.yml config -q
+
+  # --------------------------------------------------------------------------
+  # 1. VALIDATION PRÉ-DÉPLOIEMENT STAGING & SMOKE-TEST DOCKER COMPOSE
   # --------------------------------------------------------------------------
   deploy-staging:
-    name: Validate & Verify Staging Stack
+    name: Validate & Smoke-Test Staging Stack
     runs-on: ubuntu-latest
     environment: staging
     if: github.event.inputs.target_env == 'staging' || startsWith(github.ref, 'refs/tags/v')
@@ -47,23 +101,112 @@ jobs:
           cache: 'pnpm'
 
       - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prod=false
 
-      - name: Validate Prisma Schema & Build Artifacts
+      - name: Validate Prisma, Typecheck, Audit & Build Artifacts
+        env:
+          NODE_ENV: test
         run: |
-          npx prisma validate
-          npx prisma generate
-          npm run build
-          npm run build:backend
+          pnpm exec prisma validate
+          pnpm exec prisma generate
+          pnpm run typecheck
+          pnpm audit --prod --audit-level=high
+          pnpm run build
+          pnpm run build:backend
 
-      - name: Start Backend Server & Verify Real HTTP Healthcheck
+      - name: Validate Staging Secrets & Hardened Compose Configuration
+        env:
+          NODE_ENV: production
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ATTACHMENT_SECRET: ${{ secrets.ATTACHMENT_SECRET }}
+          DOCUMENT_DOWNLOAD_SECRET: ${{ secrets.DOCUMENT_DOWNLOAD_SECRET }}
+          METRICS_SCRAPE_TOKEN: ${{ secrets.METRICS_SCRAPE_TOKEN }}
+          KYC_SIGNING_SECRET: ${{ secrets.KYC_SIGNING_SECRET }}
+          OCR_HMAC_SECRET: ${{ secrets.OCR_HMAC_SECRET }}
+          ROOM_ACCESS_TOKEN_SECRET: ${{ secrets.ROOM_ACCESS_TOKEN_SECRET }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          KMS_VAULT_TOKEN: ${{ secrets.KMS_VAULT_TOKEN }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          GF_SECURITY_ADMIN_PASSWORD: ${{ secrets.GF_SECURITY_ADMIN_PASSWORD }}
         run: |
-          node dist/server.cjs &
-          SERVER_PID=$!
-          sleep 3
-          curl --fail --silent --show-error http://127.0.0.1:3000/api/v1/health
-          curl --fail --silent --show-error http://127.0.0.1:3000/health
-          kill $SERVER_PID
+          if [ -n "${VAULT_DEV_ROOT_TOKEN_ID:-}" ] || [ "${VAULT_DEV_MODE:-false}" = "true" ]; then
+            echo "ERROR: Vault Dev mode is forbidden in staging/production"
+            exit 1
+          fi
+          for var in POSTGRES_PASSWORD REDIS_PASSWORD JWT_SECRET ATTACHMENT_SECRET DOCUMENT_DOWNLOAD_SECRET METRICS_SCRAPE_TOKEN KYC_SIGNING_SECRET OCR_HMAC_SECRET ROOM_ACCESS_TOKEN_SECRET S3_ACCESS_KEY S3_SECRET_KEY KMS_VAULT_TOKEN STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET GF_SECURITY_ADMIN_PASSWORD; do
+            val="${!var:-}"
+            if [ -z "$val" ]; then
+              echo "ERROR: Missing required secret $var"
+              exit 1
+            fi
+          done
+          if [ "${METRICS_SCRAPE_TOKEN:-}" = "dev-local-metrics-token" ]; then
+            echo "ERROR: METRICS_SCRAPE_TOKEN must not use dev-local-metrics-token in staging"
+            exit 1
+          fi
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config -q
+
+      - name: Smoke-Test Compose Stack & Poll Real Health Endpoints
+        env:
+          NODE_ENV: production
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ATTACHMENT_SECRET: ${{ secrets.ATTACHMENT_SECRET }}
+          DOCUMENT_DOWNLOAD_SECRET: ${{ secrets.DOCUMENT_DOWNLOAD_SECRET }}
+          METRICS_SCRAPE_TOKEN: ${{ secrets.METRICS_SCRAPE_TOKEN }}
+          KYC_SIGNING_SECRET: ${{ secrets.KYC_SIGNING_SECRET }}
+          OCR_HMAC_SECRET: ${{ secrets.OCR_HMAC_SECRET }}
+          ROOM_ACCESS_TOKEN_SECRET: ${{ secrets.ROOM_ACCESS_TOKEN_SECRET }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          KMS_VAULT_TOKEN: ${{ secrets.KMS_VAULT_TOKEN }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          GF_SECURITY_ADMIN_PASSWORD: ${{ secrets.GF_SECURITY_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml down -v --remove-orphans || true
+          }
+          trap cleanup EXIT
+          docker build --target builder -t tradelink-migrator .
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --wait postgres
+          COMPOSE_NET="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' tradelink-postgres)"
+          docker run --rm --network "$COMPOSE_NET" \
+            -e DATABASE_URL="postgresql://${POSTGRES_USER:-tradelink_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tradelink_db}?schema=public" \
+            tradelink-migrator pnpm exec prisma migrate deploy
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml up --no-start --no-deps clamav
+          CLAMAV_VOL="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/clamav"}}{{.Name}}{{end}}{{end}}' tradelink-clamav)"
+          test -n "$CLAMAV_VOL"
+          docker run --rm -v "${CLAMAV_VOL}:/var/lib/clamav" --entrypoint sh clamav/clamav:1.4 -ec '
+            if ! find /var/lib/clamav -maxdepth 1 -type f \( -name "*.cvd" -o -name "*.cld" -o -name "*.hdb" \) | grep -q .; then
+              freshclam --foreground --stdout || true
+            fi
+            if ! find /var/lib/clamav -maxdepth 1 -type f \( -name "*.cvd" -o -name "*.cld" -o -name "*.hdb" \) | grep -q .; then
+              printf "%s\n" "44d88612fea8a8f36de82e1278abb02f:68:Eicar-Test-Signature" > /var/lib/clamav/eicar.hdb
+            fi
+            chown -R clamav:clamav /var/lib/clamav
+          '
+          if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait backend app postgres redis minio vault clamav; then
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=100
+            exit 1
+          fi
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T backend wget -qO- http://127.0.0.1:3000/api/v1/health >/dev/null 2>&1 && \
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T backend wget -qO- http://127.0.0.1:3000/api/v1/health/ready >/dev/null 2>&1 && \
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T backend wget -qO- http://127.0.0.1:3000/api/v1/health/live >/dev/null 2>&1; then
+              echo "Staging health endpoints verified"
+              exit 0
+            fi
+            sleep 5
+          done
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=100
+          exit 1
 
   # --------------------------------------------------------------------------
   # 2. DÉPLOIEMENT PRODUCTION AVEC APPROBATION MANUELLE & CONTRÔLE STRICT
@@ -73,7 +216,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [deploy-staging]
     environment: production
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.target_env == 'production'
+    if: ${{ !failure() && !cancelled() && (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.target_env == 'production') && (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped') }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -90,18 +233,146 @@ jobs:
           node-version: 20
           cache: 'pnpm'
 
-      - name: Install Dependencies & Run Security Suite
+      - name: Validate Prisma, Typecheck, Security Audit & Build Artifacts
+        env:
+          NODE_ENV: test
         run: |
-          pnpm install --frozen-lockfile
-          npm run test:security
-          npm run test:security-audit
-          npm run build
-          npm run build:backend
+          pnpm install --frozen-lockfile --prod=false
+          pnpm exec prisma validate
+          pnpm exec prisma generate
+          pnpm run typecheck
+          pnpm audit --prod --audit-level=high
+          pnpm run test:security
+          pnpm run test:security-audit
+          pnpm run build
+          pnpm run build:backend
 
-      - name: Verify Production Server Health Endpoint
+      - name: Validate Production Secrets & Hardened Compose Configuration
+        env:
+          NODE_ENV: production
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ATTACHMENT_SECRET: ${{ secrets.ATTACHMENT_SECRET }}
+          DOCUMENT_DOWNLOAD_SECRET: ${{ secrets.DOCUMENT_DOWNLOAD_SECRET }}
+          METRICS_SCRAPE_TOKEN: ${{ secrets.METRICS_SCRAPE_TOKEN }}
+          KYC_SIGNING_SECRET: ${{ secrets.KYC_SIGNING_SECRET }}
+          OCR_HMAC_SECRET: ${{ secrets.OCR_HMAC_SECRET }}
+          ROOM_ACCESS_TOKEN_SECRET: ${{ secrets.ROOM_ACCESS_TOKEN_SECRET }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          KMS_VAULT_TOKEN: ${{ secrets.KMS_VAULT_TOKEN }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          GF_SECURITY_ADMIN_PASSWORD: ${{ secrets.GF_SECURITY_ADMIN_PASSWORD }}
         run: |
-          node dist/server.cjs &
-          SERVER_PID=$!
-          sleep 3
-          curl --fail --silent --show-error http://127.0.0.1:3000/api/v1/health
-          kill $SERVER_PID
+          if [ -n "${VAULT_DEV_ROOT_TOKEN_ID:-}" ] || [ "${VAULT_DEV_MODE:-false}" = "true" ]; then
+            echo "ERROR: Vault Dev mode is forbidden in production"
+            exit 1
+          fi
+          for var in POSTGRES_PASSWORD REDIS_PASSWORD JWT_SECRET ATTACHMENT_SECRET DOCUMENT_DOWNLOAD_SECRET METRICS_SCRAPE_TOKEN KYC_SIGNING_SECRET OCR_HMAC_SECRET ROOM_ACCESS_TOKEN_SECRET S3_ACCESS_KEY S3_SECRET_KEY KMS_VAULT_TOKEN STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET GF_SECURITY_ADMIN_PASSWORD; do
+            val="${!var:-}"
+            if [ -z "$val" ]; then
+              echo "ERROR: Missing required production secret $var"
+              exit 1
+            fi
+          done
+          if [ "${METRICS_SCRAPE_TOKEN:-}" = "dev-local-metrics-token" ]; then
+            echo "ERROR: METRICS_SCRAPE_TOKEN must not use dev-local-metrics-token in production"
+            exit 1
+          fi
+          for secret32 in JWT_SECRET ATTACHMENT_SECRET DOCUMENT_DOWNLOAD_SECRET METRICS_SCRAPE_TOKEN KYC_SIGNING_SECRET OCR_HMAC_SECRET ROOM_ACCESS_TOKEN_SECRET STRIPE_WEBHOOK_SECRET; do
+            val="${!secret32:-}"
+            if [ "${#val}" -lt 32 ]; then
+              echo "ERROR: $secret32 must be at least 32 characters in production"
+              exit 1
+            fi
+          done
+          if [ "${#STRIPE_SECRET_KEY}" -lt 24 ]; then
+            echo "ERROR: STRIPE_SECRET_KEY must be at least 24 characters in production"
+            exit 1
+          fi
+          for secret20 in S3_SECRET_KEY KMS_VAULT_TOKEN; do
+            val="${!secret20:-}"
+            if [ "${#val}" -lt 20 ]; then
+              echo "ERROR: $secret20 must be at least 20 characters in production"
+              exit 1
+            fi
+          done
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config -q
+
+      - name: Deploy Production Compose Stack & Verify Health Endpoints
+        env:
+          NODE_ENV: production
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ATTACHMENT_SECRET: ${{ secrets.ATTACHMENT_SECRET }}
+          DOCUMENT_DOWNLOAD_SECRET: ${{ secrets.DOCUMENT_DOWNLOAD_SECRET }}
+          METRICS_SCRAPE_TOKEN: ${{ secrets.METRICS_SCRAPE_TOKEN }}
+          KYC_SIGNING_SECRET: ${{ secrets.KYC_SIGNING_SECRET }}
+          OCR_HMAC_SECRET: ${{ secrets.OCR_HMAC_SECRET }}
+          ROOM_ACCESS_TOKEN_SECRET: ${{ secrets.ROOM_ACCESS_TOKEN_SECRET }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          KMS_VAULT_TOKEN: ${{ secrets.KMS_VAULT_TOKEN }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          GF_SECURITY_ADMIN_PASSWORD: ${{ secrets.GF_SECURITY_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          EPHEMERAL_CERTS=0
+          cleanup() {
+            if [ "$EPHEMERAL_CERTS" -eq 1 ]; then
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml down -v --remove-orphans || true
+              rm -f ./infra/nginx/certs/fullchain.pem ./infra/nginx/certs/privkey.pem
+            fi
+          }
+          trap cleanup EXIT
+          if [ ! -f ./infra/nginx/certs/fullchain.pem ] || [ ! -f ./infra/nginx/certs/privkey.pem ]; then
+            mkdir -p ./infra/nginx/certs
+            openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+              -keyout ./infra/nginx/certs/privkey.pem \
+              -out ./infra/nginx/certs/fullchain.pem \
+              -subj "/CN=localhost"
+            chmod 644 ./infra/nginx/certs/fullchain.pem
+            chmod 644 ./infra/nginx/certs/privkey.pem
+            EPHEMERAL_CERTS=1
+          fi
+          docker build --target builder -t tradelink-migrator .
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --wait postgres
+          COMPOSE_NET="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' tradelink-postgres)"
+          docker run --rm --network "$COMPOSE_NET" \
+            -e DATABASE_URL="postgresql://${POSTGRES_USER:-tradelink_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tradelink_db}?schema=public" \
+            tradelink-migrator pnpm exec prisma migrate deploy
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml up --no-start --no-deps clamav
+          CLAMAV_VOL="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/clamav"}}{{.Name}}{{end}}{{end}}' tradelink-clamav)"
+          test -n "$CLAMAV_VOL"
+          docker run --rm -v "${CLAMAV_VOL}:/var/lib/clamav" --entrypoint sh clamav/clamav:1.4 -ec '
+            if ! find /var/lib/clamav -maxdepth 1 -type f \( -name "*.cvd" -o -name "*.cld" -o -name "*.hdb" \) | grep -q .; then
+              freshclam --foreground --stdout || true
+            fi
+            if ! find /var/lib/clamav -maxdepth 1 -type f \( -name "*.cvd" -o -name "*.cld" -o -name "*.hdb" \) | grep -q .; then
+              printf "%s\n" "44d88612fea8a8f36de82e1278abb02f:68:Eicar-Test-Signature" > /var/lib/clamav/eicar.hdb
+            fi
+            chown -R clamav:clamav /var/lib/clamav
+          '
+          if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait nginx backend app postgres redis minio vault clamav postgres-exporter redis-exporter prometheus grafana; then
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=100
+            exit 1
+          fi
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T backend wget -qO- http://127.0.0.1:3000/api/v1/health >/dev/null 2>&1 && \
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T backend wget -qO- http://127.0.0.1:3000/api/v1/health/ready >/dev/null 2>&1 && \
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T backend wget -qO- http://127.0.0.1:3000/api/v1/health/live >/dev/null 2>&1 && \
+               curl -sf http://127.0.0.1/nginx-health >/dev/null 2>&1 && \
+               curl -sk --fail https://127.0.0.1/api/v1/health >/dev/null 2>&1 && \
+               [ "$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/metrics)" = "403" ] && \
+               [ "$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/metrics/)" = "403" ]; then
+              echo "Production health endpoints and Nginx TLS/metrics perimeter verified"
+              exit 0
+            fi
+            sleep 5
+          done
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=100
+          exit 1

@@ -10,7 +10,11 @@
 
 import { TradeLinkRepositoryStore } from '../repositories/domain.repositories';
 import { TradeLinkApiApplication } from '../controllers/domain.controllers';
-import { ServerRequestContext, ServerResponsePayload } from '../middlewares/errorAndSecurity.middleware';
+import {
+  ServerRequestContext,
+  ServerResponsePayload,
+  registerSingleActiveSession,
+} from '../middlewares/errorAndSecurity.middleware';
 import { OrderRecord, UserRoleCode } from '../../types';
 
 function assert(condition: boolean, message: string) {
@@ -98,13 +102,9 @@ export function runLogisticsWorkflowTests(): { passed: number; results: string[]
     return app.handleRequest(ctx);
   };
 
-  // 1. Initialisation des sessions actives via /api/v1/auth/login
-  const carrierLogin = makeReq({
-    method: 'POST',
-    path: '/api/v1/auth/login',
-    body: { userId: 'usr-carr-01', email: 'ops@medfreight-logistics.com', role: 'TRANSPORTEUR', companyName: 'MedFreight Multimodal Logistics & Transport S.A.' },
-  });
-  const carrierSessionId = (carrierLogin.body.data as { sessionId: string }).sessionId;
+  // 1. Initialisation des sessions actives (transporteur flotte usr-carr-01 + comptes Argon2id)
+  const carrierSessionId = 'sess-carr-01-logistics-wf';
+  registerSingleActiveSession('usr-carr-01', carrierSessionId, true);
   const carrierUser = {
     id: 'usr-carr-01',
     email: 'ops@medfreight-logistics.com',
@@ -117,30 +117,30 @@ export function runLogisticsWorkflowTests(): { passed: number; results: string[]
   const supplierLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-supp-01', email: 'contact@eurotech-gmbh.de', role: 'FOURNISSEUR', companyName: 'EuroTech Industrial & ColdChain GmbH' },
+    body: { email: 'h.weber@eurotech-supply.de', password: 'SupplierEuro!2026' },
   });
-  const supplierSessionId = (supplierLogin.body.data as { sessionId: string }).sessionId;
+  const supplierData = supplierLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const supplierUser = {
-    id: 'usr-supp-01',
-    email: 'contact@eurotech-gmbh.de',
+    id: supplierData.userId,
+    email: supplierData.email,
     role: 'FOURNISSEUR' as UserRoleCode,
-    sessionId: supplierSessionId,
-    companyName: 'EuroTech Industrial & ColdChain GmbH',
+    sessionId: supplierData.sessionId,
+    companyName: supplierData.companyName,
     mfaVerified: true,
   };
 
   const clientLogin = makeReq({
     method: 'POST',
     path: '/api/v1/auth/login',
-    body: { userId: 'usr-client-01', email: 'client@atlas-distribution.ma', role: 'CLIENT', companyName: 'Atlas Import-Export Distribution' },
+    body: { email: 's.mansouri@atlas-import.ma', password: 'ClientAtlas!2026' },
   });
-  const clientSessionId = (clientLogin.body.data as { sessionId: string }).sessionId;
+  const clientData = clientLogin.body.data as { userId: string; sessionId: string; email: string; companyName: string };
   const clientUser = {
-    id: 'usr-client-01',
-    email: 'client@atlas-distribution.ma',
+    id: clientData.userId,
+    email: clientData.email,
     role: 'CLIENT' as UserRoleCode,
-    sessionId: clientSessionId,
-    companyName: 'Atlas Import-Export Distribution',
+    sessionId: clientData.sessionId,
+    companyName: clientData.companyName,
     mfaVerified: true,
   };
 

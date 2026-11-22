@@ -8,6 +8,7 @@
 
 import crypto from 'crypto';
 import Decimal from 'decimal.js';
+import { getSecureRandomAlphanumeric, getSecureRandomInt } from './securityCrypto';
 import {
   CartValidationResult,
   CommercialDisputeRecord,
@@ -343,8 +344,8 @@ export class CommercialEngine {
     const alertTriggered = updated.stockAvailable <= updated.minStockAlert;
 
     const movementRecord: StockMovementRecord = {
-      id: `mvt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      movementNumber: `MVT-STK-${Math.floor(100000 + Math.random() * 900000)}`,
+      id: `mvt-${Date.now()}-${getSecureRandomInt(0, 1000)}`,
+      movementNumber: `MVT-STK-${getSecureRandomInt(100000, 1000000)}`,
       productId: updated.id,
       sku: updated.sku,
       movementType: type,
@@ -556,7 +557,7 @@ export class CommercialEngine {
     const expiry = new Date();
     expiry.setDate(expiry.getDate() + validityDays);
 
-    const quoteNumber = `DEV-2026-${Math.floor(10000 + Math.random() * 90000)}`;
+    const quoteNumber = `DEV-2026-${getSecureRandomInt(10000, 100000)}`;
 
     const initialLines = input.lines.map((l) => {
       const unit = l.targetPrice ? new Decimal(l.targetPrice) : new Decimal('0.00');
@@ -836,7 +837,7 @@ export class CommercialEngine {
       });
     }
 
-    const orderNumber = `CMD-2026-${Math.floor(10000 + Math.random() * 90000)}`;
+    const orderNumber = `CMD-2026-${getSecureRandomInt(10000, 100000)}`;
 
     const createdOrder: OrderRecord = {
       id: `ord-${Date.now()}`,
@@ -947,7 +948,7 @@ export class CommercialEngine {
   ): StripeCheckoutSessionSimulated {
     const totalDecimal = new Decimal(invoice.totalAmount);
     const amountTotalCents = totalDecimal.times(100).toNumber();
-    const sessionId = `cs_test_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const sessionId = `cs_test_${Date.now()}_${getSecureRandomAlphanumeric(8)}`;
 
     return {
       sessionId,
@@ -980,7 +981,7 @@ export class CommercialEngine {
     const expiryDate = new Date();
     expiryDate.setHours(expiryDate.getHours() + 24);
 
-    const sessionId = `sess_${provider.toLowerCase()}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const sessionId = `sess_${provider.toLowerCase()}_${Date.now()}_${getSecureRandomAlphanumeric(8)}`;
     let checkoutUrl = '';
     let virtualIban: string | undefined;
     let qrCodeData: string | undefined;
@@ -1188,7 +1189,7 @@ export class CommercialEngine {
     order: OrderRecord,
     invoice: InvoiceRecord
   ): PaymentReceiptRecord {
-    const receiptNumber = `REC-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+    const receiptNumber = `REC-2026-${getSecureRandomInt(100000, 1000000)}`;
     const issuedAt = new Date().toISOString();
 
     const rawPayload = `${receiptNumber}|${payment.id}|${payment.paymentReference}|${order.orderNumber}|${invoice.invoiceNumber}|${payment.amount}|${payment.currency}|${issuedAt}`;
@@ -1244,41 +1245,70 @@ export class CommercialEngine {
       ? maxAgeSecondsOrTimestamp
       : optionalMaxAge;
 
-    // Protection anti-rejeu par horodatage (tolérance maxAgeSeconds, défaut 300s)
-    if (timestampStr) {
-      const tsNum = parseInt(timestampStr, 10);
-      const nowSec = Math.floor(Date.now() / 1000);
-      const tsInSec = tsNum > 1e11 ? Math.floor(tsNum / 1000) : tsNum;
-      if (Math.abs(nowSec - tsInSec) > maxAgeSeconds) {
-        return {
-          valid: false,
-          error: 'TIMESTAMP_OUT_OF_TOLERANCE',
-          reason: `Échec anti-rejeu : horodatage expiré (${Math.abs(nowSec - tsInSec)}s > ${maxAgeSeconds}s).`,
-        };
-      }
+    // Protection anti-rejeu par horodatage obligatoire (tolérance maxAgeSeconds, défaut 300s)
+    if (!timestampStr) {
+      return {
+        valid: false,
+        error: 'MISSING_TIMESTAMP',
+        reason: 'Horodatage anti-rejeu (t= ou X-Timestamp) manquant dans la signature du webhook.',
+      };
     }
 
-    // Calcul du HMAC-SHA256 (format Stripe : `${timestamp}.${payload}` si timestamp présent, sinon `${payload}`)
-    const payloadToSign = timestampStr ? `${timestampStr}.${payloadString}` : payloadString;
+    const tsNum = parseInt(timestampStr, 10);
+    if (!Number.isFinite(tsNum) || Number.isNaN(tsNum) || tsNum <= 0) {
+      return {
+        valid: false,
+        error: 'INVALID_TIMESTAMP',
+        reason: 'Horodatage anti-rejeu invalide dans la signature du webhook.',
+      };
+    }
+    const nowSec = Math.floor(Date.now() / 1000);
+    const tsInSec = tsNum > 1e11 ? Math.floor(tsNum / 1000) : tsNum;
+    if (Math.abs(nowSec - tsInSec) > maxAgeSeconds) {
+      return {
+        valid: false,
+        error: 'TIMESTAMP_OUT_OF_TOLERANCE',
+        reason: `Échec anti-rejeu : horodatage expiré (${Math.abs(nowSec - tsInSec)}s > ${maxAgeSeconds}s).`,
+      };
+    }
+
+    // Calcul du HMAC-SHA256 (format Stripe : `${timestamp}.${payload}`)
+    const payloadToSign = `${timestampStr}.${payloadString}`;
     const expectedHmac = crypto.createHmac('sha256', secretKey).update(payloadToSign).digest('hex');
 
-    // Normalisation de l'en-tête (gestion du format Stripe t=...,v1=... ou signature directe)
-    let extractedSig = signatureHeader.trim();
+    // Extraction des signatures candidates (supporte la rotation multi-v1 Stripe: t=...,v1=...,v1=...)
+    const candidateSigs: string[] = [];
     if (signatureHeader.includes('v1=')) {
-      const match = signatureHeader.match(/v1=([a-f0-9]+)/i);
-      if (match) {
-        extractedSig = match[1];
+      const v1Matches = Array.from(signatureHeader.matchAll(/(?:^|[,\s])v1=([^\s,]+)/gi));
+      for (const m of v1Matches) {
+        if (m[1]) candidateSigs.push(m[1].trim());
       }
+      if (candidateSigs.length === 0) {
+        return { valid: false, error: 'SIGNATURE_MISMATCH', reason: 'Signature v1= manquante ou malformée.' };
+      }
+    } else {
+      candidateSigs.push(signatureHeader.trim());
     }
 
     try {
-      const bufA = Buffer.from(extractedSig, 'hex');
       const bufB = Buffer.from(expectedHmac, 'hex');
-      if (bufA.length !== bufB.length) {
-        return { valid: false, error: 'SIGNATURE_MISMATCH', reason: 'Longueur de signature cryptographique invalide.' };
+      for (const sig of candidateSigs) {
+        if (!/^[a-f0-9]{64}$/i.test(sig)) {
+          continue;
+        }
+        const bufA = Buffer.from(sig, 'hex');
+        if (bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB)) {
+          return { valid: true };
+        }
       }
-      const isMatch = crypto.timingSafeEqual(bufA, bufB);
-      return isMatch ? { valid: true } : { valid: false, error: 'SIGNATURE_MISMATCH', reason: 'Signature HMAC-SHA256 non concordante.' };
+      const hasValidHexFormat = candidateSigs.some((sig) => /^[a-f0-9]{64}$/i.test(sig));
+      return {
+        valid: false,
+        error: 'SIGNATURE_MISMATCH',
+        reason: hasValidHexFormat
+          ? 'Signature HMAC-SHA256 non concordante.'
+          : 'Longueur ou format de signature hexadécimal invalide.',
+      };
     } catch {
       return { valid: false, error: 'SIGNATURE_MISMATCH', reason: 'Format de hachage hexadécimal invalide.' };
     }
@@ -1398,7 +1428,7 @@ export class CommercialEngine {
       throw new Error('Une description détaillée d’au moins 10 caractères est requise pour ouvrir un litige.');
     }
 
-    const disputeNumber = `LIT-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+    const disputeNumber = `LIT-2026-${getSecureRandomInt(1000, 10000)}`;
     const disputeId = `disp-${Date.now()}`;
 
     const dispute: CommercialDisputeRecord = {

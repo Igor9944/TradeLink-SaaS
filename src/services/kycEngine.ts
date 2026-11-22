@@ -25,6 +25,7 @@ import {
   generateSha256Hash,
   hmacSha256Hex,
   getServiceHmacSecret,
+  getSecureRandomAlphanumeric,
 } from './securityCrypto';
 
 export type KycActorProfile = 'CLIENT' | 'FOURNISSEUR' | 'TRANSPORTEUR';
@@ -669,7 +670,7 @@ export function encryptAndStoreKycDocument(params: {
 
   return {
     documentItem: {
-      id: `kdoc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      id: `kdoc-${Date.now().toString(36)}-${getSecureRandomAlphanumeric(4)}`,
       docType: params.docType as KYCDocumentItem['docType'],
       label,
       fileName: cleanName,
@@ -845,7 +846,7 @@ export function executeKycCronBatch(
             milestone: m,
           });
           generatedNotifications.push({
-            id: `notif-kyc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: `notif-kyc-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
             dossierId: dos.id,
             recipientUserId: dos.userId,
             channel: 'EMAIL',
@@ -883,7 +884,7 @@ export function executeKycCronBatch(
           missingDocs: completion.missingMandatoryDocTypes,
         });
         generatedNotifications.push({
-          id: `notif-kyc-j7-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: `notif-kyc-j7-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
           dossierId: dos.id,
           recipientUserId: dos.userId,
           channel: 'EMAIL',

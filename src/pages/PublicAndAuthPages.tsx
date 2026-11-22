@@ -34,6 +34,8 @@ import {
   buildOtpAuthUri,
   computeCurrentTotpCode,
   generateTotpSecretBase32,
+  getSecureRandomAlphanumeric,
+  getSecureRandomInt,
   hashPasswordArgon2id,
   verifyTotpCode,
 } from '../services/securityCrypto';
@@ -245,33 +247,35 @@ export const LandingPage: React.FC = () => {
               </Link>
             </div>
 
-            <div className="pt-4">
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2.5">
-                Accès direct aux 6 espaces métier (RBAC & Gouvernance étanche) :
-              </p>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                {[
-                  { key: 'ADMIN_1' as const, path: '/admin/dashboard', label: '1. Espace Admin (MFA & KMS)', icon: 'secure-parcel' as const },
-                  { key: 'CLIENT' as const, path: '/client/dashboard', label: '2. Espace Client B2B', icon: 'pallet-load' as const },
-                  { key: 'FOURNISSEUR' as const, path: '/fournisseur/dashboard', label: '3. Espace Fournisseur', icon: 'warehouse' as const },
-                  { key: 'TRANSPORTEUR' as const, path: '/transporteur/dashboard', label: '4. Espace Transporteur', icon: 'semi-truck' as const },
-                  { key: 'COMPTABLE' as const, path: '/comptable/dashboard', label: '5. Espace Comptable (Decimal.js)', icon: 'analytics' as const },
-                  { key: 'SUPPORT' as const, path: '/support/dashboard', label: '6. Espace Support Client', icon: 'support' as const },
-                ].map((r) => (
-                  <button
-                    key={r.path}
-                    type="button"
-                    onClick={() => openRoleWorkspace(r.key, r.path)}
-                    className="group flex items-center gap-2.5 p-2.5 rounded-xl bg-white dark:bg-[#0B2E32] border border-slate-200 dark:border-teal-800 hover:border-[#E85D22] dark:hover:border-orange-400 text-start shadow-xs transition-all"
-                  >
-                    <Icon3D name={r.icon} size="sm" />
-                    <span className="text-xs font-bold group-hover:text-[#E85D22] transition-colors">
-                      {r.label}
-                    </span>
-                  </button>
-                ))}
+            {!import.meta.env.PROD && (
+              <div className="pt-4">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2.5">
+                  Accès direct aux 6 espaces métier (RBAC & Gouvernance étanche) :
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                  {[
+                    { key: 'ADMIN_1' as const, path: '/admin/dashboard', label: '1. Espace Admin (MFA & KMS)', icon: 'secure-parcel' as const },
+                    { key: 'CLIENT' as const, path: '/client/dashboard', label: '2. Espace Client B2B', icon: 'pallet-load' as const },
+                    { key: 'FOURNISSEUR' as const, path: '/fournisseur/dashboard', label: '3. Espace Fournisseur', icon: 'warehouse' as const },
+                    { key: 'TRANSPORTEUR' as const, path: '/transporteur/dashboard', label: '4. Espace Transporteur', icon: 'semi-truck' as const },
+                    { key: 'COMPTABLE' as const, path: '/comptable/dashboard', label: '5. Espace Comptable (Decimal.js)', icon: 'analytics' as const },
+                    { key: 'SUPPORT' as const, path: '/support/dashboard', label: '6. Espace Support Client', icon: 'support' as const },
+                  ].map((r) => (
+                    <button
+                      key={r.path}
+                      type="button"
+                      onClick={() => openRoleWorkspace(r.key, r.path)}
+                      className="group flex items-center gap-2.5 p-2.5 rounded-xl bg-white dark:bg-[#0B2E32] border border-slate-200 dark:border-teal-800 hover:border-[#E85D22] dark:hover:border-orange-400 text-start shadow-xs transition-all"
+                    >
+                      <Icon3D name={r.icon} size="sm" />
+                      <span className="text-xs font-bold group-hover:text-[#E85D22] transition-colors">
+                        {r.label}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           <div className="lg:col-span-5 space-y-4">
@@ -1211,7 +1215,11 @@ export const AuthPortalPage: React.FC<{
 
     setFailedAttempts(0);
 
-    // Détermination de la redirection selon le compte
+    // Détermination de la redirection selon le compte (simulateur désactivé en production)
+    if (import.meta.env.PROD) {
+      notifyToast('Authentification requise via le serveur API (/api/v1/auth/login).', 'info');
+      return;
+    }
     if (loginEmail.includes('admin') || loginEmail.includes('direction')) {
       addAuditLog('AUTH_ARGON2ID_VERIFIED', 'User', loginEmail, 'SUCCESS', 'Admin vérifié ; redirection vers MFA TOTP.');
       navigate('/mfa');
@@ -1355,33 +1363,35 @@ export const AuthPortalPage: React.FC<{
                 </Button>
               </form>
 
-              <div className="pt-4 border-t border-slate-200 dark:border-teal-800">
-                <p className="text-xs font-bold mb-2 text-slate-500">
-                  Accès direct par profil métier (redirection automatique) :
-                </p>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  {[
-                    { k: 'ADMIN_1' as const, l: 'Admin #1 (MFA Actif)', p: '/admin/dashboard' },
-                    { k: 'CLIENT' as const, l: 'Client B2B', p: '/client/dashboard' },
-                    { k: 'FOURNISSEUR' as const, l: 'Fournisseur', p: '/fournisseur/dashboard' },
-                    { k: 'TRANSPORTEUR' as const, l: 'Transporteur TIR', p: '/transporteur/dashboard' },
-                    { k: 'COMPTABLE' as const, l: 'Comptable (Lecture Seule)', p: '/comptable/dashboard' },
-                    { k: 'SUPPORT' as const, l: 'Support Client', p: '/support/dashboard' },
-                  ].map((item) => (
-                    <Button
-                      key={item.k}
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => {
-                        switchUserAccount(item.k);
-                        navigate(item.p);
-                      }}
-                    >
-                      {item.l}
-                    </Button>
-                  ))}
+              {!import.meta.env.PROD && (
+                <div className="pt-4 border-t border-slate-200 dark:border-teal-800">
+                  <p className="text-xs font-bold mb-2 text-slate-500">
+                    Accès direct par profil métier (redirection automatique) :
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    {[
+                      { k: 'ADMIN_1' as const, l: 'Admin #1 (MFA Actif)', p: '/admin/dashboard' },
+                      { k: 'CLIENT' as const, l: 'Client B2B', p: '/client/dashboard' },
+                      { k: 'FOURNISSEUR' as const, l: 'Fournisseur', p: '/fournisseur/dashboard' },
+                      { k: 'TRANSPORTEUR' as const, l: 'Transporteur TIR', p: '/transporteur/dashboard' },
+                      { k: 'COMPTABLE' as const, l: 'Comptable (Lecture Seule)', p: '/comptable/dashboard' },
+                      { k: 'SUPPORT' as const, l: 'Support Client', p: '/support/dashboard' },
+                    ].map((item) => (
+                      <Button
+                        key={item.k}
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          switchUserAccount(item.k);
+                          navigate(item.p);
+                        }}
+                      >
+                        {item.l}
+                      </Button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -1560,7 +1570,9 @@ export const AuthPortalPage: React.FC<{
                   'Code OTP vérifié ! Compte activé et compte à rebours KYC J+7 démarré avec succès.',
                   'success'
                 );
-                switchUserAccount('CLIENT');
+                if (!import.meta.env.PROD) {
+                  switchUserAccount('CLIENT');
+                }
                 navigate('/client/kyc');
               }}
               className="space-y-4"
@@ -1613,7 +1625,7 @@ export const AuthPortalPage: React.FC<{
                   variant="secondary"
                   onClick={() => {
                     stopSmsOtpListener();
-                    const nextCode = Math.floor(100000 + Math.random() * 899999).toString();
+                    const nextCode = getSecureRandomInt(100000, 1000000).toString();
                     setOtpCode(nextCode);
                     notifyToast(`Nouveau code OTP envoyé : ${nextCode}`, 'info');
                   }}
@@ -1633,7 +1645,7 @@ export const AuthPortalPage: React.FC<{
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  const token = `rst_single_use_${Math.random().toString(36).slice(2, 12)}`;
+                  const token = `rst_single_use_${getSecureRandomAlphanumeric(12)}`;
                   setSingleUseResetToken(token);
                   setTokenConsumed(false);
                   notifyToast('Jeton à usage unique généré (expiration 15 minutes).', 'success');

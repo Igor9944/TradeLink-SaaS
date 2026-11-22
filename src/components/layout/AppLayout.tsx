@@ -253,55 +253,57 @@ export const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children })
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-[#071E21] text-slate-900 dark:text-slate-100">
       <ToastNotification toast={toastMessage} />
 
-      {/* BARRE DE SIMULATION MULTI-RÔLES (Permet de tester les 6 rôles + Admin #2 en 1 clic) */}
-      <div className="bg-[#062023] text-slate-200 border-b border-teal-800/80 px-4 py-2 text-xs">
-        <div className="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#E85D22] text-white font-bold">
-              <ShieldCheck className="w-3.5 h-3.5" />
-              SIMULATEUR RBAC V6.0
-            </span>
-            <span className="text-slate-400 hidden xl:inline">
-              Testez les 6 espaces métier + la double validation Admin :
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {(
-              [
-                { key: 'ADMIN_1', label: 'Admin #1 (Karim)' },
-                { key: 'ADMIN_2', label: 'Admin #2 (Sophie - 2x Approb.)' },
-                { key: 'CLIENT', label: 'Client B2B' },
-                { key: 'FOURNISSEUR', label: 'Fournisseur' },
-                { key: 'TRANSPORTEUR', label: 'Transporteur' },
-                { key: 'COMPTABLE', label: 'Comptable (Lecture Seule)' },
-                { key: 'SUPPORT', label: 'Support' },
-              ] as const
-            ).map((u) => {
-              const active = currentUser.id === DEMO_USERS[u.key].id;
-              return (
-                <button
-                  key={u.key}
-                  type="button"
-                  onClick={() => handleRoleSwitchAndNavigate(u.key)}
-                  className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
-                    active
-                      ? 'bg-[#E85D22] text-white shadow-sm ring-1 ring-orange-300'
-                      : 'bg-teal-950/90 hover:bg-teal-900 text-slate-300 border border-teal-800/70'
-                  }`}
-                >
-                  {u.label}
-                </button>
-              );
-            })}
-            <Link
-              to="/"
-              className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 font-semibold"
-            >
-              Landing Public ↗
-            </Link>
+      {/* BARRE DE SIMULATION MULTI-RÔLES (Désactivée en production) */}
+      {!import.meta.env.PROD && (
+        <div className="bg-[#062023] text-slate-200 border-b border-teal-800/80 px-4 py-2 text-xs">
+          <div className="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#E85D22] text-white font-bold">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                SIMULATEUR RBAC V6.0
+              </span>
+              <span className="text-slate-400 hidden xl:inline">
+                Testez les 6 espaces métier + la double validation Admin :
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(
+                [
+                  { key: 'ADMIN_1', label: 'Admin #1 (Karim)' },
+                  { key: 'ADMIN_2', label: 'Admin #2 (Sophie - 2x Approb.)' },
+                  { key: 'CLIENT', label: 'Client B2B' },
+                  { key: 'FOURNISSEUR', label: 'Fournisseur' },
+                  { key: 'TRANSPORTEUR', label: 'Transporteur' },
+                  { key: 'COMPTABLE', label: 'Comptable (Lecture Seule)' },
+                  { key: 'SUPPORT', label: 'Support' },
+                ] as const
+              ).map((u) => {
+                const active = currentUser.id === DEMO_USERS[u.key].id;
+                return (
+                  <button
+                    key={u.key}
+                    type="button"
+                    onClick={() => handleRoleSwitchAndNavigate(u.key)}
+                    className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
+                      active
+                        ? 'bg-[#E85D22] text-white shadow-sm ring-1 ring-orange-300'
+                        : 'bg-teal-950/90 hover:bg-teal-900 text-slate-300 border border-teal-800/70'
+                    }`}
+                  >
+                    {u.label}
+                  </button>
+                );
+              })}
+              <Link
+                to="/"
+                className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 font-semibold"
+              >
+                Landing Public ↗
+              </Link>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* BANDEAU STATUT KYC (Composant 30 : KYCBanner) */}
       {(currentUser.role === 'CLIENT' ||

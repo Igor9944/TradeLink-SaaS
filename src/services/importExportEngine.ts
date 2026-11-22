@@ -32,7 +32,19 @@ import {
   SandboxDetectedTable,
   UserRoleCode,
 } from '../types';
-import { computeSha256Hex } from './adminAdvancedEngine';
+import { computeSha256Hex, neutralizeSpreadsheetFormula } from './adminAdvancedEngine';
+import { getSecureRandomAlphanumeric } from './securityCrypto';
+import { AppError } from '../server/middlewares/errorAndSecurity.middleware';
+
+function escapeXml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
 // ============================================================================
 // CONSTANTES & LIMITES DE SÉCURITÉ
@@ -161,7 +173,7 @@ export class ImportExportEngine {
 
     // 0. Mise en quarantaine initiale systématique avant validation antivirus
     this.importScanAuditLogs.push({
-      scanId: `imp-av-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      scanId: `imp-av-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       fileName: params.fileName,
       stage: 'QUARANTINED_ON_INGEST',
       status: 'QUARANTINED',
@@ -172,7 +184,7 @@ export class ImportExportEngine {
     // 1. Contrôle Antivirus & Extension
     if (isDangerous) {
       this.importScanAuditLogs.push({
-        scanId: `imp-av-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        scanId: `imp-av-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
         fileName: params.fileName,
         stage: 'MALWARE_REJECTED',
         status: 'INFECTED',
@@ -244,7 +256,7 @@ export class ImportExportEngine {
 
     if (hasEicarOrBinaryMalware) {
       this.importScanAuditLogs.push({
-        scanId: `imp-av-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        scanId: `imp-av-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
         fileName: params.fileName,
         stage: 'MALWARE_REJECTED',
         status: 'INFECTED',
@@ -273,7 +285,7 @@ export class ImportExportEngine {
 
     if (isScannerDown) {
       this.importScanAuditLogs.push({
-        scanId: `imp-av-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        scanId: `imp-av-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
         fileName: params.fileName,
         stage: 'SCANNER_UNAVAILABLE_QUARANTINED',
         status: 'QUARANTINED',
@@ -350,7 +362,7 @@ export class ImportExportEngine {
 
     const now = new Date().toISOString();
     return {
-      id: `job-imp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `job-imp-${Date.now()}-${getSecureRandomAlphanumeric(5)}`,
       currentStep: 'UPLOAD',
       entity: params.entity,
       format: validation.detectedFormat,
@@ -898,8 +910,8 @@ export class ImportExportEngine {
       fileContentRaw: params.fileContentRaw,
     });
 
-    const sessionId = `sbx-session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const containerId = `container-sbx-isolated-${Math.random().toString(36).slice(2, 8)}`;
+    const sessionId = `sbx-session-${Date.now()}-${getSecureRandomAlphanumeric(5)}`;
+    const containerId = `container-sbx-isolated-${getSecureRandomAlphanumeric(6)}`;
 
     let engineType: 'POSTGRESQL' | 'MSSQL_SERVER' | 'DBASE_FOXPRO' = 'POSTGRESQL';
     let isCompatible = true;
@@ -1108,17 +1120,22 @@ export class ImportExportEngine {
     switch (format) {
       case 'CSV': {
         mimeType = 'text/csv;charset=utf-8;';
-        const header = keys.join(';');
+        const formatFormula = (raw: string): string => {
+          if (preventFormula) {
+            const res = neutralizeSpreadsheetFormula(raw);
+            if (res.neutralized) preventedCount++;
+            return res.value;
+          }
+          return raw;
+        };
+        const header = keys.map((k) => `"${formatFormula(k).replace(/"/g, '""')}"`).join(';');
         const rows = records.map((r) =>
           keys
             .map((k) => {
               const val = r[k];
               const rawStr = typeof val === 'object' && val !== null ? JSON.stringify(val) : String(val ?? '');
-              if (preventFormula && /^[=+\-@|%]/.test(rawStr)) {
-                preventedCount++;
-                return `"'${rawStr.replace(/"/g, '""')}"`;
-              }
-              return `"${rawStr.replace(/"/g, '""')}"`;
+              const safeStr = formatFormula(rawStr);
+              return `"${safeStr.replace(/"/g, '""')}"`;
             })
             .join(';')
         );
@@ -1128,15 +1145,23 @@ export class ImportExportEngine {
 
       case 'XLSX': {
         mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;';
+        const formatFormula = (raw: string): string => {
+          if (preventFormula) {
+            const res = neutralizeSpreadsheetFormula(raw);
+            if (res.neutralized) preventedCount++;
+            return res.value;
+          }
+          return raw;
+        };
         outputContent =
           `<?xml version="1.0"?>\n` +
           `<?mso-application progid="Excel.Sheet"?>\n` +
           `<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n` +
           ` xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n` +
-          `  <Worksheet ss:Name="${entity}">\n` +
+          `  <Worksheet ss:Name="${escapeXml(entity)}">\n` +
           `    <Table>\n` +
           `      <Row>\n` +
-          keys.map((k) => `        <Cell><Data ss:Type="String">${k}</Data></Cell>\n`).join('') +
+          keys.map((k) => `        <Cell><Data ss:Type="String">${escapeXml(formatFormula(k))}</Data></Cell>\n`).join('') +
           `      </Row>\n` +
           records
             .map(
@@ -1145,12 +1170,9 @@ export class ImportExportEngine {
                 keys
                   .map((k) => {
                     const val = r[k] ?? '';
-                    let str = typeof val === 'object' ? JSON.stringify(val) : String(val);
-                    if (preventFormula && /^[=+\-@|%]/.test(str)) {
-                      preventedCount++;
-                      str = `'${str}`;
-                    }
-                    return `        <Cell><Data ss:Type="String">${str.replace(/[<>&]/g, '')}</Data></Cell>\n`;
+                    const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+                    const safeStr = formatFormula(str);
+                    return `        <Cell><Data ss:Type="String">${escapeXml(safeStr)}</Data></Cell>\n`;
                   })
                   .join('') +
                 `      </Row>\n`
@@ -1250,7 +1272,9 @@ export class ImportExportEngine {
     if (role === 'CLIENT' && entity === 'CLIENTS') return;
     if (role === 'COMPTABLE' && entity === 'ACCOUNTING_ENTRIES') return;
 
-    throw new Error(
+    throw new AppError(
+      403,
+      'RBAC_FORBIDDEN_ROLE',
       `ACCÈS REFUSÉ (RBAC Sécurité Stage 3) : Le rôle ${role} n'est pas autorisé à importer des données pour l'entité ${entity}.`
     );
   }
@@ -1265,7 +1289,9 @@ export class ImportExportEngine {
     if (role === 'CLIENT' && (entity === 'ORDERS' || entity === 'INVOICES')) return;
     if (role === 'COMPTABLE' && (entity === 'ENTRIES' || entity === 'INVOICES')) return;
 
-    throw new Error(
+    throw new AppError(
+      403,
+      'RBAC_FORBIDDEN_ROLE',
       `ACCÈS REFUSÉ (RBAC Sécurité Stage 3) : Le rôle ${role} n'est pas autorisé à exporter le jeu de données ${entity}.`
     );
   }

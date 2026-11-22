@@ -15,6 +15,7 @@ import type {
 } from '../types';
 import { defaultCatalogEngine, CentralCatalogEngine } from './catalogEngine';
 import { defaultNotificationDispatcher, CentralNotificationDispatcher } from './notificationEngine';
+import { getSecureRandomInt } from './securityCrypto';
 
 Decimal.set({ precision: 34, rounding: Decimal.ROUND_HALF_UP });
 
@@ -121,7 +122,7 @@ export class CentralStockEngine {
     }
 
     const movementId = `stkm-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-    const movementNumber = `MOV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const movementNumber = `MOV-${new Date().getFullYear()}-${getSecureRandomInt(100000, 1000000)}`;
 
     const movement: StockMovementRecord = {
       id: movementId,
@@ -233,7 +234,7 @@ export class CentralStockEngine {
       (quantityChange < 0 ? 'SCRAP_OR_LOSS' : 'INVENTORY_ADJUSTMENT');
 
     const movementId = `stkm-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-    const movementNumber = `MOV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const movementNumber = `MOV-${new Date().getFullYear()}-${getSecureRandomInt(100000, 1000000)}`;
 
     const movement: StockMovementRecord = {
       id: movementId,
@@ -333,7 +334,7 @@ export class CentralStockEngine {
 
       // Enregistrement de la réservation
       const reservationId = `res-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-      const reservationNumber = `RES-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+      const reservationNumber = `RES-${new Date().getFullYear()}-${getSecureRandomInt(100000, 1000000)}`;
 
       const reservation: StockReservationRecord = {
         id: reservationId,
@@ -358,7 +359,7 @@ export class CentralStockEngine {
       const movementId = `stkm-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
       const movement: StockMovementRecord = {
         id: movementId,
-        movementNumber: `MOV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`,
+        movementNumber: `MOV-${new Date().getFullYear()}-${getSecureRandomInt(100000, 1000000)}`,
         productId: prod.id,
         sku: prod.sku,
         movementType: 'ORDER_RESERVATION',
@@ -455,7 +456,7 @@ export class CentralStockEngine {
       const movementId = `stkm-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
       const movement: StockMovementRecord = {
         id: movementId,
-        movementNumber: `MOV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`,
+        movementNumber: `MOV-${new Date().getFullYear()}-${getSecureRandomInt(100000, 1000000)}`,
         productId: prod.id,
         sku: prod.sku,
         movementType: 'RESERVATION_RELEASE',
@@ -530,7 +531,7 @@ export class CentralStockEngine {
       const movementId = `stkm-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
       const movement: StockMovementRecord = {
         id: movementId,
-        movementNumber: `MOV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`,
+        movementNumber: `MOV-${new Date().getFullYear()}-${getSecureRandomInt(100000, 1000000)}`,
         productId: prod.id,
         sku: prod.sku,
         movementType: 'RESERVATION_RELEASE',
@@ -623,7 +624,7 @@ export class CentralStockEngine {
       const movementId = `stkm-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
       const movement: StockMovementRecord = {
         id: movementId,
-        movementNumber: `MOV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`,
+        movementNumber: `MOV-${new Date().getFullYear()}-${getSecureRandomInt(100000, 1000000)}`,
         productId: prod.id,
         sku: prod.sku,
         movementType: 'OUTBOUND_SHIPMENT',
@@ -708,7 +709,7 @@ export class CentralStockEngine {
     });
 
     const sessionId = `inv-sess-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-    const sessionNumber = `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const sessionNumber = `INV-${new Date().getFullYear()}-${getSecureRandomInt(1000, 10000)}`;
 
     const session: PhysicalInventorySession = {
       id: sessionId,
@@ -854,7 +855,7 @@ export class CentralStockEngine {
         const movementId = `stkm-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
         const movement: StockMovementRecord = {
           id: movementId,
-          movementNumber: `MOV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`,
+          movementNumber: `MOV-${new Date().getFullYear()}-${getSecureRandomInt(100000, 1000000)}`,
           productId: prod.id,
           sku: prod.sku,
           movementType: 'INVENTORY_ADJUSTMENT',

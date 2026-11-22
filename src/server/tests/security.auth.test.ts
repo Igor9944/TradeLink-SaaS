@@ -584,7 +584,7 @@ export function runSecurityAndAuthTests(): {
 
   // TEST 7 : Isolation stricte des ressources entre utilisateurs (Anti-IDOR sur Commandes, Produits et Appareils)
   {
-    // Connexion Client A (usr-client-01)
+    // Connexion Client A (usr-client-01, mot de passe mis à jour lors du TEST 6)
     const loginClientA = app.handleRequest({
       method: 'POST',
       path: '/api/v1/auth/login',
@@ -592,16 +592,44 @@ export function runSecurityAndAuthTests(): {
       query: {},
       params: {},
       body: {
-        userId: 'usr-client-01',
         email: 's.mansouri@atlas-import.ma',
-        role: 'CLIENT',
+        password: 'NewAtlasPassword!2027',
       },
       correlationId: 'sec-corr-07-ca',
       ipAddress: '41.214.0.10',
     });
-    const clientASession = loginClientA.body.data as { sessionId: string; deviceId: string };
+    const clientASession = loginClientA.body.data as { userId: string; sessionId: string; deviceId: string };
 
-    // Connexion Client B (usr-client-99)
+    // Inscription, OTP et connexion d'un second client B distinct
+    const regClientB = app.handleRequest({
+      method: 'POST',
+      path: '/api/v1/auth/register',
+      headers: {},
+      query: {},
+      params: {},
+      body: {
+        email: 'autre.client@concurrent.ma',
+        password: 'ClientB!Strong2026',
+        companyName: 'Concurrent SARL',
+        requestedRole: 'CLIENT',
+      },
+      correlationId: 'sec-corr-07-reg-cb',
+      ipAddress: '41.214.0.99',
+    });
+    const regClientBData = regClientB.body.data as { sandboxOtpCode: string };
+    app.handleRequest({
+      method: 'POST',
+      path: '/api/v1/auth/verify-otp',
+      headers: {},
+      query: {},
+      params: {},
+      body: {
+        email: 'autre.client@concurrent.ma',
+        code: regClientBData.sandboxOtpCode,
+      },
+      correlationId: 'sec-corr-07-otp-cb',
+      ipAddress: '41.214.0.99',
+    });
     const loginClientB = app.handleRequest({
       method: 'POST',
       path: '/api/v1/auth/login',
@@ -609,14 +637,13 @@ export function runSecurityAndAuthTests(): {
       query: {},
       params: {},
       body: {
-        userId: 'usr-client-99',
         email: 'autre.client@concurrent.ma',
-        role: 'CLIENT',
+        password: 'ClientB!Strong2026',
       },
       correlationId: 'sec-corr-07-cb',
       ipAddress: '41.214.0.99',
     });
-    const clientBSession = loginClientB.body.data as { sessionId: string };
+    const clientBSession = loginClientB.body.data as { userId: string; sessionId: string };
 
     // 7a. Client B tente de lire la commande ord-101 appartenant à Client A -> 403 RESOURCE_OWNERSHIP_VIOLATION
     const idorOrderAttempt = app.handleRequest({
@@ -629,7 +656,7 @@ export function runSecurityAndAuthTests(): {
       correlationId: 'sec-corr-07-idor-order',
       ipAddress: '41.214.0.99',
       user: {
-        id: 'usr-client-99',
+        id: clientBSession.userId,
         email: 'autre.client@concurrent.ma',
         role: 'CLIENT',
         sessionId: clientBSession.sessionId,
@@ -648,7 +675,7 @@ export function runSecurityAndAuthTests(): {
       correlationId: 'sec-corr-07-idor-device',
       ipAddress: '41.214.0.99',
       user: {
-        id: 'usr-client-99',
+        id: clientBSession.userId,
         email: 'autre.client@concurrent.ma',
         role: 'CLIENT',
         sessionId: clientBSession.sessionId,
@@ -656,7 +683,36 @@ export function runSecurityAndAuthTests(): {
       },
     });
 
-    // 7c. Fournisseur B (usr-supp-99) tente de supprimer le produit prd-001 appartenant à Fournisseur A (usr-supp-01) -> 403 RESOURCE_OWNERSHIP_VIOLATION
+    // 7c. Fournisseur B tente de supprimer le produit prd-001 appartenant à Fournisseur A (usr-supp-01) -> 403 RESOURCE_OWNERSHIP_VIOLATION
+    const regSuppB = app.handleRequest({
+      method: 'POST',
+      path: '/api/v1/auth/register',
+      headers: {},
+      query: {},
+      params: {},
+      body: {
+        email: 'intruder@other-supplier.de',
+        password: 'SupplierB!Strong2026',
+        companyName: 'Other Supplier GmbH',
+        requestedRole: 'FOURNISSEUR',
+      },
+      correlationId: 'sec-corr-07-reg-sb',
+      ipAddress: '192.0.2.99',
+    });
+    const regSuppBData = regSuppB.body.data as { sandboxOtpCode: string };
+    app.handleRequest({
+      method: 'POST',
+      path: '/api/v1/auth/verify-otp',
+      headers: {},
+      query: {},
+      params: {},
+      body: {
+        email: 'intruder@other-supplier.de',
+        code: regSuppBData.sandboxOtpCode,
+      },
+      correlationId: 'sec-corr-07-otp-sb',
+      ipAddress: '192.0.2.99',
+    });
     const loginSupplierB = app.handleRequest({
       method: 'POST',
       path: '/api/v1/auth/login',
@@ -664,14 +720,13 @@ export function runSecurityAndAuthTests(): {
       query: {},
       params: {},
       body: {
-        userId: 'usr-supp-99',
         email: 'intruder@other-supplier.de',
-        role: 'FOURNISSEUR',
+        password: 'SupplierB!Strong2026',
       },
       correlationId: 'sec-corr-07-sb',
       ipAddress: '192.0.2.99',
     });
-    const suppBSession = loginSupplierB.body.data as { sessionId: string };
+    const suppBSession = loginSupplierB.body.data as { userId: string; sessionId: string };
 
     const idorProductDeleteAttempt = app.handleRequest({
       method: 'DELETE',
@@ -683,7 +738,7 @@ export function runSecurityAndAuthTests(): {
       correlationId: 'sec-corr-07-idor-prod',
       ipAddress: '192.0.2.99',
       user: {
-        id: 'usr-supp-99',
+        id: suppBSession.userId,
         email: 'intruder@other-supplier.de',
         role: 'FOURNISSEUR',
         sessionId: suppBSession.sessionId,
@@ -691,7 +746,22 @@ export function runSecurityAndAuthTests(): {
       },
     });
 
-    // 7d. Un compte encore à l'état VISITEUR tente de passer une commande B2B -> 403 VISITOR_ACCOUNT_PENDING_APPROVAL
+    // 7d. Un compte encore à l'état VISITEUR (non validé par OTP) tente de passer une commande B2B -> 403 VISITOR_ACCOUNT_PENDING_APPROVAL
+    app.handleRequest({
+      method: 'POST',
+      path: '/api/v1/auth/register',
+      headers: {},
+      query: {},
+      params: {},
+      body: {
+        email: 'pending@visitor.ma',
+        password: 'Visitor!Strong2026',
+        companyName: 'Pending Visitor',
+        requestedRole: 'CLIENT',
+      },
+      correlationId: 'sec-corr-07-reg-vis',
+      ipAddress: '41.214.0.55',
+    });
     const loginVisitor = app.handleRequest({
       method: 'POST',
       path: '/api/v1/auth/login',
@@ -699,14 +769,13 @@ export function runSecurityAndAuthTests(): {
       query: {},
       params: {},
       body: {
-        userId: 'usr-vis-pending',
         email: 'pending@visitor.ma',
-        role: 'VISITEUR',
+        password: 'Visitor!Strong2026',
       },
       correlationId: 'sec-corr-07-vis',
       ipAddress: '41.214.0.55',
     });
-    const visitorSession = loginVisitor.body.data as { sessionId: string };
+    const visitorSession = loginVisitor.body.data as { userId: string; sessionId: string };
 
     const visitorOrderAttempt = app.handleRequest({
       method: 'POST',
@@ -721,7 +790,7 @@ export function runSecurityAndAuthTests(): {
       correlationId: 'sec-corr-07-vis-order',
       ipAddress: '41.214.0.55',
       user: {
-        id: 'usr-vis-pending',
+        id: visitorSession.userId,
         email: 'pending@visitor.ma',
         role: 'VISITEUR',
         sessionId: visitorSession.sessionId,

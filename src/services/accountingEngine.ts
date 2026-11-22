@@ -10,6 +10,7 @@
 // ============================================================================
 
 import Decimal from 'decimal.js';
+import { getSecureRandomAlphanumeric, getSecureRandomInt } from './securityCrypto';
 import {
   AgingBalanceReport,
   AgingBucketDetail,
@@ -461,7 +462,7 @@ export class AccountingEngine {
     const totalAmountDec = principal.plus(interestAmountDec).toDecimalPlaces(precisionDecimals, decMode);
 
     return {
-      id: `CALC-${Date.now().toString().slice(-6)}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+      id: `CALC-${Date.now().toString().slice(-6)}-${getSecureRandomAlphanumeric(4).toUpperCase()}`,
       ruleVersion: params.ruleVersion ?? 'RULE-FIN-V6.2 (Decimal.js)',
       principal: principal.toFixed(2),
       annualRatePct: effectiveRatePct.toFixed(4),
@@ -738,7 +739,7 @@ export class AccountingEngine {
 
     return {
       id: `ent-${Date.now()}`,
-      entryNumber: `VTE-2026-${Math.floor(10000 + Math.random() * 90000)}`,
+      entryNumber: `VTE-2026-${getSecureRandomInt(10000, 100000)}`,
       journalCode: 'VTE',
       date: invoice.issuedAt || now.toISOString().slice(0, 10),
       fiscalPeriod: (invoice.issuedAt || now.toISOString()).slice(0, 7),
@@ -816,7 +817,7 @@ export class AccountingEngine {
 
     return {
       id: `ent-${Date.now()}`,
-      entryNumber: `BNQ-2026-${Math.floor(10000 + Math.random() * 90000)}`,
+      entryNumber: `BNQ-2026-${getSecureRandomInt(10000, 100000)}`,
       journalCode: 'BNQ',
       date: payment.createdAt.slice(0, 10),
       fiscalPeriod: payment.createdAt.slice(0, 7),
@@ -871,7 +872,7 @@ export class AccountingEngine {
 
     return {
       id: `ent-ref-${Date.now()}`,
-      entryNumber: `BNQ-2026-${Math.floor(10000 + Math.random() * 90000)}`,
+      entryNumber: `BNQ-2026-${getSecureRandomInt(10000, 100000)}`,
       journalCode: 'BNQ',
       date: now.toISOString().slice(0, 10),
       fiscalPeriod: now.toISOString().slice(0, 7),
@@ -932,7 +933,7 @@ export class AccountingEngine {
       throw new Error('UNBALANCED_REVERSAL_ENTRY : La contre-passation générée n’est pas équilibrée.');
     }
 
-    const reversalEntryNumber = `OD-REV-${now.getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
+    const reversalEntryNumber = `OD-REV-${now.getFullYear()}-${getSecureRandomInt(10000, 100000)}`;
     const reversalEntry: AccountingEntryRecord = {
       id: `ent-rev-${Date.now()}`,
       entryNumber: reversalEntryNumber,
@@ -963,7 +964,7 @@ export class AccountingEngine {
       }
       replacementEntry = {
         id: `ent-corr-${Date.now() + 1}`,
-        entryNumber: `${originalEntry.journalCode}-CORR-${now.getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`,
+        entryNumber: `${originalEntry.journalCode}-CORR-${now.getFullYear()}-${getSecureRandomInt(10000, 100000)}`,
         journalCode: originalEntry.journalCode,
         date: now.toISOString().slice(0, 10),
         fiscalPeriod: now.toISOString().slice(0, 7),

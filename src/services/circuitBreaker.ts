@@ -5,6 +5,8 @@
 // Google Gemini AI, Google Meet API, ClamAV Daemon & Passerelle de Paiement
 // ============================================================================
 
+import { getSecureRandomInt } from './securityCrypto';
+
 export type CircuitBreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export interface CircuitBreakerOptions {
@@ -251,7 +253,7 @@ export async function executeWithRetryAndJitter<T>(
 
       // Calcul du délai exponentiel
       const exponentialDelay = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempts - 1));
-      const jitterFactor = useJitter ? 0.75 + Math.random() * 0.5 : 1; // 75% à 125%
+      const jitterFactor = useJitter ? 0.75 + (getSecureRandomInt(0, 501) / 1000) : 1; // 75% à 125%
       const finalDelay = Math.floor(exponentialDelay * jitterFactor);
 
       await new Promise((resolve) => setTimeout(resolve, finalDelay));

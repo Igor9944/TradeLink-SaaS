@@ -95,6 +95,7 @@ import {
   CHARTS_OF_ACCOUNTS,
   GeneralLedgerAccount,
 } from '../services/accountingEngine';
+import { getSecureRandomInt } from '../services/securityCrypto';
 
 // ============================================================================
 // ESPACE TRANSPORTEUR (PAGES 53 À 61)
@@ -1838,7 +1839,7 @@ export const AccountingWorkspacePage: React.FC<{
 
     const created: AccountingEntryRecord = {
       id: `ent-manual-${Date.now()}`,
-      entryNumber: `${newEntryJournal}-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+      entryNumber: `${newEntryJournal}-2026-${getSecureRandomInt(1000, 10000)}`,
       journalCode: newEntryJournal,
       date: newEntryDate,
       fiscalPeriod: newEntryDate.slice(0, 7),
