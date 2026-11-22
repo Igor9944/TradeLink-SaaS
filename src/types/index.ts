@@ -1096,6 +1096,23 @@ export interface FiscalPeriodRecord {
   closedBy?: string;
 }
 
+export type MeetingProvider = 'SFU_WEBRTC' | 'GOOGLE_MEET';
+
+export interface GoogleMeetSpaceConfig {
+  accessType?: 'OPEN' | 'TRUSTED' | 'RESTRICTED';
+  entryPointAccess?: 'ALL' | 'CREATOR_APP_ONLY';
+}
+
+export interface GoogleMeetSpaceInfo {
+  spaceName: string;
+  meetingUri: string;
+  meetingCode: string;
+  calendarEventId?: string;
+  accessType?: 'OPEN' | 'TRUSTED' | 'RESTRICTED';
+  syncStatus: 'SYNCED' | 'PENDING' | 'FAILED_FALLBACK_SFU';
+  lastSyncedAt?: string;
+}
+
 export interface RoomLiveRecord {
   id: string;
   roomCode: string;
@@ -1117,6 +1134,20 @@ export interface RoomLiveRecord {
   invitedEmails?: string[];
   securityToken?: string;
   hostAccessToken?: string;
+  meetingProvider?: MeetingProvider;
+  googleMeetSpaceName?: string;
+  googleMeetUri?: string;
+  googleMeetCode?: string;
+  googleCalendarEventId?: string;
+  googleMeetSyncStatus?: 'NOT_APPLICABLE' | 'SYNCED' | 'FAILED_FALLBACK_SFU';
+  googleMeetSettings?: GoogleMeetSpaceConfig;
+  sessionArchiveHistory?: Array<{
+    endedAt: string;
+    durationMinutes: number;
+    participantsCount: number;
+    provider: MeetingProvider;
+    summaryGenerated: boolean;
+  }>;
   recordingConsent: boolean;
   isRecording?: boolean;
   recordingStartedAt?: string;

@@ -88,6 +88,7 @@ import {
   RagSourceCitation,
   RoomLiveRecord,
   RoomLiveReaction,
+  MeetingProvider,
   ShipmentRecord,
   ShipmentStatus,
   ShipmentPackageDetail,
@@ -259,6 +260,10 @@ import {
   RoomLiveSfuEngine,
   RoomSfuTokenManager,
 } from '../../services/roomLiveSfuEngine';
+import {
+  googleMeetService,
+  GoogleMeetSpaceResult,
+} from '../../services/googleMeetService';
 import {
   RoomParticipantModerationAction,
   RoomLiveAiSummary,
@@ -3487,6 +3492,9 @@ export class TradeLinkDomainServices {
     allowedUserIds?: string[];
     invitedEmails?: string[];
     durationMinutes?: number;
+    meetingProvider?: MeetingProvider;
+    googleMeetAccessType?: 'OPEN' | 'TRUSTED' | 'RESTRICTED';
+    forceFallbackToSfu?: boolean;
   }): RoomLiveRecord {
     if (!canCreateRoomLiveGeneral(params.actor.role)) {
       this.repo.executeTransaction((tx) => {
@@ -3529,6 +3537,23 @@ export class TradeLinkDomainServices {
         canModerate: true,
       });
 
+      // Gestion du provider de visioconférence (Google Meet vs SFU WebRTC)
+      const requestedProvider: MeetingProvider = params.meetingProvider || 'SFU_WEBRTC';
+      let googleMeetData: GoogleMeetSpaceResult | null = null;
+
+      if (requestedProvider === 'GOOGLE_MEET') {
+        googleMeetData = googleMeetService.createSpaceSync({
+          title: params.title,
+          description: params.description,
+          scheduledAt: params.scheduledAt,
+          durationMinutes: params.durationMinutes,
+          hostEmail: params.actor.email,
+          invitedEmails: params.invitedEmails,
+          accessType: params.googleMeetAccessType || 'TRUSTED',
+          forceFallbackToSfu: params.forceFallbackToSfu,
+        });
+      }
+
       const room: RoomLiveRecord = {
         id: roomId,
         roomCode,
@@ -3552,9 +3577,41 @@ export class TradeLinkDomainServices {
         recordingConsent: true,
         isRecording: false,
         aiSummaryAvailable: false,
+        meetingProvider: googleMeetData ? googleMeetData.provider : 'SFU_WEBRTC',
+        googleMeetSpaceName: googleMeetData?.spaceName || undefined,
+        googleMeetUri: googleMeetData?.meetingUri || undefined,
+        googleMeetCode: googleMeetData?.meetingCode || undefined,
+        googleCalendarEventId: googleMeetData?.calendarEventId || undefined,
+        googleMeetSyncStatus: googleMeetData
+          ? googleMeetData.fallbackSfuUsed
+            ? 'FAILED_FALLBACK_SFU'
+            : 'SYNCED'
+          : 'NOT_APPLICABLE',
+        googleMeetSettings: googleMeetData
+          ? {
+              accessType: googleMeetData.accessType,
+              entryPointAccess: 'ALL',
+            }
+          : undefined,
       };
 
       tx.rooms.unshift(room);
+
+      if (googleMeetData && googleMeetData.provider === 'GOOGLE_MEET') {
+        tx.auditLogs.unshift({
+          id: `aud-${Date.now()}`,
+          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          actorName: params.actor.email,
+          actorRole: params.actor.role,
+          action: 'GOOGLE_MEET_SPACE_CREATED',
+          targetType: 'RoomLive',
+          targetId: roomId,
+          result: 'SUCCESS',
+          correlationId: params.correlationId,
+          ipAddress: params.ipAddress,
+          details: `Espace Google Meet officiel ${googleMeetData.meetingCode} lié à la salle ${roomCode}.`,
+        });
+      }
 
       // Enregistrer également la session dans le moteur SFU
       const sessionState: RoomLiveSessionState = {
@@ -3606,6 +3663,91 @@ export class TradeLinkDomainServices {
       if (!r.isPrivate) return true;
       return false;
     });
+  }
+
+  public listUserInvitationsService(userId: string, userEmail?: string): RoomLiveRecord[] {
+    const allRooms = this.repo.listRooms();
+    return allRooms.filter((r) => {
+      if (r.allowedUserIds && r.allowedUserIds.includes(userId)) return true;
+      if (userEmail && r.invitedEmails && r.invitedEmails.includes(userEmail)) return true;
+      return false;
+    });
+  }
+
+  public syncGoogleMeetSpaceService(
+    roomIdOrCode: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { room: RoomLiveRecord; sync: any } {
+    const { room } = this.getRoomDetailsService(roomIdOrCode, actor);
+    if (!room.googleMeetSpaceName) {
+      throw new AppError(400, 'NOT_A_GOOGLE_MEET_ROOM', 'Cette salle n utilise pas d espace Google Meet.');
+    }
+
+    const nowIso = new Date().toISOString();
+    const syncResult = {
+      synced: true,
+      spaceName: room.googleMeetSpaceName,
+      meetingUri: room.googleMeetUri || '',
+      meetingCode: room.googleMeetCode || '',
+      participantsCount: room.participantsCount || 1,
+      lastSyncedAt: nowIso,
+    };
+
+    const updated = this.repo.updateRoom(room.id, {
+      googleMeetSyncStatus: 'SYNCED',
+    });
+    if (!updated) {
+      throw new AppError(404, 'ROOM_NOT_FOUND', 'Salle introuvable pour synchronisation Google Meet.');
+    }
+
+    return { room: updated, sync: syncResult };
+  }
+
+  public endGoogleMeetSpaceService(
+    roomIdOrCode: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ): { room: RoomLiveRecord; closed: boolean; message: string } {
+    const { room } = this.getRoomDetailsService(roomIdOrCode, actor);
+    const isHost = actor.id === room.createdById || actor.role === 'ADMIN';
+    if (!isHost) {
+      throw new AppError(403, 'FORBIDDEN_ROOM_END', 'Seul l hôte ou l administrateur peut clôturer cette réunion.');
+    }
+
+    const nowIso = new Date().toISOString();
+    const updated = this.repo.updateRoom(room.id, {
+      status: 'ENDED',
+      sessionArchiveHistory: [
+        ...(room.sessionArchiveHistory || []),
+        {
+          endedAt: nowIso,
+          durationMinutes: room.durationMinutes || 60,
+          participantsCount: room.participantsCount || 1,
+          provider: room.meetingProvider || 'SFU_WEBRTC',
+          summaryGenerated: room.aiSummaryAvailable || false,
+        },
+      ],
+    });
+    if (!updated) {
+      throw new AppError(404, 'ROOM_NOT_FOUND', 'Salle introuvable pour clôture.');
+    }
+
+    this.repo.executeTransaction((tx) => {
+      tx.auditLogs.unshift({
+        id: `aud-${Date.now()}`,
+        timestamp: nowIso.replace('T', ' ').slice(0, 19),
+        actorName: actor.email,
+        actorRole: actor.role,
+        action: 'ROOM_MEETING_ENDED',
+        targetType: 'RoomLive',
+        targetId: room.id,
+        result: 'SUCCESS',
+        correlationId: `end-${room.roomCode}`,
+        ipAddress: '127.0.0.1',
+        details: `Réunion ${room.roomCode} (${room.meetingProvider || 'SFU'}) clôturée et archivée.`,
+      });
+    });
+
+    return { room: updated, closed: true, message: 'Réunion clôturée et archivée avec succès.' };
   }
 
   public getRoomDetailsService(

@@ -13,9 +13,11 @@ import {
   ShieldAlert,
   Check,
   X,
+  Globe,
 } from 'lucide-react';
 import { useApp } from '../../contexts/AppContext';
 import { Button, Modal } from '../ui/DesignSystem';
+import { MeetingProvider } from '../../types';
 
 interface RoomLiveCreateModalProps {
   open: boolean;
@@ -39,6 +41,7 @@ export const RoomLiveCreateModal: React.FC<RoomLiveCreateModalProps> = ({
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [isPrivate, setIsPrivate] = useState(true);
   const [hasWaitingRoom, setHasWaitingRoom] = useState(true);
+  const [meetingProvider, setMeetingProvider] = useState<MeetingProvider>('GOOGLE_MEET');
   const [invitedEmailInput, setInvitedEmailInput] = useState('');
   const [invitedEmails, setInvitedEmails] = useState<string[]>([
     'client.atlas@tradelink-saas.com',
@@ -91,6 +94,7 @@ export const RoomLiveCreateModal: React.FC<RoomLiveCreateModalProps> = ({
       hasWaitingRoom,
       allowedUserIds: ['usr-admin-01', 'usr-client-01', 'usr-supp-01', 'usr-trans-01', currentUser.id],
       invitedEmails,
+      meetingProvider,
     });
 
     if (res.ok) {
@@ -188,6 +192,48 @@ export const RoomLiveCreateModal: React.FC<RoomLiveCreateModalProps> = ({
             </div>
             <p className="text-[11px] text-slate-500">{t('Définir date et heure', 'Pick date and duration', 'تحديد الموعد والمدة')}</p>
           </button>
+        </div>
+
+        {/* Choix de la technologie de visioconférence (Google Meet vs WebRTC SFU) */}
+        <div className="space-y-1.5 pt-1">
+          <label className="text-[12px] font-bold text-slate-700 dark:text-slate-300">
+            {t('Technologie de Visioconférence :', 'Videoconference Provider:', 'تقنية مؤتمر الفيديو :')}
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              disabled={isClient}
+              onClick={() => setMeetingProvider('GOOGLE_MEET')}
+              className={`p-3 rounded-2xl border-2 text-start transition-all ${
+                meetingProvider === 'GOOGLE_MEET'
+                  ? 'border-emerald-500 bg-emerald-500/10 dark:bg-emerald-500/20 font-bold'
+                  : 'border-slate-200 dark:border-teal-800 bg-slate-50 dark:bg-[#071E22]'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <Globe className="w-4 h-4 text-emerald-500" />
+                <span className="text-slate-900 dark:text-white">Google Meet Officiel</span>
+              </div>
+              <p className="text-[11px] text-slate-500">{t('Espace officiel & lien meet.google.com', 'Official Google Meet Space & URL', 'رابط رسمي من جوجل ميت')}</p>
+            </button>
+
+            <button
+              type="button"
+              disabled={isClient}
+              onClick={() => setMeetingProvider('SFU_WEBRTC')}
+              className={`p-3 rounded-2xl border-2 text-start transition-all ${
+                meetingProvider === 'SFU_WEBRTC'
+                  ? 'border-teal-500 bg-teal-500/10 dark:bg-teal-500/20 font-bold'
+                  : 'border-slate-200 dark:border-teal-800 bg-slate-50 dark:bg-[#071E22]'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <Video className="w-4 h-4 text-teal-500" />
+                <span className="text-slate-900 dark:text-white">TradeLink SFU Interne</span>
+              </div>
+              <p className="text-[11px] text-slate-500">{t('WebRTC souverain chiffré de bout en bout', 'Sovereign end-to-end encrypted WebRTC', 'ويب آر تي سي سيادي مشفر')}</p>
+            </button>
+          </div>
         </div>
 
         {/* Date & Durée si programmée */}

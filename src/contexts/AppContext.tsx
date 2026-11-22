@@ -27,6 +27,7 @@ import {
   ProductItem,
   QuoteRecord,
   RoomLiveRecord,
+  MeetingProvider,
   ShipmentRecord,
   ShipmentStatus,
   ThemeMode,
@@ -118,6 +119,9 @@ import {
   RoomLiveSfuEngine,
   RoomSfuTokenManager,
 } from '../services/roomLiveSfuEngine';
+import {
+  googleMeetService,
+} from '../services/googleMeetService';
 import {
   RoomViewMode,
   RoomLiveAiSummary,
@@ -2025,6 +2029,8 @@ interface AppContextValue {
           allowedUserIds?: string[];
           invitedEmails?: string[];
           durationMinutes?: number;
+          meetingProvider?: MeetingProvider;
+          googleMeetAccessType?: 'OPEN' | 'TRUSTED' | 'RESTRICTED';
         },
     scheduledAtFallback?: string
   ) => { ok: boolean; message: string; room?: RoomLiveRecord };
@@ -4404,6 +4410,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           allowedUserIds?: string[];
           invitedEmails?: string[];
           durationMinutes?: number;
+          meetingProvider?: MeetingProvider;
+          googleMeetAccessType?: 'OPEN' | 'TRUSTED' | 'RESTRICTED';
         },
     scheduledAtFallback: string = '2026-11-20 10:00'
   ) => {
@@ -4436,6 +4444,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const invitedEmails = typeof titleOrParams === 'object' ? titleOrParams.invitedEmails || [] : [];
 
     const roomCode = `RM-LIVE-${Math.floor(1000 + Math.random() * 8999)}`;
+    const requestedProvider: MeetingProvider =
+      typeof titleOrParams === 'object' && titleOrParams.meetingProvider
+        ? titleOrParams.meetingProvider
+        : 'SFU_WEBRTC';
+
+    let googleMeetData = null;
+    if (requestedProvider === 'GOOGLE_MEET') {
+      googleMeetData = googleMeetService.createSpaceSync({
+        title,
+        description,
+        scheduledAt,
+        durationMinutes,
+        hostEmail: currentUser.email,
+        invitedEmails,
+        accessType: typeof titleOrParams === 'object' ? titleOrParams.googleMeetAccessType || 'TRUSTED' : 'TRUSTED',
+      });
+    }
+
     const securityToken = RoomSfuTokenManager.generateToken({
       roomId: `room-${Date.now().toString().slice(-4)}`,
       roomCode,
@@ -4470,6 +4496,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       recordingConsent: true,
       isRecording: false,
       aiSummaryAvailable: false,
+      meetingProvider: googleMeetData ? googleMeetData.provider : 'SFU_WEBRTC',
+      googleMeetSpaceName: googleMeetData?.spaceName,
+      googleMeetUri: googleMeetData?.meetingUri,
+      googleMeetCode: googleMeetData?.meetingCode,
+      googleCalendarEventId: googleMeetData?.calendarEventId,
+      googleMeetSyncStatus: googleMeetData ? 'SYNCED' : 'NOT_APPLICABLE',
     };
 
     setRooms((prev) => [newRoom, ...prev]);

@@ -2113,18 +2113,25 @@ export class TradeLinkApiApplication {
     // 6. ROOM LIVE & VISIOCONFÉRENCE SFU WEBRTC (PROMPT 07)
     // ============================================================================
 
-    // 6.1. Liste des salles accessibles
-    if (method === 'GET' && path === '/api/v1/rooms') {
+    // 6.1. Liste des salles accessibles ou invitations spécifiques
+    if (method === 'GET' && (path === '/api/v1/rooms' || path === '/api/v1/rooms/invitations')) {
       const user = requireAuthenticatedSession(ctx);
+      if (path === '/api/v1/rooms/invitations' || ctx.query?.scope === 'invitations') {
+        const invitations = this.services.listUserInvitationsService(user.id, user.email);
+        return this.ok(ctx, invitations, 200);
+      }
       const rooms = this.services.listAccessibleRoomsService(user.id, user.role);
       return this.ok(ctx, rooms, 200);
     }
 
     // 6.2. Création contrôlée par rôle (Client interdit en création générale -> 403)
-    if (method === 'POST' && path === '/api/v1/rooms') {
+    if (method === 'POST' && (path === '/api/v1/rooms' || path === '/api/v1/rooms/google-meet/create')) {
       const user = requireAuthenticatedSession(ctx);
+      const isGoogleMeetEndpoint = path === '/api/v1/rooms/google-meet/create';
+      const meetingProvider = isGoogleMeetEndpoint ? 'GOOGLE_MEET' : ctx.body?.meetingProvider;
+
       const room = this.services.createRoomLiveChecked({
-        title: String(ctx.body?.title ?? 'Réunion B2B'),
+        title: String(ctx.body?.title ?? (isGoogleMeetEndpoint ? 'Réunion Google Meet B2B' : 'Réunion B2B')),
         scheduledAt: String(ctx.body?.scheduledAt ?? '2026-11-20 10:00'),
         actor: user,
         correlationId: ctx.correlationId,
@@ -2136,8 +2143,27 @@ export class TradeLinkApiApplication {
         allowedUserIds: ctx.body?.allowedUserIds,
         invitedEmails: ctx.body?.invitedEmails,
         durationMinutes: ctx.body?.durationMinutes,
+        meetingProvider,
+        googleMeetAccessType: ctx.body?.accessType ?? ctx.body?.googleMeetAccessType,
+        forceFallbackToSfu: ctx.body?.forceFallbackToSfu,
       });
       return this.ok(ctx, room, 201);
+    }
+
+    // 6.2.b. Synchronisation espace Google Meet
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/google-meet/sync')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/google-meet/sync', '');
+      const syncRes = this.services.syncGoogleMeetSpaceService(roomIdOrCode, user);
+      return this.ok(ctx, syncRes, 200);
+    }
+
+    // 6.2.c. Clôture d'une réunion (Meet ou SFU)
+    if (method === 'POST' && path.startsWith('/api/v1/rooms/') && (path.endsWith('/google-meet/end') || path.endsWith('/end'))) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/google-meet/end', '').replace('/end', '');
+      const endRes = this.services.endGoogleMeetSpaceService(roomIdOrCode, user);
+      return this.ok(ctx, endRes, 200);
     }
 
     // 6.3. Rejoindre une salle ou le lobby Knocking
