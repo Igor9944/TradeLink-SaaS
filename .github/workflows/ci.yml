@@ -99,6 +99,9 @@ jobs:
       - name: 1H. Lot 7 Translation, Multilingual & RTL Support
         run: npm run test:lot7-translation
 
+      - name: 1I. Lot 8 Performance, Observability & Resilience
+        run: npm run test:lot8-performance
+
       - name: 2. Backend Integration Tests
         run: npm run test:backend
 

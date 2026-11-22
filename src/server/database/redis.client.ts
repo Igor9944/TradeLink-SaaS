@@ -349,4 +349,64 @@ export class TradeLinkRedisManager {
   ): void {
     this.setKey(`tradelink:idempotency:${idempotencyKey}`, JSON.stringify(payload), ttlSeconds);
   }
+
+  // ==========================================================================
+  // 8. PIPELINE ET INVALIDATION GRANULAIRE DE CACHE (LOT 8)
+  // ==========================================================================
+
+  public static executePipeline(
+    operations: Array<{
+      type: 'set' | 'get' | 'del';
+      key: string;
+      value?: string;
+      ttlSeconds?: number;
+    }>
+  ): Array<string | boolean | null> {
+    this.assertRedisAvailable();
+    const results: Array<string | boolean | null> = [];
+
+    for (const op of operations) {
+      if (op.type === 'set') {
+        this.setKey(op.key, op.value ?? '', op.ttlSeconds);
+        results.push(true);
+      } else if (op.type === 'get') {
+        results.push(this.getKey(op.key));
+      } else if (op.type === 'del') {
+        results.push(this.deleteKey(op.key));
+      }
+    }
+
+    return results;
+  }
+
+  public static invalidateNamespace(namespace: string): number {
+    this.assertRedisAvailable();
+    const prefix = namespace.endsWith(':') ? namespace : `${namespace}:`;
+    let count = 0;
+    for (const key of Array.from(sharedCluster.kvStore.keys())) {
+      if (key.startsWith(prefix) || key.includes(prefix)) {
+        sharedCluster.kvStore.delete(key);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  public static getMetrics(): {
+    keysCount: number;
+    locksCount: number;
+    rateLimitBucketsCount: number;
+    memoryEstimateBytes: number;
+  } {
+    let memoryEstimateBytes = 0;
+    for (const [k, v] of sharedCluster.kvStore.entries()) {
+      memoryEstimateBytes += (k.length + (v.value?.length || 0)) * 2;
+    }
+    return {
+      keysCount: sharedCluster.kvStore.size,
+      locksCount: sharedCluster.locks.size,
+      rateLimitBucketsCount: sharedCluster.counters.size,
+      memoryEstimateBytes,
+    };
+  }
 }

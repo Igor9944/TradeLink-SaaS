@@ -19,6 +19,7 @@
     "test:lot5-roomlive": "node scripts/run-test.cjs src/server/tests/lot5.roomlive.googlemeet.test.ts",
     "test:lot6-ai-gemini": "node scripts/run-test.cjs src/server/tests/lot6.ai.gemini.exclusivity.test.ts",
     "test:lot7-translation": "node scripts/run-test.cjs src/server/tests/lot7.translation.multilingual.rtl.test.ts",
+    "test:lot8-performance": "node scripts/run-test.cjs src/server/tests/lot8.performance.resilience.observability.test.ts",
     "test:express": "node scripts/run-test.cjs src/server/tests/express.server.test.ts",
     "test:backend": "node scripts/run-test.cjs src/server/tests/backend.integration.test.ts",
     "test:security": "node scripts/run-test.cjs src/server/tests/security.auth.test.ts",

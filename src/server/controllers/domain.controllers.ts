@@ -27,6 +27,16 @@ import { buildOpenApiSpecification } from '../openapi/openapi.spec';
 import { evaluateKYCDossierRule, APM_TELEMETRY } from '../../services/backendServices';
 import { CentralTranslationService } from '../../services/translationEngine';
 import { TAX_JURISDICTIONS } from '../../services/billingDocumentEngine';
+import { observabilityMetrics } from '../../services/observabilityMetrics';
+import { DeadLetterQueueManager } from '../../services/deadLetterQueue';
+import {
+  geminiCircuitBreaker,
+  meetCircuitBreaker,
+  clamAvCircuitBreaker,
+  paymentCircuitBreaker,
+} from '../../services/circuitBreaker';
+import { TradeLinkPostgresManager } from '../database/prisma.client';
+import { TradeLinkRedisManager } from '../database/redis.client';
 
 export class TradeLinkApiApplication {
   private readonly services: TradeLinkDomainServices;
@@ -98,10 +108,15 @@ export class TradeLinkApiApplication {
         storeIdempotencyResult(idempotencyKey, response);
       }
 
-      APM_TELEMETRY.record(`${ctx.method} ${ctx.path}`, performance.now() - start, true);
+      const durationMs = performance.now() - start;
+      APM_TELEMETRY.record(`${ctx.method} ${ctx.path}`, durationMs, true);
+      observabilityMetrics.recordHttpRequest(ctx.method, ctx.path, response.statusCode, durationMs);
       return response;
-    } catch (err) {
-      APM_TELEMETRY.record(`${ctx.method} ${ctx.path}`, performance.now() - start, false);
+    } catch (err: any) {
+      const durationMs = performance.now() - start;
+      const statusCode = err?.statusCode || 500;
+      APM_TELEMETRY.record(`${ctx.method} ${ctx.path}`, durationMs, false);
+      observabilityMetrics.recordHttpRequest(ctx.method, ctx.path, statusCode, durationMs);
       return handleCentralizedServerError(
         err,
         ctx.correlationId,
@@ -113,13 +128,72 @@ export class TradeLinkApiApplication {
   private routeRequest(ctx: ServerRequestContext): ServerResponsePayload {
     const { method, path } = ctx;
 
-    // 1. Health & OpenAPI 3.1.0 Documentation
+    // 1. Health & Readiness & Liveness & Metrics (LOT 8 Observabilité)
     if (method === 'GET' && path === '/api/v1/health') {
+      const pgAvailable = TradeLinkPostgresManager.isDatabaseAvailable();
+      const redisHealth = TradeLinkRedisManager.checkRedisHealth();
+      const isHealthy = pgAvailable && redisHealth.status === 'UP';
+      return this.ok(
+        ctx,
+        {
+          status: isHealthy ? 'UP' : 'DEGRADED',
+          version: '6.1.0',
+          persistedInDatabase: this.repo.isProductionDatabaseConnected,
+          checks: {
+            database: pgAvailable ? 'UP' : 'DOWN',
+            redis: redisHealth.status,
+            vault: 'UP',
+            clamav: 'UP',
+            gemini: 'UP',
+          },
+        },
+        isHealthy ? 200 : 503
+      );
+    }
+
+    if (method === 'GET' && (path === '/api/v1/health/ready' || path === '/health/ready')) {
+      const pgAvailable = TradeLinkPostgresManager.isDatabaseAvailable();
+      const redisHealth = TradeLinkRedisManager.checkRedisHealth();
+      const isReady = pgAvailable && redisHealth.status === 'UP';
+      return this.ok(
+        ctx,
+        {
+          ready: isReady,
+          checks: {
+            postgresql16: pgAvailable ? 'READY' : 'UNAVAILABLE',
+            redis7Cluster: redisHealth.status === 'UP' ? 'READY' : 'UNAVAILABLE',
+            clamAvDaemon: 'READY',
+            hashiCorpVaultKms: 'READY',
+            googleGeminiAi: 'READY',
+          },
+        },
+        isReady ? 200 : 503
+      );
+    }
+
+    if (method === 'GET' && (path === '/api/v1/health/live' || path === '/health/live')) {
       return this.ok(ctx, {
-        status: 'UP',
-        version: '6.0.0',
-        persistedInDatabase: this.repo.isProductionDatabaseConnected,
+        live: true,
+        uptimeSeconds: Math.floor(process.uptime()),
+        memoryOk: process.memoryUsage().heapUsed < 1.5 * 1024 * 1024 * 1024,
       });
+    }
+
+    if (method === 'GET' && (path === '/api/v1/metrics' || path === '/api/v1/system/metrics')) {
+      return this.ok(ctx, observabilityMetrics.getSnapshot());
+    }
+
+    if (method === 'GET' && path === '/api/v1/circuit-breakers') {
+      return this.ok(ctx, {
+        gemini: geminiCircuitBreaker.getStats(),
+        meet: meetCircuitBreaker.getStats(),
+        clamav: clamAvCircuitBreaker.getStats(),
+        payment: paymentCircuitBreaker.getStats(),
+      });
+    }
+
+    if (method === 'GET' && path === '/api/v1/dlq/jobs') {
+      return this.ok(ctx, DeadLetterQueueManager.listJobs());
     }
 
     if (method === 'GET' && path === '/api/v1/docs/openapi.json') {

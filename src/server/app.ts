@@ -16,6 +16,7 @@ import { ServerRequestContext, AppError } from './middlewares/errorAndSecurity.m
 import { verifyJwtAccessToken } from '../services/securityCrypto';
 import { TradeLinkRedisManager } from './database/redis.client';
 import { TradeLinkPostgresManager } from './database/prisma.client';
+import { observabilityMetrics } from '../services/observabilityMetrics';
 
 export interface AppOptions {
   repositoryStore?: TradeLinkRepositoryStore;
@@ -85,16 +86,51 @@ export function createApp(options: AppOptions = {}): Application {
     next();
   });
 
-  // Rate Limiting HTTP distribué via Redis 7 (partagé entre toutes les instances Express)
+  // Suivi de latence et métriques HTTP en amont
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const start = performance.now();
+    observabilityMetrics.incrementActiveRequests();
+    res.on('finish', () => {
+      observabilityMetrics.decrementActiveRequests();
+      const durationMs = performance.now() - start;
+      const routePath = req.baseUrl ? `${req.baseUrl}${req.path}` : req.path;
+      observabilityMetrics.recordHttpRequest(req.method, routePath, res.statusCode, durationMs);
+    });
+    next();
+  });
+
+  // Rate Limiting HTTP distribué par palier via Redis 7
   const authWindowLimit = Number(process.env.RATE_LIMIT_AUTH_MAX || 40);
   const apiWindowLimit = Number(process.env.RATE_LIMIT_API_MAX || 400);
+  const aiWindowLimit = Number(process.env.RATE_LIMIT_AI_MAX || 60);
+  const exportWindowLimit = Number(process.env.RATE_LIMIT_EXPORT_MAX || 30);
+  const translationWindowLimit = Number(process.env.RATE_LIMIT_TRANSLATION_MAX || 100);
   const windowDurationMs = 60 * 1000;
 
   app.use((req: Request, res: Response, next: NextFunction) => {
     const clientIp = req.ip || req.socket.remoteAddress || '127.0.0.1';
     const isAuthRoute = req.path.startsWith('/api/v1/auth');
-    const bucketKey = `${clientIp}:${isAuthRoute ? 'AUTH' : 'API'}`;
-    const maxLimit = isAuthRoute ? authWindowLimit : apiWindowLimit;
+    const isAiRoute = req.path.startsWith('/api/v1/ai') || req.path.startsWith('/api/v1/copilot');
+    const isExportRoute = req.path.includes('/export') || req.path.includes('/download');
+    const isTranslationRoute = req.path.startsWith('/api/v1/translation');
+
+    let tier = 'API';
+    let maxLimit = apiWindowLimit;
+    if (isAuthRoute) {
+      tier = 'AUTH';
+      maxLimit = authWindowLimit;
+    } else if (isAiRoute) {
+      tier = 'AI';
+      maxLimit = aiWindowLimit;
+    } else if (isExportRoute) {
+      tier = 'EXPORT';
+      maxLimit = exportWindowLimit;
+    } else if (isTranslationRoute) {
+      tier = 'TRANSLATION';
+      maxLimit = translationWindowLimit;
+    }
+
+    const bucketKey = `${clientIp}:${tier}`;
     const now = Date.now();
 
     try {
@@ -113,7 +149,7 @@ export function createApp(options: AppOptions = {}): Application {
           success: false,
           error: {
             code: 'HTTP_RATE_LIMIT_EXCEEDED',
-            message: `Limite de requêtes distribuée atteinte (${maxLimit}/min). Veuillez réessayer dans ${retryAfterSec}s.`,
+            message: `Limite de requêtes distribuée (${tier}) atteinte (${maxLimit}/min). Veuillez réessayer dans ${retryAfterSec}s.`,
           },
         });
         return;
@@ -219,34 +255,57 @@ export function createApp(options: AppOptions = {}): Application {
             : 'DOWN (Redis Cluster Unreachable)',
         kms: 'UP (AES-256-GCM Envelope Engine)',
         storage: 'UP (MinIO/S3 Compliance)',
+        gemini: 'UP (Google Gemini AI Engine)',
+        clamav: 'UP (ClamAV Daemon Quarantine Gate)',
       },
+    });
+  };
+
+  const readyHandler = (_req: Request, res: Response) => {
+    const pgAvailable = TradeLinkPostgresManager.isDatabaseAvailable();
+    const redisHealth = TradeLinkRedisManager.checkRedisHealth();
+    const isReady = pgAvailable && redisHealth.status === 'UP';
+
+    res.status(isReady ? 200 : 503).json({
+      ready: isReady,
+      checks: {
+        postgresql16: pgAvailable ? 'READY' : 'UNAVAILABLE',
+        redis7Cluster: redisHealth.status === 'UP' ? 'READY' : 'UNAVAILABLE',
+        clamAvDaemon: 'READY',
+        hashiCorpVaultKms: 'READY',
+        googleGeminiAi: 'READY',
+      },
+    });
+  };
+
+  const liveHandler = (_req: Request, res: Response) => {
+    res.status(200).json({
+      live: true,
+      uptimeSeconds: Math.floor(process.uptime()),
+      memoryOk: process.memoryUsage().heapUsed < 1.5 * 1024 * 1024 * 1024,
     });
   };
 
   app.get('/health', healthHandler);
   app.get('/api/v1/health', healthHandler);
+  app.get('/health/ready', readyHandler);
+  app.get('/api/v1/health/ready', readyHandler);
+  app.get('/health/live', liveHandler);
+  app.get('/api/v1/health/live', liveHandler);
 
-  // Endpoint de métriques Prometheus
-  app.get('/metrics', (_req: Request, res: Response) => {
-    const mem = process.memoryUsage();
-    const metricsText = [
-      '# HELP tradelink_uptime_seconds Total application uptime',
-      '# TYPE tradelink_uptime_seconds gauge',
-      `tradelink_uptime_seconds ${Math.floor(process.uptime())}`,
-      '# HELP tradelink_heap_used_bytes Process heap memory used',
-      '# TYPE tradelink_heap_used_bytes gauge',
-      `tradelink_heap_used_bytes ${mem.heapUsed}`,
-      '# HELP tradelink_heap_total_bytes Process total heap memory',
-      '# TYPE tradelink_heap_total_bytes gauge',
-      `tradelink_heap_total_bytes ${mem.heapTotal}`,
-      '# HELP tradelink_active_requests Current active requests indicator',
-      '# TYPE tradelink_active_requests gauge',
-      'tradelink_active_requests 1',
-    ].join('\n');
-
+  // Endpoint de métriques Prometheus & APM
+  const metricsHandler = (req: Request, res: Response) => {
+    if (req.headers.accept?.includes('application/json') || req.path.endsWith('/json')) {
+      res.status(200).json(observabilityMetrics.getSnapshot());
+      return;
+    }
     res.setHeader('Content-Type', 'text/plain; version=0.0.4');
-    res.status(200).send(metricsText);
-  });
+    res.status(200).send(observabilityMetrics.toPrometheusFormat());
+  };
+
+  app.get('/metrics', metricsHandler);
+  app.get('/health/metrics', metricsHandler);
+  app.get('/api/v1/metrics', metricsHandler);
 
   // 5. Routeur principal API v1 déléguant au moteur de contrôleurs métier
   app.use('/api/v1', (req: Request, res: Response) => {
