@@ -96,6 +96,9 @@ jobs:
       - name: 1G. Lot 6 AI Exclusivity Google Gemini (1.5 Pro & Flash)
         run: npm run test:lot6-ai-gemini
 
+      - name: 1H. Lot 7 Translation, Multilingual & RTL Support
+        run: npm run test:lot7-translation
+
       - name: 2. Backend Integration Tests
         run: npm run test:backend
 

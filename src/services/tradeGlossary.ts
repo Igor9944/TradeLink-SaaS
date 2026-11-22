@@ -301,6 +301,86 @@ export const OFFICIAL_TRADE_GLOSSARY: TranslationGlossaryTerm[] = [
     isStrict: true,
     contextNotes: 'Séquestre bancaire B2B',
   },
+  {
+    id: 'glo-029',
+    termKey: 'INCOTERM_CIP',
+    category: 'INCOTERMS',
+    sourceTextFr: 'CIP (Port payé, assurance comprise)',
+    targetTextEn: 'CIP (Carriage and Insurance Paid to)',
+    targetTextAr: 'CIP (أجور النقل والتأمين مدفوعة إلى)',
+    isStrict: true,
+    contextNotes: 'Incoterm multimodal incluant le transport et l assurance marchandise.',
+  },
+  {
+    id: 'glo-030',
+    termKey: 'INCOTERM_DDP',
+    category: 'INCOTERMS',
+    sourceTextFr: 'DDP (Rendu droits acquittés)',
+    targetTextEn: 'DDP (Delivered Duty Paid)',
+    targetTextAr: 'DDP (التسليم خالِ من الرسوم الجمركية)',
+    isStrict: true,
+    contextNotes: 'Obligation maximale pour le vendeur, incluant toutes les formalités douanières d importation.',
+  },
+  {
+    id: 'glo-031',
+    termKey: 'INCOTERM_FCA',
+    category: 'INCOTERMS',
+    sourceTextFr: 'FCA (Franco transporteur)',
+    targetTextEn: 'FCA (Free Carrier)',
+    targetTextAr: 'FCA (تسليم إلى الناقل المعتمد)',
+    isStrict: true,
+    contextNotes: 'Marchandise dédouanée pour l export remise au transporteur désigné par l acheteur.',
+  },
+  {
+    id: 'glo-032',
+    termKey: 'DOUANE_DECLARATION',
+    category: 'DOUANE',
+    sourceTextFr: 'Déclaration en douane',
+    targetTextEn: 'Customs Declaration',
+    targetTextAr: 'تصريح جمركي رسمي',
+    isStrict: true,
+    contextNotes: 'Document légal assignant un régime douanier aux marchandises.',
+  },
+  {
+    id: 'glo-033',
+    termKey: 'DOUANE_BORDEREAU',
+    category: 'DOUANE',
+    sourceTextFr: 'Bordereau de dédouanement',
+    targetTextEn: 'Customs Clearance Slip',
+    targetTextAr: 'إشعار الإفراج الجمركي',
+    isStrict: true,
+    contextNotes: 'Attestation de dédouanement et de mainlevée de la cargaison.',
+  },
+  {
+    id: 'glo-034',
+    termKey: 'COMPTA_PCG',
+    category: 'FINANCE',
+    sourceTextFr: 'Plan Comptable Général (PCG)',
+    targetTextEn: 'General Accounting Chart (PCG)',
+    targetTextAr: 'دليل الحسابات المحاسبي العام (PCG)',
+    isStrict: true,
+    contextNotes: 'Nomenclature officielle des comptes en comptabilité générale.',
+  },
+  {
+    id: 'glo-035',
+    termKey: 'COMPTA_CONTREPASSATION',
+    category: 'FINANCE',
+    sourceTextFr: 'Écriture de contre-passation',
+    targetTextEn: 'Reversal Accounting Entry',
+    targetTextAr: 'قيد محاسبي عكسي (تسوية وتصحيح)',
+    isStrict: true,
+    contextNotes: 'Écriture équilibrée inversant une écriture antérieure immuable pour correction.',
+  },
+  {
+    id: 'glo-036',
+    termKey: 'COMPTA_TVA',
+    category: 'FINANCE',
+    sourceTextFr: 'Taxe sur la Valeur Ajoutée (TVA)',
+    targetTextEn: 'Value Added Tax (VAT)',
+    targetTextAr: 'ضريبة القيمة المضافة (TVA)',
+    isStrict: true,
+    contextNotes: 'Impôt indirect sur la consommation collecté et déduit selon la juridiction fiscale.',
+  },
 ];
 
 export class TradeGlossaryManager {
@@ -472,33 +552,40 @@ export class TradeGlossaryManager {
     let result = text;
     let count = 0;
 
-    for (const term of this.dynamicTerms.values()) {
-      if (!term.isStrict) continue;
+    // Trie par longueur décroissante pour traiter les expressions composées avant les mots isolés
+    const candidates = Array.from(this.dynamicTerms.values())
+      .filter((t) => t.isStrict)
+      .map((term) => {
+        let sourcePhrase = '';
+        let targetPhrase = '';
 
-      let sourcePhrase = '';
-      let targetPhrase = '';
+        if (sourceLang === 'fr') {
+          sourcePhrase = term.sourceTextFr;
+        } else if (sourceLang === 'en') {
+          sourcePhrase = term.targetTextEn;
+        } else if (sourceLang === 'ar') {
+          sourcePhrase = term.targetTextAr;
+        }
 
-      if (sourceLang === 'fr') {
-        sourcePhrase = term.sourceTextFr;
-      } else if (sourceLang === 'en') {
-        sourcePhrase = term.targetTextEn;
-      } else if (sourceLang === 'ar') {
-        sourcePhrase = term.targetTextAr;
-      }
+        if (targetLang === 'fr') {
+          targetPhrase = term.sourceTextFr;
+        } else if (targetLang === 'en') {
+          targetPhrase = term.targetTextEn;
+        } else if (targetLang === 'ar') {
+          targetPhrase = term.targetTextAr;
+        }
 
-      if (targetLang === 'fr') {
-        targetPhrase = term.sourceTextFr;
-      } else if (targetLang === 'en') {
-        targetPhrase = term.targetTextEn;
-      } else if (targetLang === 'ar') {
-        targetPhrase = term.targetTextAr;
-      }
+        return { term, sourcePhrase, targetPhrase };
+      })
+      .filter((x) => x.sourcePhrase && x.targetPhrase && x.sourcePhrase !== x.targetPhrase)
+      .sort((a, b) => b.sourcePhrase.length - a.sourcePhrase.length);
 
-      if (!sourcePhrase || !targetPhrase || sourcePhrase === targetPhrase) continue;
-
+    for (const { sourcePhrase, targetPhrase } of candidates) {
       // Recherche insensible à la casse pour les langues latines
       if (sourceLang !== 'ar') {
-        const regex = new RegExp(`\\b${escapeRegExp(sourcePhrase)}\\b`, 'gi');
+        const startBoundary = /^\w/.test(sourcePhrase) ? '\\b' : '';
+        const endBoundary = /\w$/.test(sourcePhrase) ? '\\b' : '';
+        const regex = new RegExp(`${startBoundary}${escapeRegExp(sourcePhrase)}${endBoundary}`, 'gi');
         if (regex.test(result)) {
           result = result.replace(regex, targetPhrase);
           count++;
