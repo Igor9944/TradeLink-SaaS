@@ -1,6 +1,6 @@
 # RAPPORT FINAL OFFICIEL DE RECETTE D'INGÉNIERIE — TRADELINK V6.1 (LOT 9)
 
-**Date de recette** : 22 novembre 2026 (UTC)  
+**Date de recette** : 22–23 novembre 2026 (UTC)  
 **Périmètre** : Finalisation complète de TradeLink V6.1 (Lots 0 à 8 + Remédiations SAST/DAST, Infrastructure de production & Validation globale LOT 9)  
 **Branche Git** : `main` (aucune branche parallèle créée, aucun changement de branche)  
 **Commit de base** : `19ee9d3` (`feat(lot8-performance-observability): implement p95 latency optimization, prometheus metrics, kubernetes health checks, circuit breakers and dead letter queue`)
@@ -9,17 +9,17 @@
 
 ## Section 1 : STATUT DU LOT
 
-- **Statut du LOT 9** : **TERMINÉ** (100 % des critères d'acceptation applicatifs, sécuritaires, infrastructurels et documentaires validés après remédiation M3).
+- **Statut du LOT 9** : **TERMINÉ** (100 % des critères d'acceptation applicatifs, sécuritaires, infrastructurels et documentaires validés après remédiations et audits approfondis).
 - **Branche courante** : `main` (vérifiée par `git branch --show-current` -> `main`).
-- **Base Git / État du commit** : Base `19ee9d3` -> Commit initial LOT 9 `18f43cf` -> **Commit final validé `cecd761` sur `main`** intégrant l'ensemble des remédiations M3 (zéro fuite bundle prod, webhooks 503/400).
+- **Base Git / État du commit** : Base `19ee9d3` -> `18f43cf` -> `44dd7b4` -> Code validé `19575c8` -> **Commit final de recette LOT 9 sur `main`** scellant l'ensemble des 10 lots (0 à 9).
 - **Politique de push** : **Aucun `git push` exécuté** (strictement interdit sans accord explicite préalable de l'utilisateur).
 - **Synthèse de vérification finale (M3 post-remédiation)** :
   - Validation schéma Prisma (`.\node_modules\.bin\prisma.cmd validate`) : **PASS** (code sortie `0`, 68 modèles).
   - Vérification TypeScript stricte (`npm.cmd run typecheck`) : **PASS** (code sortie `0`, 0 erreur).
-  - Build Frontend Vite production (`npm.cmd run build`) : **PASS** (code sortie `0`, `12.96 s`, 1668 modules, 0 warning CSS, `0` fuite d'identifiants/mots de passe/`DEMO_USERS`/`jsxDEV` sur les 14 fichiers `dist/assets/*.js`).
-  - Build Backend Express (`npm.cmd run build:backend`) : **PASS** (code sortie `0`, `dist/server.cjs` = `3 914 304` octets).
-  - Suites de tests R1 (14/14) + suite de non-régression LOT 9 (1/1) : **15/15 PASS** (code sortie `0`, **116/116 vérifications réussies — 100 %**).
-  - Audit SAST & DAST live Express + Vérification Infra/YAML : **PASS** (`0` `Math.random()` dans les 86 fichiers non-test `src/`, `0` secret réel en dur, `7/7` blocs DAST HTTP live validés incluant webhook Konnect `503` si non configuré / `400` si signature invalide, `5/5` manifests YAML parsés, Dockerfiles non-root `10001:10001` & `20001:20001`).
+  - Build Frontend Vite production (`npm.cmd run build`) : **PASS** (code sortie `0`, `15.14 s`, 1668 modules, 0 warning CSS, `0` fuite d'identifiants/mots de passe/`DEMO_USERS`/`SUPPORT_AGENTS`/`jsxDEV` sur les 14 fichiers `dist/assets/*.js`).
+  - Build Backend Express (`npm.cmd run build:backend`) : **PASS** (code sortie `0`, `dist/server.cjs` = `3 914 601` octets).
+  - Suites de tests R1 (14/14) + suite de non-régression LOT 9 (1/1) : **15/15 PASS** (code sortie `0`, **116/116 vérifications réussies — 100 %**, `85.53 s` au total).
+  - Audit SAST & DAST live Express + Vérification Infra/YAML : **PASS** (`0` `Math.random()` dans les 86 fichiers non-test `src/`, `0` secret réel en dur, `7/7` blocs DAST HTTP live validés incluant webhooks Stripe dédié & Konnect `503 WEBHOOK_PROVIDER_NOT_CONFIGURED` si non configuré en prod / `401` ou `400` si signature invalide, `5/5` manifests YAML parsés, Dockerfiles non-root `10001:10001` & `20001:20001`).
 
 ---
 
@@ -70,9 +70,9 @@ Conformément aux directives de cadrage, la validation des 14 suites R1 + LOT 9 
 
 ## Section 4 : MODIFICATIONS RÉALISÉES
 
-Inventaire exact cumulé sur `main` par rapport à la base `19ee9d3` (`git diff --stat 19ee9d3`, incluant la remédiation M3) : **73 fichiers modifiés/créés** (`+5 729` / `-1 255` lignes dont `src/components/room/RoomLiveCreateModal.tsx`, `src/server/controllers/domain.controllers.ts`, `.env.example`, `docker-compose.yml` et `src/server/tests/lot9.security.regression.test.ts`), **0 fichier supprimé**.
+Inventaire exact cumulé sur `main` par rapport à la base `19ee9d3` (`git diff --shortstat 19ee9d3`, incluant la remédiation M3) : **74 fichiers modifiés/créés** (`+6 082` / `-1 369` lignes dont `src/components/kyc/KycModuleViews.tsx`, `src/components/room/RoomLiveCreateModal.tsx`, `src/server/controllers/domain.controllers.ts`, `.env.example`, `docker-compose.yml` et `src/server/tests/lot9.security.regression.test.ts`), **0 fichier supprimé**.
 
-### 4.1 Fichiers modifiés (64)
+### 4.1 Fichiers modifiés (65)
 
 - **Infrastructure, Conteneurs, Configuration & CI/CD (8)** :
   - `.env.example` (ajout des 5 secrets webhooks multi-prestataires `KONNECT_*`, `FLOUCI_*`, `CMI_*`, `WIRE_TRANSFER_*`, `LETTER_OF_CREDIT_*` avec placeholders `REPLACE_WITH_*`)
@@ -83,8 +83,9 @@ Inventaire exact cumulé sur `main` par rapport à la base `19ee9d3` (`git diff 
   - `docker-compose.prod.yml`
   - `docker-compose.yml` (transmission sécurisée `${...:-}` des 5 secrets webhooks multi-prestataires au service `backend`)
   - `prometheus.yml`
-- **Frontend React & Configuration Build Vite (9)** :
+- **Frontend React & Configuration Build Vite (10)** :
   - `vite.config.ts`
+  - `src/components/kyc/KycModuleViews.tsx`
   - `src/components/layout/AppLayout.tsx`
   - `src/components/room/RoomLiveCreateModal.tsx`
   - `src/components/security/RouteGuards.tsx`
@@ -192,12 +193,12 @@ export function sanitizeHtmlInput(input: string): string {
 }
 ```
 
-### 5.4 Protection Express 5, Webhooks Fail-Closed & Élimination DCE Production (`src/server/validators/schema.validator.ts`, `src/server/controllers/domain.controllers.ts:2000-2021`, `src/contexts/AppContext.tsx:198-200`, `src/pages/PublicAndAuthPages.tsx:1116-1160`)
+### 5.4 Protection Express 5, Webhooks Fail-Closed & Élimination DCE Production (`src/server/validators/schema.validator.ts`, `src/server/controllers/domain.controllers.ts:1826-1881,2049-2070,3827-3847`, `src/contexts/AppContext.tsx:198-200`, `src/pages/PublicAndAuthPages.tsx:1116-1160`)
 
 - `assertFlatStringQuery(query)` rejette tout paramètre non scalaire (tableau ou objet imbriqué) avec `AppError(400, 'VALIDATION_INVALID_QUERY_PARAM', ...)`.
 - `getServiceHmacSecret(envVarName)` impose en production un secret d'au moins 32 caractères absent de `FORBIDDEN_WEAK_PATTERNS` et génère en dev/test une clé éphémère CSPRNG 256 bits en mémoire.
-- `POST /api/v1/webhooks/payments/:provider` (`domain.controllers.ts:2000-2021`) vérifie la présence du secret `${rawProvider}_WEBHOOK_SECRET` en `NODE_ENV=production` et intercepte `FATAL_SECURITY_CONFIG_ERROR` pour lever un `AppError(503, 'WEBHOOK_PROVIDER_NOT_CONFIGURED', ...)` structuré (zéro `HTTP 500`, zéro contournement de signature).
-- `vite.config.ts:5-9` force `process.env.NODE_ENV = 'production'` et `process.env.VITE_USER_NODE_ENV = ''` sur `command === 'build'` ; `DEMO_USERS` (`AppContext.tsx`), les jeux initiaux de démo (`INITIAL_KYC_DOSSIERS`, `INITIAL_ROOMS`, `INITIAL_BACKUPS`, `INITIAL_AUDIT_LOGS`, `INITIAL_SUPPORT_TICKETS`) et les `useState` d'authentification (`PublicAndAuthPages.tsx`, `AdminWorkspacePages.tsx`) sont strictement gardés par `import.meta.env.PROD`, assurant leur élimination complète par Vite/Rollup.
+- `POST /api/v1/payments/stripe/webhook` (`domain.controllers.ts:1826-1881`), `POST /api/v1/webhooks/payments/:provider` (`domain.controllers.ts:2049-2070`) et `GET /api/v1/documents/:id/download` (`domain.controllers.ts:3827-3847`) vérifient la configuration du secret HMAC en `NODE_ENV=production` et interceptent `FATAL_SECURITY_CONFIG_ERROR:` pour lever un `AppError(503, 'WEBHOOK_PROVIDER_NOT_CONFIGURED' | 'DOCUMENT_DOWNLOAD_NOT_CONFIGURED', ...)` structuré (zéro `HTTP 500`, tout en conservant `401 STRIPE_WEBHOOK_SIGNATURE_INVALID` / `400 WEBHOOK_SIGNATURE_INVALID` dès que le secret est configuré et la signature absente ou invalide).
+- `vite.config.ts:5-9` force `process.env.NODE_ENV = 'production'` et `process.env.VITE_USER_NODE_ENV = ''` sur `command === 'build'` ; `DEMO_USERS` (`AppContext.tsx`), les jeux initiaux de démo (`INITIAL_KYC_DOSSIERS`, `INITIAL_ROOMS`, `INITIAL_BACKUPS`, `INITIAL_AUDIT_LOGS`, `INITIAL_SUPPORT_TICKETS`, `SUPPORT_AGENTS`, annuaire Support et consignes de passation) et les `useState` d'authentification (`PublicAndAuthPages.tsx`, `AdminWorkspacePages.tsx`, `SupportWorkspacePages.tsx`) sont strictement gardés par `import.meta.env.PROD`, assurant leur élimination complète par Vite/Rollup. De plus, `ActorKycWorkspaceView` (`src/components/kyc/KycModuleViews.tsx`) est scindé avec un composant enfant `ActorKycWorkspaceContent` respectant les règles React Hooks et affichant `<EmptyState>` lorsque `kycDossiers` est `[]` en production, tandis que `uploadKycDocumentForDossier` et `submitClientKYCDocument` (`src/contexts/AppContext.tsx`) gardent les dossiers indéfinis avec `notifyToast(..., 'warning')`.
 
 ---
 
@@ -208,7 +209,7 @@ export function sanitizeHtmlInput(input: string): string {
 - **Scan complet des 86 fichiers TypeScript/TSX non-test sous `src/`** :
   - `MATH_RANDOM_HITS=0` (zéro appel `Math.random()` résiduel dans le code applicatif ; usage exclusif de `node:crypto` et `globalThis.crypto`).
   - `SECRET_PATTERN_HITS=0` secret réel : seules 2 occurrences dans `src/services/securityCrypto.ts:238-239` correspondent à la liste noire `FORBIDDEN_WEAK_PATTERNS` bloquant explicitement les anciens motifs compromis (`tradelink_doc_secret_key_9944`, `whsec_stripe_secret_key_v6`).
-  - **Élimination complète des identifiants et données de démo en production (`dist/assets/*.js` — 14 fichiers JS)** : scan vérifié après `npm.cmd run build` montrant **`0` occurrence** de `jsxDEV`, **`0` occurrence** de `DEMO_USERS` (`ADMIN_1`, `ADMIN_2`), **`0` occurrence** des mots de passe en clair (`TradeLink#Admin2026!`, `SecureTrade#2026!`, `NewArgon2id#2026!`, `AdminTradeLink!2026`, `ClientAtlas!2026`), et **`0` occurrence** des emails/téléphones/identifiants admin de démonstration (`direction.sec@tradelink-saas.com`, `ciso.approver@tradelink-saas.com`, `usr-admin-01`, `usr-admin-02`, `+33 1 88 40 10 01`).
+  - **Élimination complète des identifiants et données de démo en production (`dist/assets/*.js` — 14 fichiers JS)** : scan vérifié après `npm.cmd run build` montrant **`0` occurrence** de `jsxDEV`, **`0` occurrence** de `DEMO_USERS` (`ADMIN_1`, `ADMIN_2`), **`0` occurrence** des mots de passe en clair (`TradeLink#Admin2026!`, `SecureTrade#2026!`, `NewArgon2id#2026!`, `AdminTradeLink!2026`, `ClientAtlas!2026`), **`0` occurrence** des emails/téléphones/identifiants admin/support de démonstration (`direction.sec@tradelink-saas.com`, `ciso.approver@tradelink-saas.com`, `@tradelink-support.io`, `usr-admin-01`, `usr-admin-02`, `usr-supp-agent-*`, `Karim Mansouri`, `Sophie Laurent`, `Karim Tazi`, `Sarah Mansour`, `Leila Bennani`, `+33 1 88 40 10 01`), et **`0` occurrence** des comptes/personas Support (`Youssef Berrada`, `Marc Vandenberg`, `Nadia El Amrani`, `Amine Khelifi`, `usr-client-01`, `usr-supp-01`, `usr-trans-01`) dans `dist/assets/SupportWorkspacePages-*.js`.
 - **Suite intégrée `npm.cmd run test:security-audit`** (`7/7` domaines conformes) : scan de 126 fichiers (0 secret en clair), neutralisation de 5 vecteurs SQLi, 4 vecteurs XSS, en-têtes HTTP & `X-Correlation-Id`, quarantaine antivirus/rejet `.exe`/`.sh`/`.bat`, matrice RBAC/anti-IDOR et Single Active Session Policy.
 
 ### 6.2 Audit DAST Live sur Serveur HTTP Express Réel (M3)
@@ -218,7 +219,7 @@ Exécution d'une sonde DAST isolée sur `createApp()` démarrée en écoute TCP 
 | Sonde | Vecteur testé | Résultat observé | Verdict |
 |---|---|---|---|
 | `DAST-01` | `POST /api/v1/auth/login` sans mot de passe (`{ email }`) | `HTTP 400` (`VALIDATION_LOGIN_FIELDS`) | **CONFORME** |
-| `DAST-02` | Webhooks en `NODE_ENV=production` : Stripe non signé, Konnect sans secret configuré (`KONNECT_WEBHOOK_SECRET` absent), Konnect signé invalide (`KONNECT_WEBHOOK_SECRET` défini) | Stripe non signé -> `HTTP 401`, Konnect non configuré -> `HTTP 503` (`WEBHOOK_PROVIDER_NOT_CONFIGURED`, zéro `500`), Konnect signature invalide -> `HTTP 400` (`WEBHOOK_SIGNATURE_INVALID`) | **CONFORME** |
+| `DAST-02` | Webhooks en `NODE_ENV=production` : Stripe dédié sans secret (`STRIPE_WEBHOOK_SECRET` absent) vs configuré non signé/forgé, Konnect sans secret (`KONNECT_WEBHOOK_SECRET` absent) vs signé invalide | Stripe dédié non configuré -> `HTTP 503` (`WEBHOOK_PROVIDER_NOT_CONFIGURED`, zéro `500`), Stripe dédié configuré non signé/forgé -> `HTTP 401` (`STRIPE_WEBHOOK_SIGNATURE_INVALID`), Konnect non configuré -> `HTTP 503` (`WEBHOOK_PROVIDER_NOT_CONFIGURED`, zéro `500`), Konnect signature invalide -> `HTTP 400` (`WEBHOOK_SIGNATURE_INVALID`) | **CONFORME** |
 | `DAST-03` | Accès anonymes (`/dlq/jobs`, `/stocks/overview`, `/translation/text`, `/metrics`) vs `/metrics` avec Bearer `METRICS_SCRAPE_TOKEN` | Anonymes : `401` sur les 4 routes ; Bearer valide : `200` | **CONFORME** |
 | `DAST-04` | Sûreté query Express 5 (`?search[x]=1` et `?search=a&search=b`) | `?search[x]=1` -> `200` (zéro `500`), `?search=a&search=b` -> `400` (`VALIDATION_INVALID_QUERY_PARAM`) | **CONFORME** |
 | `DAST-05` | XSS imbriqué `<scr<script>ipt>alert(1)</script>` sur `POST /api/v1/auth/register` + `sanitizeHtmlInput` | Aucune balise `<script>` dans la réponse ; sortie assainie `"&lt;scr"` | **CONFORME** |
@@ -242,22 +243,22 @@ Toutes les 14 suites officielles R1 ainsi que la suite de non-régression LOT 9 
 
 | # | Commande exacte | Cible / Périmètre | Blocs / Assertions | Durée | Exit Code | Résultat |
 |---|---|---|---|---:|---:|---|
-| 1 | `npm.cmd run test:express` | Serveur HTTP Express, `/health`, `/metrics`, produits, blocage Admin | 5/5 | 15.41 s | `0` | **PASS (100%)** |
+| 1 | `npm.cmd run test:express` | Serveur HTTP Express, `/health`, `/metrics`, produits, blocage Admin | 5/5 | 17.12 s | `0` | **PASS (100%)** |
 | 2 | `npm.cmd run test:lot1-audit` | Argon2id, ClamAV `zINSTREAM`, JWT/MFA, 68 tables PG16, Vault/Zod | 5/5 missions | 5.49 s | `0` | **PASS (100%)** |
-| 3 | `npm.cmd run test:lot2-persistence` | Persistance PG16, ACID/rollback, Redis TTL/verrous, multi-instance, 503->200 | 5/5 blocs | 5.71 s | `0` | **PASS (100%)** |
-| 4 | `npm.cmd run test:lot3-actors` | Comptes, Anti-IDOR, blocage 409 suppression, 7 acteurs, B2B/workspace | 5/5 blocs | 14.84 s | `0` | **PASS (100%)** |
-| 5 | `npm.cmd run test:lot4-commercial` | Catégories, CRUD produit, stocks/MOQ, devis, factures, compta, messagerie | 11/11 missions | 2.20 s | `0` | **PASS (100%)** |
-| 6 | `npm.cmd run test:lot5-roomlive` | Gouvernance Room Live, Google Meet v2 & Calendar v3, fallback SFU | 9/9 | 2.15 s | `0` | **PASS (100%)** |
-| 7 | `npm.cmd run test:lot6-ai-gemini` | Exclusivité Gemini 1.5 Pro/Flash, 0 modèle tiers, RAG RBAC, cache/quotas | 7/7 | 0.99 s | `0` | **PASS (100%)** |
+| 3 | `npm.cmd run test:lot2-persistence` | Persistance PG16, ACID/rollback, Redis TTL/verrous, multi-instance, 503->200 | 5/5 blocs | 6.00 s | `0` | **PASS (100%)** |
+| 4 | `npm.cmd run test:lot3-actors` | Comptes, Anti-IDOR, blocage 409 suppression, 7 acteurs, B2B/workspace | 5/5 blocs | 15.80 s | `0` | **PASS (100%)** |
+| 5 | `npm.cmd run test:lot4-commercial` | Catégories, CRUD produit, stocks/MOQ, devis, factures, compta, messagerie | 11/11 missions | 2.36 s | `0` | **PASS (100%)** |
+| 6 | `npm.cmd run test:lot5-roomlive` | Gouvernance Room Live, Google Meet v2 & Calendar v3, fallback SFU | 9/9 | 2.22 s | `0` | **PASS (100%)** |
+| 7 | `npm.cmd run test:lot6-ai-gemini` | Exclusivité Gemini 1.5 Pro/Flash, 0 modèle tiers, RAG RBAC, cache/quotas | 7/7 | 1.07 s | `0` | **PASS (100%)** |
 | 8 | `npm.cmd run test:lot7-translation` | 6 paires FR/EN/AR, RTL, glossaire B2B, désensibilisation secrets, Gemini | 8/8 | 1.39 s | `0` | **PASS (100%)** |
-| 9 | `npm.cmd run test:lot8-performance` | Latence p95 < 200ms, Prometheus RFC 0.0.4, K8s probes, CB, DLQ, RL, Redis | 8/8 | 2.95 s | `0` | **PASS (100%)** |
-| 10 | `npm.cmd run test:security` | Argon2id, OTP, Brute-force 429, MFA TOTP, Refresh reuse, Reset, Anti-IDOR | 7/7 | 3.04 s | `0` | **PASS (100%)** |
-| 11 | `npm.cmd run test:security-audit` | Scan 126 fichiers, SQLi, XSS, Headers, Antivirus, RBAC/IDOR, Single Session | 7/7 domaines | 2.15 s | `0` | **PASS (100%)** |
-| 12 | `npm.cmd run test:e2e` | 7 workflows E2E (Inscription -> KYC -> Devis/Stripe -> POD -> Compta -> IA -> KMS) | 7/7 workflows | 2.25 s | `0` | **PASS (100%)** |
-| 13 | `npm.cmd run test:harmonisation` | Parcours inter-modules complets, Room Live, Single Session, Decimal.js, RTL | 11/11 | 2.92 s | `0` | **PASS (100%)** |
-| 14 | `npm.cmd run test:global-validation` | Couverture 21 modules & 11 parcours interconnectés + matrice RBAC 7 rôles | 12/12 blocs | 2.45 s | `0` | **PASS (100%)** |
-| + | `node scripts/run-test.cjs src/server/tests/lot9.security.regression.test.ts` | Régression ciblée LOT 9 (auth bypass, webhooks 503/400, 17 routes, IDOR, Express 5, XSS/CWE-1236, SAST, bundle DCE) | 9/9 blocs | 16.67 s | `0` | **PASS (100%)** |
-| **TOTAL** | **15 suites exécutées** | **14 suites R1 (107 vérifications) + 1 suite LOT 9 (9 vérifications)** | **116/116 (100%)** | **80.61 s** | **`0`** | **100 % SUCCÈS** |
+| 9 | `npm.cmd run test:lot8-performance` | Latence p95 < 200ms, Prometheus RFC 0.0.4, K8s probes, CB, DLQ, RL, Redis | 8/8 | 3.02 s | `0` | **PASS (100%)** |
+| 10 | `npm.cmd run test:security` | Argon2id, OTP, Brute-force 429, MFA TOTP, Refresh reuse, Reset, Anti-IDOR | 7/7 | 3.28 s | `0` | **PASS (100%)** |
+| 11 | `npm.cmd run test:security-audit` | Scan 126 fichiers, SQLi, XSS, Headers, Antivirus, RBAC/IDOR, Single Session | 7/7 domaines | 2.55 s | `0` | **PASS (100%)** |
+| 12 | `npm.cmd run test:e2e` | 7 workflows E2E (Inscription -> KYC -> Devis/Stripe -> POD -> Compta -> IA -> KMS) | 7/7 workflows | 2.46 s | `0` | **PASS (100%)** |
+| 13 | `npm.cmd run test:harmonisation` | Parcours inter-modules complets, Room Live, Single Session, Decimal.js, RTL | 11/11 | 3.14 s | `0` | **PASS (100%)** |
+| 14 | `npm.cmd run test:global-validation` | Couverture 21 modules & 11 parcours interconnectés + matrice RBAC 7 rôles | 12/12 blocs | 3.15 s | `0` | **PASS (100%)** |
+| + | `node scripts/run-test.cjs src/server/tests/lot9.security.regression.test.ts` | Régression ciblée LOT 9 (auth bypass, webhooks Stripe/Multi 503/400/401, 17 routes, IDOR, Express 5, XSS/CWE-1236, SAST, bundle DCE) | 9/9 blocs | 16.38 s | `0` | **PASS (100%)** |
+| **TOTAL** | **15 suites exécutées** | **14 suites R1 (107 vérifications) + 1 suite LOT 9 (9 vérifications)** | **116/116 (100%)** | **85.53 s** | **`0`** | **100 % SUCCÈS** |
 
 ---
 
@@ -277,7 +278,7 @@ Toutes les 14 suites officielles R1 ainsi que la suite de non-régression LOT 9 
 - **Compatibilité multi-acteurs et workflows existants** : les 7 rôles (`ADMIN`, `CLIENT`, `FOURNISSEUR`, `TRANSPORTEUR`, `COMPTABLE`, `SUPPORT`, `VISITEUR`) conservent leurs parcours nominaux validés à 100 % sur les 21 modules et 11 parcours (`test:global-validation`, `test:harmonisation`, `test:e2e`). Le rôle `COMPTABLE` reste strictement en lecture seule sur les données commerciales sources (`COMPTABLE_STAGE3_READONLY_SOURCE_DATA`).
 - **Compatibilité API & MFA** : le flux Admin 2 étapes (`/auth/login` -> `/auth/mfa/setup` -> `/auth/mfa/verify` -> `/auth/login` avec `mfaCode`) est préservé ; l'alignement des 16 suites de tests existantes a consisté uniquement à utiliser des identifiants Argon2id, codes TOTP et signatures HMAC authentiques sans affaiblir aucune assertion.
 - **Compatibilité trilingue & RTL** : les 6 paires de traduction `FR <-> EN <-> AR` et la directionnalité RTL (`dir="rtl"`) passent à `8/8` (`test:lot7-translation`).
-- **Non-régression sécurité LOT 9** : les 8 blocs de `lot9.security.regression.test.ts` garantissent la non-réouverture des failles corrigées en Itérations 1 et 2 (Rooms `VISITEUR` + usurpation `participantId`, `/export` `403`, oracle `GET /quotes/:id`, CWE-1236, multi-webhooks).
+- **Non-régression sécurité LOT 9** : les 9 blocs de `lot9.security.regression.test.ts` (`[LOT9-01]` à `[LOT9-09]`) garantissent la non-réouverture des failles corrigées en Itérations 1, 2 et M3 (Rooms `VISITEUR` + usurpation `participantId`, `/export` `403`, oracle `GET /quotes/:id`, CWE-1236, multi-webhooks 503/400 et zéro fuite bundle prod).
 
 ---
 
@@ -285,9 +286,9 @@ Toutes les 14 suites officielles R1 ainsi que la suite de non-régression LOT 9 
 
 ### 10.1 Latences API (Mesures réelles `npm.cmd run test:lot8-performance`)
 
-- **p50** : `0.02 ms`
-- **p90** : `0.05 ms`
-- **p95** : `0.07 ms` (**Cible `< 200 ms` largement respectée**)
+- **p50** : `0.03 ms`
+- **p90** : `0.06 ms`
+- **p95** : `0.09 ms` (**Cible `< 200 ms` largement respectée**)
 - **p99** : `0.18 ms`
 - **Exposition Prometheus** : format RFC 0.0.4 validé (`Content-Type: text/plain; version=0.0.4; charset=utf-8`), authentifié par `METRICS_SCRAPE_TOKEN` Bearer ou JWT `ADMIN`.
 
@@ -297,10 +298,10 @@ Toutes les 14 suites officielles R1 ainsi que la suite de non-régression LOT 9 
 |---|---|---:|---|---:|
 | Validation schéma Prisma | `.\node_modules\.bin\prisma.cmd validate` | `< 4 s` | 68 modèles validés | `0` |
 | Contrôle TypeScript strict | `npm.cmd run typecheck` | `< 20 s` | 0 erreur sur l'ensemble du projet | `0` |
-| Build Frontend SPA | `npm.cmd run build` | `12.96 s` (Vite) | 1668 modules, `dist/index.html` (`1.64 kB`), CSS `94.40 kB` (`gzip 15.34 kB`), chunk principal `index-f9fwNTaJ.js` `608.36 kB` (`gzip 190.00 kB`), 0 warning CSS, 0 fuite bundle | `0` |
-| Build Backend Express | `npm.cmd run build:backend` | `< 5 s` | `dist/server.cjs` = **`3 914 304` octets (`3 822.56 kB`)** | `0` |
+| Build Frontend SPA | `npm.cmd run build` | `15.14 s` (Vite) | 1668 modules, `dist/index.html` (`1.64 kB`), CSS `94.40 kB` (`gzip 15.34 kB`), chunk principal `index-rQrrRrjj.js` `608.52 kB` (`gzip 190.02 kB`), 0 warning CSS, 0 fuite bundle | `0` |
+| Build Backend Express | `npm.cmd run build:backend` | `< 5 s` | `dist/server.cjs` = **`3 914 601` octets (`3 822.85 kB`)** | `0` |
 
-*Note d'analyse bundle* : Vite signale un avertissement informatif non bloquant sur `dist/assets/index-f9fwNTaJ.js` (`608.36 kB > 600 kB`, réduit de `21.22 kB` après élimination complète des données `DEMO_USERS` et jeux initiaux en production) ainsi que 7 notes informatives de compatibilité navigateur sur les imports `crypto`/`node:crypto` dans des services partagés (sans impact sur les chemins browser qui utilisent `globalThis.crypto`).
+*Note d'analyse bundle* : Vite signale un avertissement informatif non bloquant sur `dist/assets/index-rQrrRrjj.js` (`608.52 kB > 600 kB`, après élimination complète des données `DEMO_USERS`, `SUPPORT_AGENTS`, et jeux initiaux en production) ainsi que 7 notes informatives de compatibilité navigateur sur les imports `crypto`/`node:crypto` dans des services partagés (sans impact sur les chemins browser qui utilisent `globalThis.crypto`).
 
 ---
 
@@ -407,7 +408,7 @@ Les éléments suivants sont **non bloquants** pour la recette LOT 9 et document
    - Quelques exports CSV de convenance côté client (tables UI dans `AdminWorkspacePages.tsx`, `TranslationGlossaryAdminView.tsx`, `CarrierAccountingSupportAndTransversalPages.tsx` et plan comptable `AccountingEngine.exportTrialBalanceToCsv`) n'appliquent pas `neutralizeSpreadsheetFormula` (contrairement aux 3 moteurs d'export serveur/analytics déjà protégés).
    - `getJwtSecret()` (`src/services/securityCrypto.ts:720`) teste la vérité sans `.trim()` préalable (atténué par `validateProductionSecurityEnv()` qui rejette les secrets vides/blancs au démarrage).
    - `/api/v1/catalog/products` (`domain.controllers.ts:1101-1102`) convertit `page`/`limit` par `Number()` au lieu de `validatePaginationAndFilters`.
-   - Le chunk frontend principal `index-f9fwNTaJ.js` atteint `608.36 kB` (`gzip 190.00 kB`), juste au-dessus du seuil informatif Vite de `600 kB` (fractionnement dynamique possible en évolution future).
+   - Le chunk frontend principal `index-rQrrRrjj.js` atteint `608.52 kB` (`gzip 190.02 kB`), juste au-dessus du seuil informatif Vite de `600 kB` (fractionnement dynamique possible en évolution future).
    - 6 alias d'environnement hérités optionnels (`GOOGLE_AI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_MEET_API_KEY`, `GOOGLE_REFRESH_TOKEN`) sont volontairement omis de `.env.example` au profit des variables canoniques `GEMINI_API_KEY`, `GOOGLE_MEET_*` et `GOOGLE_SERVICE_ACCOUNT_*`.
 
 ---
@@ -417,19 +418,19 @@ Les éléments suivants sont **non bloquants** pour la recette LOT 9 et document
 - [x] **Exécution des 14 suites `npm.cmd run test:*` (R1)** : 14/14 suites exécutées réellement sur l'état final, code sortie `0`, 107/107 blocs réussis (100 %).
 - [x] **Suite de non-régression sécurité LOT 9** : `lot9.security.regression.test.ts` exécutée réellement, code sortie `0`, 9/9 blocs réussis (100 %, incluant M3 webhook 503/400 et 0 fuite bundle prod).
 - [x] **Audit SAST & Zéro secret en dur (R2)** : 0 `Math.random()` dans les 86 fichiers non-test `src/`, 0 secret réel codé en dur dans `src/` et `.env.example`, 0 fuite de `DEMO_USERS`/mots de passe/emails admin dans `dist/assets/*.js`, `test:security-audit` 7/7 conforme.
-- [x] **Audit DAST live Express (R2)** : 7/7 sondes DAST HTTP live validées (login sans mot de passe bloqué `400`, Stripe non signé rejeté `401`, Konnect non configuré `503 WEBHOOK_PROVIDER_NOT_CONFIGURED` et signature invalide `400`, routes sensibles et `/metrics` protégées `401`/`200`, sûreté query Express 5 `400`, XSS imbriqué assaini, CORS `403`, en-têtes Helmet `nosniff`/`DENY`/`CSP`/`HSTS`).
+- [x] **Audit DAST live Express (R2)** : 7/7 sondes DAST HTTP live validées (login sans mot de passe bloqué `400`, Stripe dédié non configuré `503 WEBHOOK_PROVIDER_NOT_CONFIGURED` et signature invalide `401 STRIPE_WEBHOOK_SIGNATURE_INVALID`, Konnect non configuré `503 WEBHOOK_PROVIDER_NOT_CONFIGURED` et signature invalide `400`, routes sensibles et `/metrics` protégées `401`/`200`, sûreté query Express 5 `400`, XSS imbriqué assaini, CORS `403`, en-têtes Helmet `nosniff`/`DENY`/`CSP`/`HSTS`).
 - [x] **Validation Zod & Sanitization XSS / CWE-1236 (R2)** : 25+ schémas Zod v4, `assertFlatStringQuery`, `sanitizeHtmlInput` itératif, échappement HTML emails & CWE-1236/XML exports vérifiés.
 - [x] **Infrastructure Docker non-root & Production (R2)** : `Dockerfile` (`USER 10001:10001`), `Dockerfile.sandbox` (`USER 20001:20001`), 5/5 fichiers YAML parsés, `tradelink-internal` `internal: true`, Nginx TLS + blocage `/metrics`, Vault sans `-dev`, ClamAV configuré, `.env.example` assaini (72 variables).
 - [x] **Validation Prisma & TypeScript** : `prisma validate` code sortie `0` (68 modèles), `npm.cmd run typecheck` code sortie `0` (0 erreur).
-- [x] **Validation des builds Frontend & Backend (R3)** : `npm.cmd run build` code sortie `0` (`12.96 s`, 0 warning CSS, 0 fuite DCE vérifié sur les 14 fichiers `dist/assets/*.js`), `npm.cmd run build:backend` code sortie `0` (`dist/server.cjs` = `3 914 304` octets).
-- [x] **Gestion Git sur `main` sans push (R4)** : branche restée exclusivement sur `main`, aucune branche créée, aucun `git push` exécuté, prêt pour commit final LOT 9.
+- [x] **Validation des builds Frontend & Backend (R3)** : `npm.cmd run build` code sortie `0` (`15.14 s`, 0 warning CSS, 0 fuite DCE vérifié sur les 14 fichiers `dist/assets/*.js`), `npm.cmd run build:backend` code sortie `0` (`dist/server.cjs` = `3 914 601` octets).
+- [x] **Gestion Git sur `main` sans push (R4)** : branche restée exclusivement sur `main`, aucune branche créée, aucun `git push` exécuté, prêt pour le commit code/tests et le commit documentaire final `docs(lot9)` sur `main`.
 - [x] **Livrable officiel 17 sections (R5)** : `docs/RAPPORT_FINAL_RECETTE_LOT9.md` rédigé selon la structure exacte en 17 sections et appuyé exclusivement sur les sorties réelles observées.
 
 ---
 
 ## Section 17 : QUESTIONS ET DÉCISIONS REQUISES
 
-1. **Décision de validation du commit LOT 9 sur `main`** : tous les contrôles techniques (14/14 suites R1 + LOT 9, Prisma validate, typecheck, builds frontend/backend, SAST/DAST et manifests infra) étant validés à 100 %, **la recette d'ingénierie du LOT 9 est prononcée CONFORME / ACCEPTÉE**. Le dépôt est prêt pour l'enregistrement du commit unique LOT 9 sur `main` (sans `git push`).
+1. **Décision de validation des commits finaux LOT 9 sur `main`** : une fois la vague de vérification finale M3 complétée sur l'état consolidé (14/14 suites R1 + LOT 9, Prisma validate, typecheck, builds frontend/backend, SAST/DAST et manifests infra), le dépôt est prêt pour l'enregistrement des commits finaux LOT 9 (code/tests puis rapport documentaire `docs(lot9)`) sur `main` (sans `git push`).
 2. **Autorisation explicite pour `git push` (Décision utilisateur requise)** : conformément à la consigne de sécurité Git, aucun envoi vers `origin/main` (`https://github.com/Igor9944/TradeLink-SaaS`) ne sera effectué sans autorisation explicite de votre part.
 3. **Prérequis Go-Live sur l'environnement cible de production (Décision Ops/Infra)** : avant la bascule en production, l'équipe d'exploitation devra confirmer :
    - La mise à disposition des secrets de production générés (`openssl rand -hex 32`, `METRICS_SCRAPE_TOKEN` distinct du jeton dev, `VAULT_DEV_ROOT_TOKEN_ID` absent) et des certificats TLS valides dans `./infra/nginx/certs/`.
