@@ -428,7 +428,7 @@ async function runLot9SecurityRegressionTests() {
   }
 
   // --------------------------------------------------------------------------
-  // 5. Express 5 Live HTTP: ?search[x]=1 -> 400, /metrics Auth, Health & Prod CORS 403
+  // 5. Express 5 Live HTTP: ?search[x]=1 -> 200/400 (objet sans crash 500), ?search=a&search=b -> 400, /metrics Auth, Health & Prod CORS 403
   // --------------------------------------------------------------------------
   {
     const expressApp = createApp({ repositoryStore: repo });
@@ -532,7 +532,7 @@ async function runLot9SecurityRegressionTests() {
       else process.env.NODE_ENV = prevNodeEnv;
       await new Promise<void>((r) => prodServer.close(() => r()));
     }
-    console.log('✓ [LOT9-05] Express 5 ?search[x]=1 -> 400, /metrics auth, probes réels & CORS 403 validés.');
+    console.log('✓ [LOT9-05] Express 5 ?search[x]=1 -> 200/400 (objet sans crash 500), ?search=a&search=b -> 400, /metrics auth, probes réels & CORS 403 validés.');
   }
 
   // --------------------------------------------------------------------------
@@ -940,13 +940,15 @@ async function runLot9SecurityRegressionTests() {
   }
 
   // --------------------------------------------------------------------------
-  // 9. M3 Remediation Regression Tests (Prod Multi-Webhook 503 vs 400 & Bundle Leak Check)
+  // 9. M3 Remediation Regression Tests (Prod Multi-Webhook & Stripe 503 vs 400/401 & Bundle Leak Check)
   // --------------------------------------------------------------------------
   {
     const prevNodeEnv = process.env.NODE_ENV;
     const prevKonnect = process.env.KONNECT_WEBHOOK_SECRET;
+    const prevStripe = process.env.STRIPE_WEBHOOK_SECRET;
     process.env.NODE_ENV = 'production';
     delete process.env.KONNECT_WEBHOOK_SECRET;
+    delete process.env.STRIPE_WEBHOOK_SECRET;
 
     const prodAppM3 = createApp({ repositoryStore: repo });
     const srvM3 = http.createServer(prodAppM3);
@@ -954,7 +956,7 @@ async function runLot9SecurityRegressionTests() {
     const { port: m3Port } = srvM3.address() as { port: number };
 
     try {
-      // 9A. Production webhook with unset secret -> 503 WEBHOOK_PROVIDER_NOT_CONFIGURED (never 500)
+      // 9A. Production webhooks with unset secret -> 503 WEBHOOK_PROVIDER_NOT_CONFIGURED (never 500)
       const unsetRes = await httpRequestJson(
         {
           hostname: '127.0.0.1',
@@ -971,7 +973,28 @@ async function runLot9SecurityRegressionTests() {
       );
       assert.strictEqual(unsetRes.body.error?.code, 'WEBHOOK_PROVIDER_NOT_CONFIGURED');
 
-      // 9B. Production webhook with configured secret & invalid/unsigned payload -> 400/401
+      const stripePayloadProd = JSON.stringify({
+        id: 'evt_stripe_unset_prod',
+        type: 'checkout.session.completed',
+        data: { object: { id: 'cs_unset_prod', metadata: {} } },
+      });
+      const unsetStripeRes = await httpRequestJson(
+        {
+          hostname: '127.0.0.1',
+          port: m3Port,
+          path: '/api/v1/payments/stripe/webhook',
+          method: 'POST',
+        },
+        stripePayloadProd
+      );
+      assert.strictEqual(
+        unsetStripeRes.statusCode,
+        503,
+        `Stripe webhook dédié sans secret en production doit retourner 503 (reçu ${unsetStripeRes.statusCode})`
+      );
+      assert.strictEqual(unsetStripeRes.body.error?.code, 'WEBHOOK_PROVIDER_NOT_CONFIGURED');
+
+      // 9B. Production webhooks with configured secret & invalid/unsigned payload -> 400/401
       process.env.KONNECT_WEBHOOK_SECRET =
         'prod_konnect_webhook_secret_64_chars_minimum_verified_2026_abcd1234';
       const invalidSigRes = await httpRequestJson(
@@ -989,11 +1012,48 @@ async function runLot9SecurityRegressionTests() {
         `Konnect webhook signé invalide en production doit retourner 400/401 (reçu ${invalidSigRes.statusCode})`
       );
       assert.strictEqual(invalidSigRes.body.error?.code, 'WEBHOOK_SIGNATURE_INVALID');
+
+      process.env.STRIPE_WEBHOOK_SECRET =
+        'prod_stripe_webhook_secret_64_chars_minimum_verified_2026_xyz98765';
+      const unsignedStripeProdRes = await httpRequestJson(
+        {
+          hostname: '127.0.0.1',
+          port: m3Port,
+          path: '/api/v1/payments/stripe/webhook',
+          method: 'POST',
+        },
+        stripePayloadProd
+      );
+      assert.strictEqual(
+        unsignedStripeProdRes.statusCode,
+        401,
+        `Stripe webhook dédié non signé avec secret configuré en production doit retourner 401 (reçu ${unsignedStripeProdRes.statusCode})`
+      );
+      assert.strictEqual(unsignedStripeProdRes.body.error?.code, 'STRIPE_WEBHOOK_SIGNATURE_INVALID');
+
+      const forgedStripeProdRes = await httpRequestJson(
+        {
+          hostname: '127.0.0.1',
+          port: m3Port,
+          path: '/api/v1/payments/stripe/webhook',
+          method: 'POST',
+          headers: { 'stripe-signature': 't=1700000000,v1=deadbeef' },
+        },
+        stripePayloadProd
+      );
+      assert.strictEqual(
+        forgedStripeProdRes.statusCode,
+        401,
+        `Stripe webhook dédié signature invalide avec secret configuré en production doit retourner 401 (reçu ${forgedStripeProdRes.statusCode})`
+      );
+      assert.strictEqual(forgedStripeProdRes.body.error?.code, 'STRIPE_WEBHOOK_SIGNATURE_INVALID');
     } finally {
       if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = prevNodeEnv;
       if (prevKonnect === undefined) delete process.env.KONNECT_WEBHOOK_SECRET;
       else process.env.KONNECT_WEBHOOK_SECRET = prevKonnect;
+      if (prevStripe === undefined) delete process.env.STRIPE_WEBHOOK_SECRET;
+      else process.env.STRIPE_WEBHOOK_SECRET = prevStripe;
       await new Promise<void>((r) => srvM3.close(() => r()));
     }
 
@@ -1001,6 +1061,7 @@ async function runLot9SecurityRegressionTests() {
     const publicAuthSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'pages', 'PublicAndAuthPages.tsx'), 'utf8');
     const appCtxSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'contexts', 'AppContext.tsx'), 'utf8');
     const adminPagesSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'pages', 'AdminWorkspacePages.tsx'), 'utf8');
+    const supportPagesSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'pages', 'SupportWorkspacePages.tsx'), 'utf8');
 
     assert.ok(
       !publicAuthSrc.includes("useState('TradeLink#Admin2026!')") &&
@@ -1019,6 +1080,11 @@ async function runLot9SecurityRegressionTests() {
       adminPagesSrc.includes('import.meta.env.PROD') &&
         !adminPagesSrc.includes('const usersList = Object.entries(DEMO_USERS)'),
       'AdminWorkspacePages.tsx doit conditionner usersList / profils admin de démo à !import.meta.env.PROD'
+    );
+    assert.ok(
+      supportPagesSrc.includes('import.meta.env.PROD') &&
+        !supportPagesSrc.includes('useState(SUPPORT_AGENTS)'),
+      'SupportWorkspacePages.tsx doit conditionner SUPPORT_AGENTS et le répertoire démo à !import.meta.env.PROD'
     );
 
     // 9D. Live dist/assets/*.js scan if built
@@ -1039,11 +1105,36 @@ async function runLot9SecurityRegressionTests() {
         'ADMIN_1',
         'ADMIN_2',
         'jsxDEV',
+        '@tradelink-support.io',
+        'usr-supp-agent-',
+        'Karim Mansouri',
+        'Sophie Laurent',
+        'Karim Tazi',
+        'Sarah Mansour',
+        'Leila Bennani',
       ];
       const leaks: string[] = [];
       for (const file of jsFiles) {
         const content = fs.readFileSync(path.join(distAssetsDir, file), 'utf8');
         for (const token of forbiddenTokens) {
+          if (content.includes(token)) {
+            leaks.push(`${file}:${token}`);
+          }
+        }
+      }
+      const supportChunks = jsFiles.filter((f) => f.startsWith('SupportWorkspacePages-'));
+      const supportScopedForbidden = [
+        'Youssef Berrada',
+        'Marc Vandenberg',
+        'Nadia El Amrani',
+        'Amine Khelifi',
+        'usr-client-01',
+        'usr-supp-01',
+        'usr-trans-01',
+      ];
+      for (const file of supportChunks) {
+        const content = fs.readFileSync(path.join(distAssetsDir, file), 'utf8');
+        for (const token of supportScopedForbidden) {
           if (content.includes(token)) {
             leaks.push(`${file}:${token}`);
           }

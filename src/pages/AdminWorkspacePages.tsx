@@ -4041,7 +4041,7 @@ export const AdminWorkspacePage: React.FC<{
                     Démonstration Interactive de la Règle d’Interdiction d’Auto-Approbation :
                   </p>
                   <p className="text-slate-600 dark:text-slate-300 mt-0.5">
-                    La restauration de <code>BKP-FULL-20261118-0200</code> a été initiée par <strong>Admin #1 (Karim Mansouri)</strong>. Si vous cliquez sur « Approuver » en tant qu’Admin #1, le contrôle serveur bloque l’action. Basculez sur <strong>Admin #2 (Sophie Laurent)</strong> pour valider la double approbation !
+                    La restauration de <code>BKP-FULL-20261118-0200</code> a été initiée par <strong>Administrateur #1</strong>. Si vous cliquez sur « Approuver » en tant qu’Administrateur #1, le contrôle serveur bloque l’action. Basculez sur <strong>Administrateur #2</strong> pour valider la double approbation !
                   </p>
                 </div>
                 <Badge variant="orange">Actif : {currentUser.firstName} ({currentUser.id})</Badge>

@@ -1828,20 +1828,56 @@ export class TradeLinkApiApplication {
       const timestampHeader = (
         ctx.headers['x-timestamp'] || ctx.headers['x-tradelink-timestamp']
       ) as string | undefined;
+
+      let webhookSecret: string;
+      try {
+        if (process.env.NODE_ENV === 'production' && !process.env.STRIPE_WEBHOOK_SECRET?.trim()) {
+          throw new AppError(
+            503,
+            'WEBHOOK_PROVIDER_NOT_CONFIGURED',
+            'Passerelle webhook STRIPE non configurée en production.'
+          );
+        }
+        webhookSecret = getServiceHmacSecret('STRIPE_WEBHOOK_SECRET');
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        if (err instanceof Error && err.message.startsWith('FATAL_SECURITY_CONFIG_ERROR:')) {
+          throw new AppError(
+            503,
+            'WEBHOOK_PROVIDER_NOT_CONFIGURED',
+            'Passerelle webhook STRIPE non configurée en production.'
+          );
+        }
+        throw err;
+      }
+
       const payload = parseWithZod(
         StripeWebhookZodSchema,
         ctx.body,
         'VALIDATION_STRIPE_WEBHOOK_PAYLOAD'
       );
-      const res = this.services.processStripeWebhookTransactional({
-        webhookPayload: payload as any,
-        rawPayload: ctx.rawBody ?? ctx.body,
-        signatureHeader,
-        timestampHeader,
-        correlationId: ctx.correlationId,
-        ipAddress: ctx.ipAddress,
-      });
-      return this.ok(ctx, res, 200);
+      try {
+        const res = this.services.processStripeWebhookTransactional({
+          webhookPayload: payload as any,
+          rawPayload: ctx.rawBody ?? ctx.body,
+          signatureHeader,
+          timestampHeader,
+          webhookSecret,
+          correlationId: ctx.correlationId,
+          ipAddress: ctx.ipAddress,
+        });
+        return this.ok(ctx, res, 200);
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        if (err instanceof Error && err.message.startsWith('FATAL_SECURITY_CONFIG_ERROR:')) {
+          throw new AppError(
+            503,
+            'WEBHOOK_PROVIDER_NOT_CONFIGURED',
+            'Passerelle webhook STRIPE non configurée en production.'
+          );
+        }
+        throw err;
+      }
     }
 
     if (method === 'GET' && path === '/api/v1/payments') {
@@ -3788,14 +3824,27 @@ export class TradeLinkApiApplication {
         );
       }
 
-      const resPdf = this.services.verifyAndDownloadDocumentWithTokenService(
-        docId,
-        token,
-        expires,
-        userId,
-        undefined,
-        locale
-      );
+      let resPdf: { pdfBuffer: Buffer; filename: string; mimeType: string };
+      try {
+        resPdf = this.services.verifyAndDownloadDocumentWithTokenService(
+          docId,
+          token,
+          expires,
+          userId,
+          undefined,
+          locale
+        );
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        if (err instanceof Error && err.message.startsWith('FATAL_SECURITY_CONFIG_ERROR:')) {
+          throw new AppError(
+            503,
+            'DOCUMENT_DOWNLOAD_NOT_CONFIGURED',
+            'Service de téléchargement documentaire non configuré en production.'
+          );
+        }
+        throw err;
+      }
 
       return this.ok(
         ctx,

@@ -2278,8 +2278,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [financialConfigAudits, setFinancialConfigAudits] = useState<FinancialConfigAuditRecord[]>([]);
   const [benchmarkRates, setBenchmarkRates] = useState<BenchmarkRateRecord[]>(() => structuredClone(INITIAL_BENCHMARK_RATES));
   const [fiscalPeriods, setFiscalPeriods] = useState<FiscalPeriodRecord[]>([
-    { id: 'fp-2026-01', fiscalYear: 2026, periodCode: '2026-01', startDate: '2026-01-01', endDate: '2026-01-31', status: 'LOCKED', closedAt: '2026-02-05 18:00:00', closedBy: 'admin@tradelink.com' },
-    { id: 'fp-2026-02', fiscalYear: 2026, periodCode: '2026-02', startDate: '2026-02-01', endDate: '2026-02-28', status: 'LOCKED', closedAt: '2026-03-05 18:00:00', closedBy: 'admin@tradelink.com' },
+    { id: 'fp-2026-01', fiscalYear: 2026, periodCode: '2026-01', startDate: '2026-01-01', endDate: '2026-01-31', status: 'LOCKED', closedAt: '2026-02-05 18:00:00', closedBy: !import.meta.env.PROD ? 'admin@tradelink.com' : 'system-admin' },
+    { id: 'fp-2026-02', fiscalYear: 2026, periodCode: '2026-02', startDate: '2026-02-01', endDate: '2026-02-28', status: 'LOCKED', closedAt: '2026-03-05 18:00:00', closedBy: !import.meta.env.PROD ? 'admin@tradelink.com' : 'system-admin' },
     { id: 'fp-2026-03', fiscalYear: 2026, periodCode: '2026-03', startDate: '2026-03-01', endDate: '2026-03-31', status: 'OPEN' },
     { id: 'fp-2026-04', fiscalYear: 2026, periodCode: '2026-04', startDate: '2026-04-01', endDate: '2026-04-30', status: 'OPEN' },
     { id: 'fp-2026-05', fiscalYear: 2026, periodCode: '2026-05', startDate: '2026-05-01', endDate: '2026-05-31', status: 'OPEN' },
@@ -2448,7 +2448,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     },
   ]);
 
-  const [activeConversationId, setActiveConversationId] = useState<string>('conv-b2b-01');
+  const [activeConversationId, setActiveConversationId] = useState<string>(import.meta.env.PROD ? '' : 'conv-b2b-01');
 
   const [messagesByConversation, setMessagesByConversation] = useState<Record<string, ConversationMessageRecord[]>>(
     import.meta.env.PROD ? {} : {
@@ -3928,7 +3928,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     fileSizeBytes?: number
   ) => {
     try {
-      const targetDossier = kycDossiers.find((d) => d.id === dossierId) ?? kycDossiers[0];
+      const targetDossier: KYCDossier | undefined =
+        kycDossiers.find((d) => d.id === dossierId) ?? kycDossiers[0];
+      if (!targetDossier) {
+        notifyToast('Aucun dossier KYC actif disponible pour le téléversement.', 'warning');
+        return;
+      }
       const { documentItem } = encryptAndStoreKycDocument({
         dossierId: targetDossier.id,
         actorType: targetDossier.actorType,
@@ -4028,8 +4033,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const submitClientKYCDocument = (docType: string, fileName: string) => {
-    const clientDossier =
+    const clientDossier: KYCDossier | undefined =
       kycDossiers.find((d) => d.userId === currentUser.id) ?? kycDossiers[0];
+    if (!clientDossier) {
+      notifyToast('Aucun dossier KYC actif disponible pour le téléversement.', 'warning');
+      return;
+    }
     uploadKycDocumentForDossier(clientDossier.id, docType, fileName);
   };
 

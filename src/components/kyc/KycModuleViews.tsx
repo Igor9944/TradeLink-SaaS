@@ -39,7 +39,7 @@ import {
   KycCronExecutionReport,
 } from '../../services/kycEngine';
 import { KYCDocumentItem, KYCDossier } from '../../types';
-import { Badge, Button, Card, Modal } from '../ui/DesignSystem';
+import { Badge, Button, Card, EmptyState, Modal } from '../ui/DesignSystem';
 import { Icon3D } from '../ui/Icon3D';
 
 // ============================================================================
@@ -50,10 +50,44 @@ export const ActorKycWorkspaceView: React.FC<{
   actorProfile: KycActorProfile;
   focusUploadSection?: boolean;
 }> = ({ actorProfile, focusUploadSection = false }) => {
+  const { currentUser, kycDossiers } = useApp();
+
+  // Sélection du dossier correspondant au profil actif
+  const myDossier: KYCDossier | undefined =
+    kycDossiers.find((d) => d.userId === currentUser.id) ??
+    kycDossiers.find((d) => d.actorType === actorProfile) ??
+    kycDossiers[0];
+
+  if (!myDossier) {
+    return (
+      <Card
+        title={`Dossier KYC ${actorProfile}`}
+        subtitle="Conformité réglementaire & coffre-fort documentaire AES-256-GCM"
+      >
+        <EmptyState
+          title="Aucun dossier KYC actif"
+          description="Votre dossier KYC n'est pas encore initialisé dans cette session. Contactez l'administrateur ou complétez votre activation via l'API sécurisée."
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <ActorKycWorkspaceContent
+      actorProfile={actorProfile}
+      focusUploadSection={focusUploadSection}
+      myDossier={myDossier}
+    />
+  );
+};
+
+const ActorKycWorkspaceContent: React.FC<{
+  actorProfile: KycActorProfile;
+  focusUploadSection: boolean;
+  myDossier: KYCDossier;
+}> = ({ actorProfile, focusUploadSection, myDossier }) => {
   const {
     locale,
-    currentUser,
-    kycDossiers,
     uploadKycDocumentForDossier,
     recordKycDocumentPreview,
     updateKycProfile,
@@ -63,12 +97,6 @@ export const ActorKycWorkspaceView: React.FC<{
   const docRefInputId = useId();
   const docRefHintId = useId();
   const docRefErrorId = useId();
-
-  // Sélection du dossier correspondant au profil actif
-  const myDossier: KYCDossier =
-    kycDossiers.find((d) => d.userId === currentUser.id) ??
-    kycDossiers.find((d) => d.actorType === actorProfile) ??
-    kycDossiers[0];
 
   const requiredSpecs = getRequiredDocsForDossier(actorProfile, myDossier.jurisdiction);
   const completion = checkMandatoryKycCompletion(actorProfile, myDossier.documents, myDossier.jurisdiction);
@@ -1045,7 +1073,15 @@ export const AdminKycSupervisionView: React.FC<{
       </Card>
 
       {/* Liste ou Vue Détaillée des Dossiers KYC */}
-      {(focusedDossier ? [focusedDossier] : filteredDossiers).map((dos) => {
+      {(focusedDossier ? [focusedDossier] : filteredDossiers).length === 0 ? (
+        <Card title="Dossiers KYC">
+          <EmptyState
+            title="Aucun dossier KYC disponible"
+            description="Aucun dossier KYC ne correspond aux filtres sélectionnés ou n'est initialisé dans cette session."
+          />
+        </Card>
+      ) : (
+        (focusedDossier ? [focusedDossier] : filteredDossiers).map((dos) => {
         const evalRule = evaluateKYCDossierRule(dos);
         const completion = checkMandatoryKycCompletion(dos.actorType, dos.documents);
         const specs = KYC_REQUIRED_DOCUMENTS_BY_PROFILE[dos.actorType];
@@ -1308,7 +1344,8 @@ export const AdminKycSupervisionView: React.FC<{
             </div>
           </Card>
         );
-      })}
+      })
+      )}
 
       {/* Modale de Décision Motivée (Rejet, Demande de complément ou Réactivation) */}
       <Modal

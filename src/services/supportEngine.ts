@@ -167,7 +167,7 @@ export const KNOWLEDGE_BASE_ARTICLES: KnowledgeArticleRecord[] = [
       en: 'Pre-Clearance Customs Guide: Pro forma invoice, EUR.1 certificate, ATP FRC agreement. Green lane priority passage.',
       ar: 'دليل التخليص الجمركي المسبق: الفاتورة المبدئية، شهادة EUR.1، موافقة ATP FRC ومسار العبور الأخضر ذو الأولوية.',
     },
-    author: 'Amine Khelifi (Spécialiste Douane)',
+    author: 'Équipe Douane & Conformité TradeLink',
     updatedAt: '2026-11-10',
     viewsCount: 342,
     helpfulCount: 89,
@@ -196,7 +196,7 @@ export const KNOWLEDGE_BASE_ARTICLES: KnowledgeArticleRecord[] = [
       en: 'Accounting FAQ: Stripe Escrow fee = 1.40% + €0.25. Net received in account 512000 and customer receivable settled in 411000.',
       ar: 'الأسئلة الشائعة حول المحاسبة: رسوم Stripe = 1.40% + 0.25 يورو. يتم إيداع الصافي في الحساب 512000 وتسوية المستحقات بالكامل.',
     },
-    author: 'Sarah Mansour (Support Finance)',
+    author: 'Équipe Finance & Paiements TradeLink',
     updatedAt: '2026-11-12',
     viewsCount: 520,
     helpfulCount: 142,
@@ -225,7 +225,7 @@ export const KNOWLEDGE_BASE_ARTICLES: KnowledgeArticleRecord[] = [
       en: 'Internal SOP procedure: Fleet thermal alert, urgent contact within 10 minutes, open Room Live session.',
       ar: 'إجراء SOP الداخلي: تنبيه حراري لأسطول النقل، اتصال طارئ خلال 10 دقائق، وفتح جلسة Room Live مباشرة.',
     },
-    author: 'Karim Tazi (Lead N3)',
+    author: 'Équipe Support Technique N3',
     updatedAt: '2026-11-15',
     viewsCount: 195,
     helpfulCount: 57,
@@ -254,7 +254,7 @@ export const KNOWLEDGE_BASE_ARTICLES: KnowledgeArticleRecord[] = [
       en: 'Warehouse hardware tutorial: USB/Bluetooth scanner connection, GS1 calibration, automated SSCC capture.',
       ar: 'دليل عتاد المستودعات: توصيل ماسح الباركود، معايرة GS1 والتقاط رمز SSCC تلقائياً.',
     },
-    author: 'Karim Tazi (Support Technique)',
+    author: 'Équipe Support Technique TradeLink',
     updatedAt: '2026-11-08',
     viewsCount: 280,
     helpfulCount: 76,
@@ -283,7 +283,7 @@ export const KNOWLEDGE_BASE_ARTICLES: KnowledgeArticleRecord[] = [
       en: 'CMR Guide: precise damage remarks at delivery time, 2 mandatory photos, vague remarks invalid.',
       ar: 'دليل CMR: تدوين التحفظات الدقيقة فور التسليم مع إرفاق صورتين واضحتين لضمان حقوق التأمين.',
     },
-    author: 'Amine Khelifi (Support Transport)',
+    author: 'Équipe Logistique & Transport TradeLink',
     updatedAt: '2026-11-05',
     viewsCount: 410,
     helpfulCount: 112,
@@ -708,9 +708,10 @@ export class SupportEngine {
     ticket: SupportTicketRecord,
     agentId: string,
     assignedBy: { id: string; name: string; role: string },
-    explicitAgentName?: string
+    explicitAgentName?: string,
+    agentsCatalog?: SupportAgentRecord[]
   ): SupportTicketRecord {
-    const agent = SUPPORT_AGENTS.find((a) => a.id === agentId);
+    const agent = agentsCatalog?.find((a) => a.id === agentId);
     const agentName = explicitAgentName || (agent ? agent.name : agentId);
     const now = new Date().toISOString();
 
@@ -1146,7 +1147,7 @@ export class SupportEngine {
       return `Bonjour ${ticket.requesterName},\n\nNos équipes d'astreinte logistique ont immédiatement pris contact avec le transporteur. Les paramètres thermiques sont désormais sous contrôle et l'itinéraire est suivi en temps réel sur la carte interactive.\n\nNous vous informons dès franchissement de la prochaine étape.\n\nBien cordialement,\nCellule d'Urgence Logistique TradeLink`;
     }
 
-    return `Bonjour ${ticket.requesterName},\n\nNous avons pris en compte votre demande relative à "${ticket.subject}". Nos techniciens sont mobilisés pour vous apporter une solution dans les plus brefs délais.\n\nVous pouvez consulter notre base de connaissances article "${relevantArticle.title}" pour plus de détails.\n\nBien cordialement,\nCentre d'Assistance TradeLink`;
+    return `Bonjour ${ticket.requesterName},\n\nNous avons pris en compte votre demande relative à "${ticket.subject}". Nos techniciens sont mobilisés pour vous apporter une solution dans les plus brefs délais.\n\nVous pouvez consulter notre base de connaissances article "${relevantArticle?.title ?? 'Documentation TradeLink'}" pour plus de détails.\n\nBien cordialement,\nCentre d'Assistance TradeLink`;
   }
 
   /**

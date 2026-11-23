@@ -95,7 +95,7 @@ export const SupportWorkspacePage: React.FC<{
     !import.meta.env.PROD ? INITIAL_SUPPORT_TICKETS : []
   );
   const [articles, setArticles] = useState<KnowledgeArticleRecord[]>(KNOWLEDGE_BASE_ARTICLES);
-  const [agents] = useState(SUPPORT_AGENTS);
+  const [agents] = useState(!import.meta.env.PROD ? SUPPORT_AGENTS : []);
 
   // Filtres tickets
   const [ticketSearch, setTicketSearch] = useState('');
@@ -120,6 +120,7 @@ export const SupportWorkspacePage: React.FC<{
         requesterCompany: '',
         requesterEmail: '',
         requesterRole: 'CLIENT',
+        assignedAgentId: '',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         slaDeadline: new Date().toISOString(),
@@ -149,7 +150,9 @@ export const SupportWorkspacePage: React.FC<{
 
   // Recherche utilisateurs
   const [userSearchQuery, setUserSearchQuery] = useState('');
-  const [selectedUserForDetail, setSelectedUserForDetail] = useState<string | null>('usr-client-01');
+  const [selectedUserForDetail, setSelectedUserForDetail] = useState<string | null>(
+    !import.meta.env.PROD ? 'usr-client-01' : null
+  );
 
   // Base de connaissances recherche
   const [kbSearchQuery, setKbSearchQuery] = useState('');
@@ -225,13 +228,16 @@ export const SupportWorkspacePage: React.FC<{
       category: newCategory || aiAnalysis.suggestedCategory,
       priority: newPriority || aiAnalysis.suggestedPriority,
       status: 'OPEN',
-      requesterId: 'usr-client-01',
-      requesterName: 'Youssef Berrada',
+      requesterId: currentUser.id || (!import.meta.env.PROD ? 'usr-client-01' : 'usr-requester'),
+      requesterName:
+        newRequesterCompany ||
+        currentUser.companyName ||
+        (!import.meta.env.PROD ? 'Youssef Berrada' : 'Demandeur'),
       requesterCompany: newRequesterCompany,
       requesterEmail: newRequesterEmail,
       requesterRole: 'CLIENT',
-      assignedAgentId: 'usr-supp-agent-01',
-      assignedAgentName: 'Amine Khelifi',
+      assignedAgentId: agents[0]?.id ?? '',
+      assignedAgentName: agents[0]?.name ?? 'À assigner',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       slaDeadline: new Date(Date.now() + 4 * 3600 * 1000).toISOString(),
@@ -240,7 +246,7 @@ export const SupportWorkspacePage: React.FC<{
         {
           id: `msg-${Date.now()}`,
           ticketId: `TCK-2026-new`,
-          authorId: 'usr-client-01',
+          authorId: currentUser.id || (!import.meta.env.PROD ? 'usr-client-01' : 'usr-requester'),
           authorName: `${newRequesterCompany} (${newRequesterEmail})`,
           authorRole: 'CLIENT',
           content: newDescription,
@@ -269,7 +275,7 @@ export const SupportWorkspacePage: React.FC<{
     const newMsg: SupportMessageRecord = {
       id: `msg-${Date.now()}`,
       ticketId: selectedTicket.id,
-      authorId: currentUser.id || 'usr-supp-agent-01',
+      authorId: currentUser.id || (!import.meta.env.PROD ? 'usr-supp-agent-01' : 'usr-support'),
       authorName: `${currentUser.firstName} ${currentUser.lastName} (Support)`,
       authorRole: 'SUPPORT',
       content: replyContent,
@@ -516,7 +522,10 @@ export const SupportWorkspacePage: React.FC<{
             {/* Charge et activité de l'équipe support */}
             <Card title="Activité des Agents Support" subtitle="Statuts de disponibilité et volume traité aujourd'hui">
               <div className="space-y-3">
-                {agents.map((ag) => (
+                {agents.length === 0 ? (
+                  <p className="text-slate-400 italic py-2">Aucun agent support actif en session.</p>
+                ) : (
+                  agents.map((ag) => (
                   <div
                     key={ag.id}
                     className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 flex items-center justify-between"
@@ -555,7 +564,8 @@ export const SupportWorkspacePage: React.FC<{
                       </span>
                     </div>
                   </div>
-                ))}
+                ))
+                )}
               </div>
             </Card>
 
@@ -905,10 +915,15 @@ export const SupportWorkspacePage: React.FC<{
               <div>
                 <span className="text-slate-400 block mb-1">Agent Titulaire :</span>
                 <select
-                  value={selectedTicket.assignedAgentId}
+                  value={selectedTicket.assignedAgentId ?? ''}
                   onChange={(e) => handleReassignTicket(selectedTicket.id, e.target.value)}
                   className="px-2 py-1 rounded-lg bg-white dark:bg-[#082225] border border-slate-300 dark:border-teal-800 font-bold"
                 >
+                  {agents.length === 0 && (
+                    <option value={selectedTicket.assignedAgentId ?? ''}>
+                      {selectedTicket.assignedAgentName || 'Non assigné'}
+                    </option>
+                  )}
                   {agents.map((ag) => (
                     <option key={ag.id} value={ag.id}>
                       {ag.name} ({ag.level})
@@ -1112,39 +1127,50 @@ export const SupportWorkspacePage: React.FC<{
                 <span className="font-bold text-slate-700 dark:text-slate-300 block">
                   Comptes Référencés sur la Plateforme :
                 </span>
-                {[
-                  {
-                    id: 'usr-client-01',
-                    name: 'Youssef Berrada',
-                    company: 'Atlas Import & Distribution S.A.',
-                    role: 'CLIENT',
-                    kycStatus: 'SUBMITTED_IN_TIME_PENDING_REVIEW',
-                    ticketsCount: 2,
-                  },
-                  {
-                    id: 'usr-supp-01',
-                    name: 'Marc Vandenberg',
-                    company: 'EuroTech Industrial GmbH',
-                    role: 'FOURNISSEUR',
-                    kycStatus: 'VALIDATED',
-                    ticketsCount: 2,
-                  },
-                  {
-                    id: 'usr-trans-01',
-                    name: 'Nadia El Amrani',
-                    company: 'MedFreight Multimodal Carriers',
-                    role: 'TRANSPORTEUR',
-                    kycStatus: 'VALIDATED',
-                    ticketsCount: 1,
-                  },
-                ]
-                  .filter(
-                    (u) =>
-                      u.name.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
-                      u.company.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
-                      u.role.toLowerCase().includes(userSearchQuery.toLowerCase())
-                  )
-                  .map((u) => (
+                {(() => {
+                  const directoryUsers = !import.meta.env.PROD
+                    ? [
+                        {
+                          id: 'usr-client-01',
+                          name: 'Youssef Berrada',
+                          company: 'Atlas Import & Distribution S.A.',
+                          role: 'CLIENT',
+                          kycStatus: 'SUBMITTED_IN_TIME_PENDING_REVIEW',
+                          ticketsCount: 2,
+                        },
+                        {
+                          id: 'usr-supp-01',
+                          name: 'Marc Vandenberg',
+                          company: 'EuroTech Industrial GmbH',
+                          role: 'FOURNISSEUR',
+                          kycStatus: 'VALIDATED',
+                          ticketsCount: 2,
+                        },
+                        {
+                          id: 'usr-trans-01',
+                          name: 'Nadia El Amrani',
+                          company: 'MedFreight Multimodal Carriers',
+                          role: 'TRANSPORTEUR',
+                          kycStatus: 'VALIDATED',
+                          ticketsCount: 1,
+                        },
+                      ].filter(
+                        (u) =>
+                          u.name.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
+                          u.company.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
+                          u.role.toLowerCase().includes(userSearchQuery.toLowerCase())
+                      )
+                    : [];
+
+                  if (directoryUsers.length === 0) {
+                    return (
+                      <p className="text-slate-400 italic py-3">
+                        Aucun compte utilisateur référencé en session.
+                      </p>
+                    );
+                  }
+
+                  return directoryUsers.map((u) => (
                     <div
                       key={u.id}
                       onClick={() => setSelectedUserForDetail(u.id)}
@@ -1164,20 +1190,28 @@ export const SupportWorkspacePage: React.FC<{
                         <span className="font-bold text-[#E85D22]">{u.ticketsCount} tickets</span>
                       </div>
                     </div>
-                  ))}
+                  ));
+                })()}
               </div>
 
               {/* Fiche détaillée de l'utilisateur sélectionné & Historique */}
               <div className="lg:col-span-2 space-y-4">
+                {!selectedUserForDetail ? (
+                  <div className="p-8 rounded-3xl bg-slate-50 dark:bg-[#071E22] border border-dashed border-slate-300 dark:border-teal-800 text-center text-slate-400 italic">
+                    Sélectionnez un compte pour consulter la fiche.
+                  </div>
+                ) : (
                 <div className="p-5 rounded-3xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-teal-800 pb-3">
                     <div>
                       <h4 className="text-base font-extrabold text-slate-900 dark:text-white">
-                        {selectedUserForDetail === 'usr-client-01'
-                          ? 'Atlas Import & Distribution S.A.'
-                          : selectedUserForDetail === 'usr-supp-01'
-                          ? 'EuroTech Industrial GmbH'
-                          : 'MedFreight Multimodal Carriers'}
+                        {!import.meta.env.PROD
+                          ? selectedUserForDetail === 'usr-client-01'
+                            ? 'Atlas Import & Distribution S.A.'
+                            : selectedUserForDetail === 'usr-supp-01'
+                            ? 'EuroTech Industrial GmbH'
+                            : 'MedFreight Multimodal Carriers'
+                          : 'Organisation'}
                       </h4>
                       <p className="text-slate-500 text-xs font-mono">
                         Identifiant : {selectedUserForDetail} • Juridiction : Maroc / UE
@@ -1266,6 +1300,7 @@ export const SupportWorkspacePage: React.FC<{
                       ))}
                   </div>
                 </div>
+                )}
               </div>
             </div>
           </Card>
@@ -1326,34 +1361,48 @@ export const SupportWorkspacePage: React.FC<{
 
                 <div className="p-4 rounded-3xl bg-slate-50 dark:bg-[#071E22] border border-slate-200 dark:border-teal-800 space-y-3">
                   <div className="space-y-2">
-                    {[
-                      {
-                        author: 'Karim Tazi (N3)',
-                        time: '09:15',
-                        text: 'Rappel pour tous : les expéditions de denrées sous agrément ATP vers Tanger Med font l’objet d’un contrôle thermique renforcé aujourd’hui.',
-                      },
-                      {
-                        author: 'Sarah Mansour (N2)',
-                        time: '10:02',
-                        text: 'Ticket TCK-2026-418 résolu : explication commission Stripe validée avec le client.',
-                      },
-                      {
-                        author: 'Amine Khelifi (N2)',
-                        time: '10:45',
-                        text: 'Je prends en charge le ticket critique d’alerte remorque FR-772-AA avec le chauffeur.',
-                      },
-                    ].map((entry, idx) => (
-                      <div
-                        key={idx}
-                        className="p-3 rounded-xl bg-white dark:bg-[#082225] border border-slate-200 dark:border-teal-800"
-                      >
-                        <div className="flex justify-between font-bold text-[#E85D22] mb-1">
-                          <span>{entry.author}</span>
-                          <span className="font-mono text-slate-400">{entry.time}</span>
+                    {(() => {
+                      const shiftHandoffs = !import.meta.env.PROD
+                        ? [
+                            {
+                              author: 'Karim Tazi (N3)',
+                              time: '09:15',
+                              text: 'Rappel pour tous : les expéditions de denrées sous agrément ATP vers Tanger Med font l’objet d’un contrôle thermique renforcé aujourd’hui.',
+                            },
+                            {
+                              author: 'Sarah Mansour (N2)',
+                              time: '10:02',
+                              text: 'Ticket TCK-2026-418 résolu : explication commission Stripe validée avec le client.',
+                            },
+                            {
+                              author: 'Amine Khelifi (N2)',
+                              time: '10:45',
+                              text: 'Je prends en charge le ticket critique d’alerte remorque FR-772-AA avec le chauffeur.',
+                            },
+                          ]
+                        : [];
+
+                      if (shiftHandoffs.length === 0) {
+                        return (
+                          <p className="text-slate-400 italic py-2">
+                            Aucune consigne d&apos;astreinte enregistrée pour cette session.
+                          </p>
+                        );
+                      }
+
+                      return shiftHandoffs.map((entry, idx) => (
+                        <div
+                          key={idx}
+                          className="p-3 rounded-xl bg-white dark:bg-[#082225] border border-slate-200 dark:border-teal-800"
+                        >
+                          <div className="flex justify-between font-bold text-[#E85D22] mb-1">
+                            <span>{entry.author}</span>
+                            <span className="font-mono text-slate-400">{entry.time}</span>
+                          </div>
+                          <p className="text-slate-700 dark:text-slate-300">{entry.text}</p>
                         </div>
-                        <p className="text-slate-700 dark:text-slate-300">{entry.text}</p>
-                      </div>
-                    ))}
+                      ));
+                    })()}
                   </div>
 
                   <div className="pt-2">
