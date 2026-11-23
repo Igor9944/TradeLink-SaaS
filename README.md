@@ -1,5 +1,15 @@
 # TRADELINK V6.0 — Plateforme SaaS B2B Unifiée
 
+## Mise à jour V6.2
+
+Le référentiel V6.2 de documentation et d'audit est disponible dans [`docs/`](./docs/). Les livrables prioritaires sont :
+
+- [Cahier des charges V6.2](./docs/CAHIER_DES_CHARGES_TRADELINK_V6.2.md)
+- [Roadmap V6.2](./docs/ROADMAP_TRADELINK_V6.2.md)
+- [Audit de l'état actuel](./docs/AUDIT_ETAT_ACTUEL.md)
+- [Architecture](./docs/ARCHITECTURE_TRADELINK.md)
+- [Rapport de sécurité](./docs/RAPPORT_SECURITE.md)
+
 ## Documentation Technique, Fonctionnelle, Architecture & Guide d'Exploitation
 
 > **Nature du document :** Manuel d'Architecture, Guide de Référence Fonctionnelle et Exploitation (README principal)  
