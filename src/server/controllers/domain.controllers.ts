@@ -1084,6 +1084,7 @@ export class TradeLinkApiApplication {
 
     // 2. Recherche & Filtres Produits
     if (method === 'GET' && path === '/api/v1/catalog/products') {
+      const pagination = validatePaginationAndFilters(ctx.query);
       const criteria = {
         search: ctx.query?.search,
         categoryId: ctx.query?.categoryId || ctx.query?.category,
@@ -1098,8 +1099,8 @@ export class TradeLinkApiApplication {
         supplierId: ctx.query?.supplierId,
         status: ctx.query?.status as any,
         sortBy: ctx.query?.sortBy as any,
-        page: ctx.query?.page ? Number(ctx.query.page) : 1,
-        limit: ctx.query?.limit ? Number(ctx.query.limit) : 20,
+        page: pagination.page,
+        limit: pagination.limit,
       };
       const result = this.services.searchCatalogProductsService(criteria, ctx.user);
       return this.ok(ctx, result, 200, {
@@ -2382,12 +2383,35 @@ export class TradeLinkApiApplication {
       return this.ok(ctx, room, 201);
     }
 
+    // 6.2.a. URL de consentement OAuth 2.0 Google Meet (Scopes minimaux — interdit au Client)
+    if (method === 'GET' && path === '/api/v1/rooms/google-meet/oauth-url') {
+      const user = requireAuthenticatedSession(ctx);
+      const oauthInfo = this.services.getGoogleMeetOAuthUrlService(user, ctx.query?.redirectUri);
+      return this.ok(ctx, oauthInfo, 200);
+    }
+
     // 6.2.b. Synchronisation espace Google Meet
     if (method === 'POST' && path.startsWith('/api/v1/rooms/') && path.endsWith('/google-meet/sync')) {
       const user = requireAuthenticatedSession(ctx);
       const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/google-meet/sync', '');
       const syncRes = this.services.syncGoogleMeetSpaceService(roomIdOrCode, user);
       return this.ok(ctx, syncRes, 200);
+    }
+
+    // 6.2.b-bis. Mise à jour configuration espace Google Meet (spaces.patch)
+    if ((method === 'PATCH' || method === 'PUT') && path.startsWith('/api/v1/rooms/') && path.endsWith('/google-meet')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/google-meet', '');
+      const patchRes = this.services.patchGoogleMeetSpaceService(roomIdOrCode, ctx.body || {}, user);
+      return this.ok(ctx, patchRes, 200);
+    }
+
+    // 6.2.b-ter. Ressources conferenceRecords, participants et sessions Google Meet
+    if (method === 'GET' && path.startsWith('/api/v1/rooms/') && path.endsWith('/google-meet/conference-records')) {
+      const user = requireAuthenticatedSession(ctx);
+      const roomIdOrCode = path.replace('/api/v1/rooms/', '').replace('/google-meet/conference-records', '');
+      const records = this.services.getGoogleMeetConferenceRecordsService(roomIdOrCode, user);
+      return this.ok(ctx, records, 200);
     }
 
     // 6.2.c. Clôture d'une réunion (Meet ou SFU)

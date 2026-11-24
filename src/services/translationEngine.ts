@@ -24,10 +24,12 @@ import { TradeGlossaryManager } from './tradeGlossary';
 import { generateSha256Hash, getSecureRandomAlphanumeric } from './securityCrypto';
 import { geminiAiService } from './geminiAiService';
 
+export type ExtendedTranslationLocale = SupportedLocale | 'es';
+
 export interface TranslationRequestOptions {
   text: string;
-  sourceLang?: SupportedLocale;
-  targetLang: SupportedLocale;
+  sourceLang?: ExtendedTranslationLocale;
+  targetLang: ExtendedTranslationLocale;
   domain?: 'COMMERCIAL' | 'LOGISTIQUE' | 'FINANCE' | 'DOUANE' | 'SUPPORT' | 'GENERAL';
   preserveTerms?: string[];
   bypassCache?: boolean;
@@ -38,15 +40,19 @@ export interface TranslationRequestOptions {
 
 export interface TranslationResponseResult {
   originalText: string;
-  sourceLang: SupportedLocale;
+  sourceLang: ExtendedTranslationLocale;
   translatedText: string;
-  targetLang: SupportedLocale;
+  targetLang: ExtendedTranslationLocale;
   confidenceScore: number;
   engineVersion: string;
   cached: boolean;
   durationMs: number;
   glossaryApplied: boolean;
   isInformativeOnly: boolean;
+  isCertified?: boolean;
+  provenance?: 'TRADELINK_NEURAL_GLOSSARY' | 'GOOGLE_GEMINI_NEURAL' | 'STATIC_BUNDLE';
+  translatedAt?: string;
+  legalDisclaimer?: string;
   redactedTermsCount: number;
   translationHash: string;
 }
@@ -197,10 +203,10 @@ export class CentralTranslationService {
 
     // Détection de la langue source si non renseignée
     const detected = this.detectLanguage(textToTranslate).detectedLang;
-    const sourceLang: SupportedLocale =
-      options.sourceLang ?? (detected === 'unknown' ? 'fr' : (detected as SupportedLocale));
+    const sourceLang: ExtendedTranslationLocale =
+      options.sourceLang ?? (detected === 'unknown' ? 'fr' : (detected as ExtendedTranslationLocale));
 
-    const targetLang = options.targetLang;
+    const targetLang: ExtendedTranslationLocale = options.targetLang;
 
     // Si source === cible, retour immédiat sans altération
     if (sourceLang === targetLang) {
@@ -274,6 +280,11 @@ export class CentralTranslationService {
       finalTranslated = finalTranslated.split(placeholder).join(secret);
     }
 
+    const isLegalOrFinancial =
+      options.entityType === 'DOCUMENT' ||
+      options.domain === 'FINANCE' ||
+      options.domain === 'DOUANE';
+
     // Mise en cache
     this.inMemoryCache.set(cacheKey, {
       translatedText: finalTranslated,
@@ -295,7 +306,13 @@ export class CentralTranslationService {
       cached: false,
       durationMs: performance.now() - startTime,
       glossaryApplied: termsAppliedCount > 0,
-      isInformativeOnly: options.entityType === 'DOCUMENT',
+      isInformativeOnly: isLegalOrFinancial,
+      isCertified: false,
+      provenance: 'TRADELINK_NEURAL_GLOSSARY',
+      translatedAt: new Date().toISOString(),
+      legalDisclaimer: isLegalOrFinancial
+        ? 'Traduction automatique non certifiée — Seul le document source original fait foi sur le plan juridique, financier et contractuel.'
+        : undefined,
       redactedTermsCount: redactionMap.size,
       translationHash: cacheKey,
     };
@@ -313,9 +330,9 @@ export class CentralTranslationService {
     }
 
     const detected = this.detectLanguage(textToTranslate).detectedLang;
-    const sourceLang: SupportedLocale =
-      options.sourceLang ?? (detected === 'unknown' ? 'fr' : (detected as SupportedLocale));
-    const targetLang = options.targetLang;
+    const sourceLang: ExtendedTranslationLocale =
+      options.sourceLang ?? (detected === 'unknown' ? 'fr' : (detected as ExtendedTranslationLocale));
+    const targetLang: ExtendedTranslationLocale = options.targetLang;
 
     if (sourceLang === targetLang) {
       return this.translateTextSync(options);
@@ -754,16 +771,14 @@ ${protectedText}`;
   }
 
   /**
-   * 9. Moteur de traduction neuronale contextualisée B2B (FR, EN, AR)
+   * 9. Moteur de traduction neuronale contextualisée B2B (FR, EN, AR, ES)
    */
   private static executeNeuralCoreTranslation(
     text: string,
-    sourceLang: SupportedLocale,
-    targetLang: SupportedLocale,
+    sourceLang: ExtendedTranslationLocale,
+    targetLang: ExtendedTranslationLocale,
     _domain?: string
   ): string {
-    // Matrice de traduction complète pour les 6 combinaisons linguistiques
-
     // 1. Français vers Anglais
     if (sourceLang === 'fr' && targetLang === 'en') {
       return this.translateFrToEn(text);
@@ -774,27 +789,104 @@ ${protectedText}`;
       return this.translateFrToAr(text);
     }
 
-    // 3. Anglais vers Français
+    // 3. Français vers Espagnol
+    if (sourceLang === 'fr' && targetLang === 'es') {
+      return this.translateFrToEs(text);
+    }
+
+    // 4. Anglais vers Français
     if (sourceLang === 'en' && targetLang === 'fr') {
       return this.translateEnToFr(text);
     }
 
-    // 4. Anglais vers Arabe
+    // 5. Anglais vers Arabe
     if (sourceLang === 'en' && targetLang === 'ar') {
       return this.translateEnToAr(text);
     }
 
-    // 5. Arabe vers Français
+    // 6. Anglais vers Espagnol
+    if (sourceLang === 'en' && targetLang === 'es') {
+      return this.translateFrToEs(this.translateEnToFr(text));
+    }
+
+    // 7. Arabe vers Français
     if (sourceLang === 'ar' && targetLang === 'fr') {
       return this.translateArToFr(text);
     }
 
-    // 6. Arabe vers Anglais
+    // 8. Arabe vers Anglais
     if (sourceLang === 'ar' && targetLang === 'en') {
       return this.translateArToEn(text);
     }
 
+    // 9. Arabe vers Espagnol
+    if (sourceLang === 'ar' && targetLang === 'es') {
+      return this.translateFrToEs(this.translateArToFr(text));
+    }
+
+    // 10. Espagnol vers Français / Anglais / Arabe
+    if (sourceLang === 'es') {
+      const frText = this.translateEsToFr(text);
+      if (targetLang === 'fr') return frText;
+      if (targetLang === 'en') return this.translateFrToEn(frText);
+      if (targetLang === 'ar') return this.translateFrToAr(frText);
+    }
+
     return text;
+  }
+
+  private static translateFrToEs(text: string): string {
+    const rules: [RegExp, string][] = [
+      [/\bBonjour\b/gi, 'Hola'],
+      [/\bMerci\b/gi, 'Gracias'],
+      [/\bS’il vous plaît|S'il vous plaît|Veuillez\b/gi, 'Por favor'],
+      [/\bBien cordialement|Cordialement\b/gi, 'Atentamente'],
+      [/\bEn attente de validation\b/gi, 'Pendiente de validación'],
+      [/\bLa commande est confirmée\b/gi, 'El pedido está confirmado'],
+      [/\bCommande confirmée\b/gi, 'Pedido confirmado'],
+      [/\bEn cours de livraison\b/gi, 'En proceso de entrega'],
+      [/\bExpédition en cours\b/gi, 'Envío en tránsito'],
+      [/\bLivraison effectuée avec succès\b/gi, 'Entrega realizada con éxito'],
+      [/\bFacture commerciale\b/gi, 'Factura comercial'],
+      [/\bRupture de la chaîne du froid\b/gi, 'Rotura de la cadena de frío'],
+      [/\bPassage prioritaire en douane\b/gi, 'Despacho aduanero prioritario'],
+      [/\bStock disponible\b/gi, 'Stock disponible'],
+      [/\bStock réservé\b/gi, 'Stock reservado'],
+      [/\bFacture payée\b/gi, 'Factura pagada'],
+      [/\bSignature électronique\b/gi, 'Firma electrónica'],
+      [/\bcommande\b/gi, 'pedido'],
+      [/\blivraison\b/gi, 'entrega'],
+      [/\bfacture\b/gi, 'factura'],
+      [/\bFournisseur\b/gi, 'Proveedor'],
+      [/\bAcheteur\b/gi, 'Comprador'],
+      [/\bTransporteur\b/gi, 'Transportista'],
+    ];
+    let res = text;
+    for (const [pattern, repl] of rules) {
+      res = res.replace(pattern, repl);
+    }
+    return res;
+  }
+
+  private static translateEsToFr(text: string): string {
+    const rules: [RegExp, string][] = [
+      [/\bHola\b/gi, 'Bonjour'],
+      [/\bGracias\b/gi, 'Merci'],
+      [/\bPor favor\b/gi, 'Veuillez'],
+      [/\bAtentamente\b/gi, 'Bien cordialement'],
+      [/\bPedido confirmado\b/gi, 'Commande confirmée'],
+      [/\bEnvío en tránsito\b/gi, 'Expédition en cours'],
+      [/\bFactura pagada\b/gi, 'Facture payée'],
+      [/\bpedido\b/gi, 'commande'],
+      [/\bentrega\b/gi, 'livraison'],
+      [/\bfactura\b/gi, 'facture'],
+      [/\bProveedor\b/gi, 'Fournisseur'],
+    ];
+    let res = text;
+    for (const [pattern, repl] of rules) {
+      res = res.replace(pattern, repl);
+    }
+    return res;
   }
 
   // ==========================================================================
@@ -1042,7 +1134,7 @@ ${protectedText}`;
       cachedEntriesCount: this.inMemoryCache.size,
       charactersTranslatedToday: this.charactersTranslatedToday,
       quotaRemainingCharacters: Math.max(0, this.DAILY_QUOTA_CHARACTERS - this.charactersTranslatedToday),
-      supportedLanguages: ['fr', 'en', 'ar'],
+      supportedLanguages: ['fr', 'en', 'ar', 'es'],
     };
   }
 

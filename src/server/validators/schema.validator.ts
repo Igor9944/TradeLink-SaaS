@@ -271,8 +271,8 @@ export const TranslationDetectZodSchema = z.object({
 
 export const TranslationTextZodSchema = z.object({
   text: z.string().min(1),
-  sourceLang: z.enum(['fr', 'en', 'ar']).optional(),
-  targetLang: z.enum(['fr', 'en', 'ar']),
+  sourceLang: z.enum(['fr', 'en', 'ar', 'es']).optional(),
+  targetLang: z.enum(['fr', 'en', 'ar', 'es']),
   domain: z.string().optional(),
   preserveTerms: z.array(z.string()).optional(),
   bypassCache: z.boolean().optional(),

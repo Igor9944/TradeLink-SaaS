@@ -2191,6 +2191,29 @@ export interface ImportFileValidation {
   encoding: string;
   securitySanitized: boolean;
   detectedVulnerabilities: string[];
+  extensionMatchesContent?: boolean;
+  archiveSecurityCheck?: {
+    isArchive: boolean;
+    entryCount: number;
+    compressionRatio: number;
+    hasPathTraversal: boolean;
+    isZipBomb: boolean;
+  };
+  dbfAnalysis?: {
+    versionByteHex: string;
+    recordsCount: number;
+    activeRecordsCount: number;
+    deletedRecordsCount: number;
+    fields: { name: string; type: string; length: number; decimals: number }[];
+    encodingDetected: string;
+  };
+  cdxAnalysis?: {
+    rootTag: string;
+    keyExpression: string;
+    isStructureVerified: boolean;
+    canRebuildIndex: boolean;
+    notes: string;
+  };
 }
 
 export interface ImportColumnMapping {
@@ -2284,7 +2307,7 @@ export type ImportPipelineJob = SecureImportPipelineJob;
 export interface DatabaseSandboxSession {
   sessionId: string;
   fileName: string;
-  fileFormat: 'SQL' | 'BAK' | 'DBF' | 'CDX';
+  fileFormat: 'SQL' | 'SQLITE' | 'BAK' | 'DBF' | 'CDX';
   fileSize: number;
   sha256: string;
   sandboxContainerId: string;
@@ -2295,7 +2318,7 @@ export interface DatabaseSandboxSession {
   timeoutMs: number;
   antivirusStatus: 'CLEAN' | 'INFECTED';
   compatibilityReport: {
-    engineType: 'POSTGRESQL' | 'MSSQL_SERVER' | 'DBASE_FOXPRO';
+    engineType: 'POSTGRESQL' | 'MSSQL_SERVER' | 'DBASE_FOXPRO' | 'SQLITE';
     isCompatible: boolean;
     versionDetected: string;
     warnings: string[];
@@ -2323,7 +2346,24 @@ export interface DatabaseSandboxSession {
 }
 
 export type ExportDatasetType = 'PRODUCTS' | 'ORDERS' | 'INVOICES' | 'ENTRIES' | 'AUDIT_LOGS' | 'CUSTOM';
-export type ExportFormatType = 'CSV' | 'XLSX' | 'JSON' | 'PDF';
+export type ExportFormatType =
+  | 'CSV'
+  | 'XLS'
+  | 'XLSX'
+  | 'ODS'
+  | 'PDF'
+  | 'DOCX'
+  | 'ODT'
+  | 'RTF'
+  | 'TXT'
+  | 'JSON'
+  | 'XML'
+  | 'YAML'
+  | 'SQL'
+  | 'SQLITE'
+  | 'DBF'
+  | 'CDX'
+  | 'BAK';
 
 export interface DataExportRequest {
   entity: ExportDatasetType;

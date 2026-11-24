@@ -248,8 +248,34 @@ export function formatCurrency(amount: string | number, currency = 'EUR', locale
   }).format(num);
 }
 
+export function sanitizeCsvCellFormula(cellValue: string): string {
+  if (!cellValue) return '';
+  const trimmed = cellValue.trimStart();
+  if (/^[=+@|%\t\r]/.test(trimmed) || (/^-[^\d]/.test(trimmed) && trimmed.startsWith('-'))) {
+    return `'${cellValue}`;
+  }
+  return cellValue;
+}
+
 export function downloadDataExport(filename: string, content: string, mime = 'text/csv;charset=utf-8;') {
-  const blob = new Blob([content], { type: mime });
+  let safeContent = content;
+  if (mime.toLowerCase().includes('csv') || filename.toLowerCase().endsWith('.csv')) {
+    safeContent = content
+      .split(/\r?\n/)
+      .map((line) =>
+        line
+          .split(/([;,])/)
+          .map((token) => {
+            if (token === ';' || token === ',') return token;
+            const unquoted = token.replace(/^"|"$/g, '');
+            const sanitized = sanitizeCsvCellFormula(unquoted);
+            return token.startsWith('"') && token.endsWith('"') ? `"${sanitized}"` : sanitized;
+          })
+          .join('')
+      )
+      .join('\r\n');
+  }
+  const blob = new Blob([safeContent], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

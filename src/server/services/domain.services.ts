@@ -3891,13 +3891,28 @@ export class TradeLinkDomainServices {
     targetParticipantId: string,
     actor: NonNullable<ServerRequestContext['user']>
   ): { success: boolean; admitted: boolean; session: RoomLiveSessionState; message: string } {
-    const { session } = this.getRoomDetailsService(roomIdOrCode, actor);
-    const result = moderateParticipantAction(session!, targetParticipantId, 'ADMIT', actor.id);
-    if (result.success) {
-      RoomLiveSfuEngine.registerRoomSession(result.session);
-      const connectedCount = result.session.participants.filter((p) => p.status === 'CONNECTED').length;
-      this.repo.updateRoom(session!.roomId, { participantsCount: connectedCount });
+    if (actor.role === 'CLIENT' || actor.role === 'VISITEUR') {
+      throw new AppError(
+        403,
+        'CLIENT_ROOM_ADMINISTRATION_FORBIDDEN',
+        'Interdit (Sections 6.8 & 10.5) : Le profil Client peut uniquement rejoindre une Room Live et ne peut pas administrer la salle d’attente.'
+      );
     }
+    const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    if (actor.role !== 'ADMIN' && actor.id !== room.createdById) {
+      throw new AppError(
+        403,
+        'FORBIDDEN_ROOM_MODERATION',
+        'Action non autorisée : seul l’hôte créateur ou un administrateur peut admettre un participant depuis le lobby.'
+      );
+    }
+    const result = moderateParticipantAction(session!, targetParticipantId, 'ADMIT', actor.id);
+    if (!result.success) {
+      throw new AppError(403, 'FORBIDDEN_ROOM_MODERATION', result.message);
+    }
+    RoomLiveSfuEngine.registerRoomSession(result.session);
+    const connectedCount = result.session.participants.filter((p) => p.status === 'CONNECTED').length;
+    this.repo.updateRoom(session!.roomId, { participantsCount: connectedCount });
     return {
       ...result,
       admitted: true,
@@ -3909,11 +3924,26 @@ export class TradeLinkDomainServices {
     targetParticipantId: string,
     actor: NonNullable<ServerRequestContext['user']>
   ): { success: boolean; session: RoomLiveSessionState; message: string } {
-    const { session } = this.getRoomDetailsService(roomIdOrCode, actor);
-    const result = moderateParticipantAction(session!, targetParticipantId, 'DENY', actor.id);
-    if (result.success) {
-      RoomLiveSfuEngine.registerRoomSession(result.session);
+    if (actor.role === 'CLIENT' || actor.role === 'VISITEUR') {
+      throw new AppError(
+        403,
+        'CLIENT_ROOM_ADMINISTRATION_FORBIDDEN',
+        'Interdit (Sections 6.8 & 10.5) : Le profil Client ne peut pas administrer la salle d’attente.'
+      );
     }
+    const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    if (actor.role !== 'ADMIN' && actor.id !== room.createdById) {
+      throw new AppError(
+        403,
+        'FORBIDDEN_ROOM_MODERATION',
+        'Action non autorisée : seul l’hôte créateur ou un administrateur peut refuser un participant dans le lobby.'
+      );
+    }
+    const result = moderateParticipantAction(session!, targetParticipantId, 'DENY', actor.id);
+    if (!result.success) {
+      throw new AppError(403, 'FORBIDDEN_ROOM_MODERATION', result.message);
+    }
+    RoomLiveSfuEngine.registerRoomSession(result.session);
     return result;
   }
 
@@ -3923,19 +3953,105 @@ export class TradeLinkDomainServices {
     action: RoomParticipantModerationAction,
     actor: NonNullable<ServerRequestContext['user']>
   ): { success: boolean; session: RoomLiveSessionState; message: string } {
-    const { session } = this.getRoomDetailsService(roomIdOrCode, actor);
-    const result = moderateParticipantAction(session!, targetParticipantId, action, actor.id);
-    if (result.success) {
-      RoomLiveSfuEngine.registerRoomSession(result.session);
+    if (actor.role === 'CLIENT' || actor.role === 'VISITEUR') {
+      throw new AppError(
+        403,
+        'CLIENT_ROOM_ADMINISTRATION_FORBIDDEN',
+        'Interdit (Sections 6.8 & 10.5) : Le profil Client ne peut ni administrer ni attribuer de rôles dans une Room Live.'
+      );
     }
+    const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    if (actor.role !== 'ADMIN' && actor.id !== room.createdById) {
+      throw new AppError(
+        403,
+        'FORBIDDEN_ROOM_MODERATION',
+        'Action non autorisée : seul l’hôte créateur ou un administrateur peut modérer les participants.'
+      );
+    }
+    const result = moderateParticipantAction(session!, targetParticipantId, action, actor.id);
+    if (!result.success) {
+      throw new AppError(403, 'FORBIDDEN_ROOM_MODERATION', result.message);
+    }
+    RoomLiveSfuEngine.registerRoomSession(result.session);
     return result;
+  }
+
+  public patchGoogleMeetSpaceService(
+    roomIdOrCode: string,
+    config: { accessType?: 'OPEN' | 'TRUSTED' | 'RESTRICTED'; entryPointAccess?: 'ALL' | 'CREATOR_APP_ONLY' },
+    actor: NonNullable<ServerRequestContext['user']>
+  ) {
+    if (actor.role === 'CLIENT' || actor.role === 'VISITEUR') {
+      throw new AppError(
+        403,
+        'CLIENT_ROOM_ADMINISTRATION_FORBIDDEN',
+        'Interdit : Le profil Client ne peut pas modifier les paramètres d’un espace Google Meet.'
+      );
+    }
+    const { room } = this.getRoomDetailsService(roomIdOrCode, actor);
+    if (actor.role !== 'ADMIN' && actor.id !== room.createdById) {
+      throw new AppError(403, 'FORBIDDEN_ROOM_PATCH', 'Seul l’hôte ou un administrateur peut modifier cet espace Google Meet.');
+    }
+    if (!room.googleMeetSpaceName) {
+      throw new AppError(400, 'NOT_A_GOOGLE_MEET_ROOM', 'Cette salle n’est pas associée à un espace Google Meet.');
+    }
+    const accessType = config.accessType || 'TRUSTED';
+    const entryPointAccess = config.entryPointAccess || 'ALL';
+    const patched = googleMeetService.patchSpaceSync(room.googleMeetSpaceName, {
+      accessType,
+      entryPointAccess,
+    });
+    const updatedRoom = this.repo.updateRoom(room.id, {
+      googleMeetSettings: {
+        accessType,
+        entryPointAccess,
+      },
+    });
+    return {
+      room: updatedRoom || room,
+      space: patched,
+    };
+  }
+
+  public getGoogleMeetConferenceRecordsService(
+    roomIdOrCode: string,
+    actor: NonNullable<ServerRequestContext['user']>
+  ) {
+    const { room } = this.getRoomDetailsService(roomIdOrCode, actor);
+    if (!room.googleMeetSpaceName) {
+      throw new AppError(400, 'NOT_A_GOOGLE_MEET_ROOM', 'Cette salle n’utilise pas Google Meet.');
+    }
+    return googleMeetService.listConferenceRecordsSync(room.googleMeetSpaceName);
+  }
+
+  public getGoogleMeetOAuthUrlService(
+    actor: NonNullable<ServerRequestContext['user']>,
+    redirectUri = 'https://app.tradelink-saas.com/api/v1/rooms/google-meet/oauth-callback'
+  ) {
+    if (!canCreateRoomLiveGeneral(actor.role)) {
+      throw new AppError(
+        403,
+        'CLIENT_ROOM_CREATION_FORBIDDEN',
+        'Interdit : Le profil Client ne peut pas initier de liaison OAuth organisateur Google Meet.'
+      );
+    }
+    return googleMeetService.getOAuthAuthorizationUrl({
+      redirectUri,
+      state: `tl-oauth-${actor.id}-${Date.now()}`,
+    });
   }
 
   public startRoomRecordingService(
     roomIdOrCode: string,
     actor: NonNullable<ServerRequestContext['user']>
   ): { success: boolean; session: RoomLiveSessionState; message: string; recordingKey?: string } {
+    if (actor.role === 'CLIENT' || actor.role === 'VISITEUR') {
+      throw new AppError(403, 'CLIENT_ROOM_ADMINISTRATION_FORBIDDEN', 'Le Client ne peut pas démarrer un enregistrement.');
+    }
     const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    if (actor.role !== 'ADMIN' && actor.id !== room.createdById) {
+      throw new AppError(403, 'FORBIDDEN_ROOM_RECORDING', 'Seul l’hôte ou un administrateur peut démarrer l’enregistrement.');
+    }
     const result = RoomLiveSfuEngine.startRecordingWithConsent(session!, actor.id);
     if (result.success) {
       this.repo.updateRoom(room.id, {
@@ -3951,7 +4067,13 @@ export class TradeLinkDomainServices {
     roomIdOrCode: string,
     actor: NonNullable<ServerRequestContext['user']>
   ): { success: boolean; session: RoomLiveSessionState; message: string } {
+    if (actor.role === 'CLIENT' || actor.role === 'VISITEUR') {
+      throw new AppError(403, 'CLIENT_ROOM_ADMINISTRATION_FORBIDDEN', 'Le Client ne peut pas arrêter un enregistrement.');
+    }
     const { room, session } = this.getRoomDetailsService(roomIdOrCode, actor);
+    if (actor.role !== 'ADMIN' && actor.id !== room.createdById) {
+      throw new AppError(403, 'FORBIDDEN_ROOM_RECORDING', 'Seul l’hôte ou un administrateur peut arrêter l’enregistrement.');
+    }
     const result = RoomLiveSfuEngine.stopRecording(session!, actor.id);
     if (result.success) {
       this.repo.updateRoom(room.id, { isRecording: false });

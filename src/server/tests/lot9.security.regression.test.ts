@@ -28,12 +28,18 @@ import {
 import {
   computeCurrentTotpCode,
   getServiceHmacSecret,
+  hasGranularPermission,
+  PERMISSION_CATALOG,
 } from '../../services/securityCrypto';
 import { NotificationTemplateEngine } from '../../services/notificationEngine';
 import { exportDatasetToFormat } from '../../services/adminAdvancedEngine';
 import { ImportExportEngine } from '../../services/importExportEngine';
 import { AnalyticsEngine } from '../../services/globalSearchAndAnalyticsEngine';
 import { BillingDocumentEngine } from '../../services/billingDocumentEngine';
+import { validateFileMagicBytes, canTriggerAutomatedDownstreamAction } from '../../services/ocrDocumentEngine';
+import { GoogleMeetService } from '../../services/googleMeetService';
+import { CentralTranslationService } from '../../services/translationEngine';
+import { AccountingEngine } from '../../services/accountingEngine';
 
 function createRegressionSnapshot(): DatabaseStateSnapshot {
   return {
@@ -1150,7 +1156,161 @@ async function runLot9SecurityRegressionTests() {
     console.log('✓ [LOT9-09] Remédiations M3 (Webhook Prod 503/400 & Zéro fuite DEMO_USERS/credentials en bundle prod) validées.');
   }
 
-  console.log('\n🎉 TOUS LES TESTS DE NON-RÉGRESSION SÉCURITÉ LOT 9 ONT RÉUSSI (9/9) !');
+  // --------------------------------------------------------------------------
+  // 10. Finalisation Intégrale (Universal Docs, OCR TIFF/BMP & Safety Guard, Meet v2 OAuth/Patch/Records, Client 403 Room Admin, ES Translation & RBAC Catalog)
+  // --------------------------------------------------------------------------
+  {
+    // 10A. RBAC/ABAC Catalog & Granular Permissions (Dot + Colon Notation)
+    assert.ok(PERMISSION_CATALOG['organization.read'], 'PERMISSION_CATALOG doit contenir organization.read');
+    assert.ok(PERMISSION_CATALOG['rooms.create'], 'PERMISSION_CATALOG doit contenir rooms.create');
+    assert.strictEqual(hasGranularPermission('CLIENT', 'rooms.join'), true, 'CLIENT doit avoir rooms.join');
+    assert.strictEqual(hasGranularPermission('CLIENT', 'rooms.create'), false, 'CLIENT ne doit jamais avoir rooms.create');
+    assert.strictEqual(hasGranularPermission('CLIENT', 'rooms.manage'), false, 'CLIENT ne doit jamais avoir rooms.manage');
+    assert.strictEqual(hasGranularPermission('FOURNISSEUR', 'rooms.create'), true, 'FOURNISSEUR doit avoir rooms.create');
+
+    // 10B. Universal Export & Round-Trip Import (ODS, XML, YAML, DOCX, ODT, RTF, TXT, SQL, SQLITE, DBF, CDX, BAK)
+    const sampleRecords = [
+      { sku: 'TL-UNIV-01', 'name.fr': '=SUM(1,2) Pompe Frigo', priceAmount: '1450.00', stockAvailable: 12 },
+      { sku: 'TL-UNIV-02', 'name.fr': 'Capteur Thermique GDP', priceAmount: '320.50', stockAvailable: 40 },
+    ];
+    for (const fmt of ['CSV', 'XLS', 'XLSX', 'ODS', 'PDF', 'DOCX', 'ODT', 'RTF', 'TXT', 'JSON', 'XML', 'YAML', 'SQL', 'SQLITE', 'DBF', 'CDX', 'BAK'] as const) {
+      const exp = ImportExportEngine.exportDataset({
+        entity: 'PRODUCTS',
+        format: fmt,
+        records: sampleRecords,
+      });
+      assert.ok(exp.content.length > 0, `Export ${fmt} ne doit pas être vide`);
+      assert.strictEqual(exp.sha256.length, 64, `Export ${fmt} doit retourner un hash SHA-256 valide`);
+      if (['CSV', 'XLS', 'XLSX', 'ODS'].includes(fmt)) {
+        assert.ok(exp.preventedInjectionsCount >= 1, `Export tableur ${fmt} doit neutraliser les formules CWE-1236`);
+      }
+    }
+
+    // Round-trip import test for XML, YAML, ODS, DBF, SQLITE
+    for (const rtFormat of ['XML', 'YAML', 'ODS', 'DBF', 'SQLITE'] as const) {
+      const exported = ImportExportEngine.exportDataset({
+        entity: 'PRODUCTS',
+        format: rtFormat,
+        records: [{ sku: 'SKU-RT-1', nom: 'Module Froid', prix: '990.00', stock: '15' }],
+      });
+      const job1 = ImportExportEngine.step1_upload({
+        fileName: exported.fileName,
+        fileSize: exported.content.length,
+        fileContentRaw: exported.content,
+        entity: 'CATALOG_PRODUCTS',
+        userId: 'usr-admin-01',
+      });
+      assert.strictEqual(job1.format, rtFormat, `Détection de format aller-retour pour ${rtFormat}`);
+      const analyzed = ImportExportEngine.step4_analyzeContent(job1);
+      assert.ok(analyzed.parsedRowsCount >= 1, `Analyse aller-retour ${rtFormat} doit extraire au moins 1 ligne`);
+    }
+
+    // Archive security: Zip-Bomb & Path Traversal quarantine
+    const zipTraversal = ImportExportEngine.detectAndValidateFile({
+      fileName: 'archive.zip',
+      fileSize: 512,
+      fileContentRaw: 'PK\x03\x04 ../../etc/passwd\nCOMPRESSION_RATIO=250',
+    });
+    assert.strictEqual(zipTraversal.antivirusScan, 'QUARANTINED', 'Archive avec Path Traversal / Zip-Bomb doit être mise en quarantaine');
+    assert.strictEqual(zipTraversal.archiveSecurityCheck?.hasPathTraversal, true);
+    assert.strictEqual(zipTraversal.archiveSecurityCheck?.isZipBomb, true);
+
+    // 10C. OCR/IDP Magic Bytes (TIFF, BMP) & Safety Guard against automated accounting/KYC on uncertain OCR
+    const tiffLE = Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00]);
+    const tiffBE = Buffer.from([0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08]);
+    const bmpBuf = Buffer.from([0x42, 0x4d, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00]);
+    assert.strictEqual(validateFileMagicBytes(tiffLE).detectedMimeType, 'image/tiff', 'TIFF Little-Endian doit être reconnu');
+    assert.strictEqual(validateFileMagicBytes(tiffBE).detectedMimeType, 'image/tiff', 'TIFF Big-Endian doit être reconnu');
+    assert.strictEqual(validateFileMagicBytes(bmpBuf).detectedMimeType, 'image/bmp', 'BMP doit être reconnu');
+
+    const unvalidatedOcrGuard = canTriggerAutomatedDownstreamAction({
+      globalConfidence: 0.99,
+      status: 'EXTRACTED',
+      processingStatus: 'EXTRACTED_PENDING_REVIEW',
+      extractedFields: [],
+    });
+    assert.strictEqual(unvalidatedOcrGuard.allowed, false, 'OCR non validé humainement ne doit jamais déclencher d action comptable/KYC auto');
+
+    // 10D. Google Meet API v2 (OAuth2 Token Encryption, spaces.patch, conferenceRecords) & Strict Client 403 on Room Admin
+    const encryptedTok = GoogleMeetService.encryptOAuthTokenAtRest('ya29.a0AfB_byC_secret_oauth_token');
+    const decryptedTok = GoogleMeetService.decryptOAuthTokenAtRest(encryptedTok);
+    assert.strictEqual(decryptedTok, 'ya29.a0AfB_byC_secret_oauth_token', 'Chiffrement AES-256-GCM des jetons OAuth 2.0 Google Meet');
+
+    const supplierUser = {
+      id: 'usr-supp-01',
+      email: 'supplier@eurotech.de',
+      role: 'FOURNISSEUR' as const,
+      sessionId: 'sess-lot9-supp-room',
+      companyName: 'EuroTech Supply GmbH',
+      mfaVerified: true,
+    };
+    const clientUser = {
+      id: 'usr-client-01',
+      email: 'client@atlas.ma',
+      role: 'CLIENT' as const,
+      sessionId: 'sess-lot9-client-room',
+      companyName: 'Atlas Import',
+      mfaVerified: true,
+    };
+    registerSingleActiveSession(supplierUser.id, supplierUser.sessionId, true);
+    registerSingleActiveSession(clientUser.id, clientUser.sessionId, true);
+
+    const createMeetRoom = req({
+      method: 'POST',
+      path: '/api/v1/rooms/google-meet/create',
+      user: supplierUser,
+      body: { title: 'Réunion Officielle Google Meet v2', allowedUserIds: [clientUser.id] },
+    });
+    assert.strictEqual(createMeetRoom.statusCode, 201);
+    const meetRoomId = (createMeetRoom.body.data as any).id;
+
+    // Client forbidden from OAuth URL, Patch, Lobby Admit/Reject, Moderate, Recording
+    assert.strictEqual(req({ method: 'GET', path: '/api/v1/rooms/google-meet/oauth-url', user: clientUser }).statusCode, 403);
+    assert.strictEqual(req({ method: 'PATCH', path: `/api/v1/rooms/${meetRoomId}/google-meet`, user: clientUser, body: { accessType: 'RESTRICTED' } }).statusCode, 403);
+    assert.strictEqual(req({ method: 'POST', path: `/api/v1/rooms/${meetRoomId}/lobby/admit`, user: clientUser, body: { participantId: 'p-1' } }).statusCode, 403);
+    assert.strictEqual(req({ method: 'POST', path: `/api/v1/rooms/${meetRoomId}/lobby/reject`, user: clientUser, body: { participantId: 'p-1' } }).statusCode, 403);
+    assert.strictEqual(req({ method: 'POST', path: `/api/v1/rooms/${meetRoomId}/moderate`, user: clientUser, body: { participantId: 'p-1', action: 'MUTE_MIC' } }).statusCode, 403);
+    assert.strictEqual(req({ method: 'POST', path: `/api/v1/rooms/${meetRoomId}/recording/start`, user: clientUser }).statusCode, 403);
+
+    // Host allowed on OAuth URL, Patch, ConferenceRecords
+    assert.strictEqual(req({ method: 'GET', path: '/api/v1/rooms/google-meet/oauth-url', user: supplierUser }).statusCode, 200);
+    const patchRes = req({ method: 'PATCH', path: `/api/v1/rooms/${meetRoomId}/google-meet`, user: supplierUser, body: { accessType: 'RESTRICTED' } });
+    assert.strictEqual(patchRes.statusCode, 200);
+    const confRecRes = req({ method: 'GET', path: `/api/v1/rooms/${meetRoomId}/google-meet/conference-records`, user: supplierUser });
+    assert.strictEqual(confRecRes.statusCode, 200);
+    assert.ok(Array.isArray((confRecRes.body.data as any).conferenceRecords));
+
+    // 10E. Translation FR/EN/AR/ES & Legal Certification Metadata + CWE-1236 Trial Balance CSV
+    const esTrans = CentralTranslationService.translateTextSync({
+      text: 'Bonjour, la commande est confirmée et la facture payée.',
+      sourceLang: 'fr',
+      targetLang: 'es',
+      domain: 'FINANCE',
+      entityType: 'DOCUMENT',
+    });
+    assert.ok(esTrans.translatedText.includes('Hola'), 'Traduction FR -> ES opérationnelle');
+    assert.strictEqual(esTrans.isCertified, false, 'Traduction automatique marquée non certifiée');
+    assert.strictEqual(esTrans.isInformativeOnly, true, 'Document financier marqué isInformativeOnly');
+    assert.ok(Boolean(esTrans.legalDisclaimer), 'Mention légale de non-certification présente');
+
+    const trialCsv = AccountingEngine.exportTrialBalanceToCsv([
+      {
+        accountCode: '=CMD|calc',
+        accountName: '+MaliciousAccount',
+        category: 'ASSET',
+        totalDebit: '100.00',
+        totalCredit: '100.00',
+        soldeDebiteur: '0.00',
+        soldeCrediteur: '0.00',
+      },
+    ]);
+    assert.ok(trialCsv.includes('"\'=CMD|calc"'), 'Balance CSV doit neutraliser =CMD');
+    assert.ok(trialCsv.includes('"\'+MaliciousAccount"'), 'Balance CSV doit neutraliser +MaliciousAccount');
+
+    console.log('✓ [LOT9-10] Exploitation documentaire universelle (17 formats), OCR TIFF/BMP, Google Meet v2 OAuth/Patch/Records, Restriction Client 403 & Traduction ES validés.');
+  }
+
+  console.log('\n🎉 TOUS LES TESTS DE NON-RÉGRESSION SÉCURITÉ LOT 9 ONT RÉUSSI (10/10) !');
 }
 
 runLot9SecurityRegressionTests().catch((err) => {

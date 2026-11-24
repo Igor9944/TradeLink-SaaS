@@ -542,8 +542,8 @@ export class TradeGlossaryManager {
    */
   public static applyGlossaryToText(
     text: string,
-    sourceLang: SupportedLocale,
-    targetLang: SupportedLocale
+    sourceLang: SupportedLocale | 'es',
+    targetLang: SupportedLocale | 'es'
   ): { transformedText: string; termsAppliedCount: number } {
     if (sourceLang === targetLang) {
       return { transformedText: text, termsAppliedCount: 0 };

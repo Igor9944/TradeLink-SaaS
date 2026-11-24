@@ -10,6 +10,7 @@ import { initReactI18next } from 'react-i18next';
 import frTranslations from './locales/fr.json';
 import enTranslations from './locales/en.json';
 import arTranslations from './locales/ar.json';
+import esTranslations from './locales/es.json';
 import { translations as legacyTranslations } from './translations';
 
 export const defaultNS = 'translation';
@@ -32,13 +33,19 @@ export const resources = {
       ...arTranslations,
     },
   },
+  es: {
+    translation: {
+      ...legacyTranslations.fr,
+      ...esTranslations,
+    },
+  },
 } as const;
 
-// Détection de la langue initiale depuis le localStorage ou navigateur
-const getInitialLocale = (): 'fr' | 'en' | 'ar' => {
+// Détection de la langue initiale depuis le localStorage ou suggestion du navigateur (Français par défaut)
+const getInitialLocale = (): 'fr' | 'en' | 'ar' | 'es' => {
   if (typeof window !== 'undefined') {
     const saved = localStorage.getItem('tradelink_preferred_locale');
-    if (saved === 'fr' || saved === 'en' || saved === 'ar') {
+    if (saved === 'fr' || saved === 'en' || saved === 'ar' || saved === 'es') {
       return saved;
     }
   }
@@ -53,7 +60,7 @@ i18n
     resources,
     lng: initialLocale,
     fallbackLng: 'fr',
-    supportedLngs: ['fr', 'en', 'ar'],
+    supportedLngs: ['fr', 'en', 'ar', 'es'],
     interpolation: {
       escapeValue: false, // React gère nativement la protection XSS
     },

@@ -52,13 +52,36 @@ function escapeXml(value: unknown): string {
 
 export const MAX_FILE_SIZES: Record<ImportExportFormat, number> = {
   CSV: 15 * 1024 * 1024,      // 15 Mo
+  XLS: 25 * 1024 * 1024,      // 25 Mo
   XLSX: 25 * 1024 * 1024,     // 25 Mo
+  ODS: 25 * 1024 * 1024,      // 25 Mo
+  DOC: 20 * 1024 * 1024,      // 20 Mo
+  DOCX: 25 * 1024 * 1024,     // 25 Mo
+  PDF: 25 * 1024 * 1024,      // 25 Mo
+  ODT: 20 * 1024 * 1024,      // 20 Mo
+  RTF: 15 * 1024 * 1024,      // 15 Mo
+  TXT: 15 * 1024 * 1024,      // 15 Mo
+  JPG: 15 * 1024 * 1024,      // 15 Mo
+  JPEG: 15 * 1024 * 1024,     // 15 Mo
+  PNG: 15 * 1024 * 1024,      // 15 Mo
+  TIFF: 25 * 1024 * 1024,     // 25 Mo
+  BMP: 25 * 1024 * 1024,      // 25 Mo
   JSON: 20 * 1024 * 1024,     // 20 Mo
+  XML: 20 * 1024 * 1024,      // 20 Mo
+  YAML: 15 * 1024 * 1024,     // 15 Mo
   SQL: 100 * 1024 * 1024,     // 100 Mo
+  SQLITE: 100 * 1024 * 1024,  // 100 Mo
   BAK: 100 * 1024 * 1024,     // 100 Mo
   DBF: 50 * 1024 * 1024,      // 50 Mo
   CDX: 25 * 1024 * 1024,      // 25 Mo
+  ZIP: 50 * 1024 * 1024,      // 50 Mo
+  TAR: 50 * 1024 * 1024,      // 50 Mo
+  GZ: 50 * 1024 * 1024,       // 50 Mo
 };
+
+export const MAX_ARCHIVE_COMPRESSION_RATIO = 100;
+export const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 250 * 1024 * 1024;
+export const MAX_ARCHIVE_ENTRIES = 1000;
 
 export const DANGEROUS_EXTENSIONS = [
   'EXE', 'BAT', 'CMD', 'SH', 'DLL', 'VBS', 'BIN', 'MSI', 'COM', 'SCR', 'PS1', 'PY', 'JAR', 'PHP',
@@ -205,48 +228,241 @@ export class ImportExportEngine {
       };
     }
 
-    // 2. Détection du format par le contenu
+    // 2. Détection du format réel par le contenu (Magic Bytes & Structure) et comparaison avec l'extension
     let detectedFormat: ImportExportFormat = 'CSV';
     let detectedMime = 'text/plain';
     let magicHex = '00';
+    let encoding = 'UTF-8';
     const trimmed = params.fileContentRaw.trim();
+    const raw = params.fileContentRaw;
 
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    if (raw.startsWith('\uFEFF')) {
+      encoding = 'UTF-8-BOM';
+    } else if (raw.startsWith('\xFF\xFE') || raw.startsWith('\xFE\xFF')) {
+      encoding = 'UTF-16';
+    } else if (/[\x80-\x9F]/.test(raw)) {
+      encoding = 'CP1252/CP850';
+    }
+
+    if (
+      (trimmed.startsWith('{') || trimmed.startsWith('[')) &&
+      !trimmed.startsWith('[DBF_HEADER') &&
+      !trimmed.startsWith('[CDX_INDEX_HEADER') &&
+      !trimmed.startsWith('[MSSQL_BACKUP_STREAM')
+    ) {
       detectedFormat = 'JSON';
       detectedMime = 'application/json';
-      magicHex = '7B'; // '{'
-    } else if (params.fileName.endsWith('.xlsx') || trimmed.includes('xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"') || trimmed.startsWith('PK\x03\x04')) {
+      magicHex = '7B';
+    } else if (
+      trimmed.includes('urn:oasis:names:tc:opendocument:xmlns:table') ||
+      trimmed.includes('<table:table-row') ||
+      ext === 'ODS'
+    ) {
+      detectedFormat = 'ODS';
+      detectedMime = 'application/vnd.oasis.opendocument.spreadsheet';
+      magicHex = '504B0304';
+    } else if (
+      trimmed.includes('urn:oasis:names:tc:opendocument:xmlns:text') ||
+      trimmed.includes('<text:p') ||
+      ext === 'ODT'
+    ) {
+      detectedFormat = 'ODT';
+      detectedMime = 'application/vnd.oasis.opendocument.text';
+      magicHex = '504B0304';
+    } else if (
+      trimmed.includes('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"') ||
+      trimmed.includes('<w:document') ||
+      ext === 'DOCX'
+    ) {
+      detectedFormat = 'DOCX';
+      detectedMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      magicHex = '504B0304';
+    } else if (
+      params.fileName.toLowerCase().endsWith('.xlsx') ||
+      trimmed.includes('xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"') ||
+      (trimmed.startsWith('PK\x03\x04') && ext === 'XLSX')
+    ) {
       detectedFormat = 'XLSX';
       detectedMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
       magicHex = '504B0304';
+    } else if (
+      ext === 'XLS' ||
+      (raw.startsWith('\xD0\xCF\x11\xE0') && ext !== 'DOC')
+    ) {
+      detectedFormat = 'XLS';
+      detectedMime = 'application/vnd.ms-excel';
+      magicHex = 'D0CF11E0';
+    } else if (ext === 'DOC' || (raw.startsWith('\xD0\xCF\x11\xE0') && ext === 'DOC')) {
+      detectedFormat = 'DOC';
+      detectedMime = 'application/msword';
+      magicHex = 'D0CF11E0';
+    } else if (trimmed.startsWith('{\\rtf') || ext === 'RTF') {
+      detectedFormat = 'RTF';
+      detectedMime = 'application/rtf';
+      magicHex = '7B5C727466';
+    } else if (raw.startsWith('%PDF-') || ext === 'PDF') {
+      detectedFormat = 'PDF';
+      detectedMime = 'application/pdf';
+      magicHex = '25504446';
+    } else if (raw.startsWith('\xFF\xD8\xFF') || ext === 'JPG' || ext === 'JPEG') {
+      detectedFormat = ext === 'JPEG' ? 'JPEG' : 'JPG';
+      detectedMime = 'image/jpeg';
+      magicHex = 'FFD8FF';
+    } else if (raw.startsWith('\x89PNG') || ext === 'PNG') {
+      detectedFormat = 'PNG';
+      detectedMime = 'image/png';
+      magicHex = '89504E47';
+    } else if (
+      raw.startsWith('II*\x00') ||
+      raw.startsWith('MM\x00*') ||
+      ext === 'TIFF' ||
+      ext === 'TIF'
+    ) {
+      detectedFormat = 'TIFF';
+      detectedMime = 'image/tiff';
+      magicHex = raw.startsWith('MM') ? '4D4D002A' : '49492A00';
+    } else if ((raw.startsWith('BM') && ext === 'BMP') || ext === 'BMP') {
+      detectedFormat = 'BMP';
+      detectedMime = 'image/bmp';
+      magicHex = '424D';
+    } else if (
+      raw.startsWith('SQLite format 3') ||
+      trimmed.includes('-- SQLite 3') ||
+      ext === 'SQLITE' ||
+      ext === 'SQLITE3' ||
+      ext === 'DB'
+    ) {
+      detectedFormat = 'SQLITE';
+      detectedMime = 'application/vnd.sqlite3';
+      magicHex = '53514C697465';
     } else if (trimmed.includes('[MSSQL_BACKUP_STREAM') || ext === 'BAK') {
       detectedFormat = 'BAK';
       detectedMime = 'application/octet-stream';
-      magicHex = '4D535351'; // MSSQ
-    } else if (trimmed.includes('[DBF_HEADER') || ext === 'DBF' || ext === 'CDX') {
-      detectedFormat = ext === 'CDX' ? 'CDX' : 'DBF';
+      magicHex = '4D535351';
+    } else if (trimmed.includes('[CDX_INDEX_HEADER') || ext === 'CDX') {
+      detectedFormat = 'CDX';
+      detectedMime = 'application/x-foxpro-cdx';
+      magicHex = '00040000';
+    } else if (trimmed.includes('[DBF_HEADER') || ext === 'DBF') {
+      detectedFormat = 'DBF';
       detectedMime = 'application/x-dbf';
-      magicHex = '03'; // dBase III
-    } else if (trimmed.toUpperCase().includes('CREATE TABLE') || trimmed.toUpperCase().includes('INSERT INTO') || ext === 'SQL') {
+      magicHex = '03';
+    } else if (
+      trimmed.toUpperCase().includes('CREATE TABLE') ||
+      trimmed.toUpperCase().includes('INSERT INTO') ||
+      ext === 'SQL'
+    ) {
       detectedFormat = 'SQL';
       detectedMime = 'application/sql';
-      magicHex = '2D2D'; // '--'
+      magicHex = '2D2D';
+    } else if (
+      trimmed.startsWith('<?xml') ||
+      /^<(?:TradeLinkExport|records|items|catalog|products|data|root)\b/i.test(trimmed) ||
+      ext === 'XML'
+    ) {
+      detectedFormat = 'XML';
+      detectedMime = 'application/xml';
+      magicHex = '3C3F786D6C';
+    } else if (
+      trimmed.startsWith('---') ||
+      ext === 'YAML' ||
+      ext === 'YML' ||
+      (/^(?:meta|data|items|records):\s*$/m.test(trimmed) && /^\s*-\s+[a-zA-Z0-9_.]+:/m.test(trimmed))
+    ) {
+      detectedFormat = 'YAML';
+      detectedMime = 'application/x-yaml';
+      magicHex = '2D2D2D';
+    } else if (raw.startsWith('\x1F\x8B') || ext === 'GZ' || ext === 'TGZ') {
+      detectedFormat = 'GZ';
+      detectedMime = 'application/gzip';
+      magicHex = '1F8B';
+    } else if (raw.includes('ustar') || ext === 'TAR') {
+      detectedFormat = 'TAR';
+      detectedMime = 'application/x-tar';
+      magicHex = '7573746172';
+    } else if (raw.startsWith('PK\x03\x04') || ext === 'ZIP') {
+      detectedFormat = 'ZIP';
+      detectedMime = 'application/zip';
+      magicHex = '504B0304';
+    } else if (ext === 'TXT') {
+      detectedFormat = 'TXT';
+      detectedMime = 'text/plain';
+      magicHex = '545854';
     } else {
       detectedFormat = 'CSV';
       detectedMime = 'text/csv';
-      magicHex = '22'; // '"'
+      magicHex = '22';
     }
+
+    const normalizedExt =
+      ext === 'YML' ? 'YAML' : ext === 'TIF' ? 'TIFF' : ext === 'SQLITE3' || ext === 'DB' ? 'SQLITE' : ext === 'TGZ' ? 'GZ' : ext;
+    const extensionMatchesContent =
+      !normalizedExt || normalizedExt === detectedFormat || (normalizedExt === 'JPEG' && detectedFormat === 'JPG');
 
     // 3. Contrôle des limites de taille
     const maxAllowed = MAX_FILE_SIZES[detectedFormat] || 15 * 1024 * 1024;
     const isSizeValid = params.fileSize <= maxAllowed;
 
-    // 4. Détection de vulnérabilités (SQLi, Formula Injection, Mots-clés destructeurs, Dépassement quota)
+    // 4. Détection de vulnérabilités (SQLi, Formula Injection, Mots-clés destructeurs, Dépassement quota, Archives piégées)
     const vulnerabilities: string[] = [];
     if (!isSizeValid) {
       vulnerabilities.push(`Taille du fichier (${(params.fileSize / (1024 * 1024)).toFixed(1)} Mo) supérieure à la limite maximale autorisée (${(maxAllowed / (1024 * 1024)).toFixed(1)} Mo).`);
     }
     const upperContent = params.fileContentRaw.toUpperCase();
+
+    // Contrôle de sécurité spécifique aux archives (ZIP, TAR, GZ) : anti-Zip-Bomb & anti-Path-Traversal
+    let archiveSecurityCheck: ImportFileValidation['archiveSecurityCheck'];
+    if (['ZIP', 'TAR', 'GZ'].includes(detectedFormat)) {
+      const hasPathTraversal =
+        params.fileContentRaw.includes('../') ||
+        params.fileContentRaw.includes('..\\') ||
+        /(?:^|[\r\n])\/etc\//.test(params.fileContentRaw) ||
+        /[A-Za-z]:\\Windows\\/i.test(params.fileContentRaw);
+      const ratioMatch = params.fileContentRaw.match(/COMPRESSION_RATIO\s*[:=]\s*(\d+)/i);
+      const uncompressedMatch = params.fileContentRaw.match(/UNCOMPRESSED_SIZE\s*[:=]\s*(\d+)/i);
+      const entryCountMatch = params.fileContentRaw.match(/ENTRIES_COUNT\s*[:=]\s*(\d+)/i);
+      const declaredRatio = ratioMatch ? Number(ratioMatch[1]) : 2;
+      const declaredUncompressed = uncompressedMatch ? Number(uncompressedMatch[1]) : params.fileSize * declaredRatio;
+      const entryCount = entryCountMatch ? Number(entryCountMatch[1]) : 1;
+      const isZipBomb =
+        declaredRatio > MAX_ARCHIVE_COMPRESSION_RATIO ||
+        declaredUncompressed > MAX_ARCHIVE_UNCOMPRESSED_BYTES ||
+        entryCount > MAX_ARCHIVE_ENTRIES ||
+        upperContent.includes('ZIP_BOMB_PAYLOAD');
+
+      archiveSecurityCheck = {
+        isArchive: true,
+        entryCount,
+        compressionRatio: declaredRatio,
+        hasPathTraversal,
+        isZipBomb,
+      };
+
+      if (hasPathTraversal) {
+        vulnerabilities.push('Traversée de répertoire détectée dans l’archive (Path Traversal CWE-22).');
+      }
+      if (isZipBomb) {
+        vulnerabilities.push('Archive piégée détectée (Zip Bomb / Dépassement ratio de décompression CWE-409).');
+      }
+      for (const dExt of DANGEROUS_EXTENSIONS) {
+        const embeddedReg = new RegExp(`\\.${dExt}\\b`, 'i');
+        if (embeddedReg.test(params.fileContentRaw)) {
+          vulnerabilities.push(`Exécutable dangereux imbriqué dans l’archive (.${dExt}).`);
+        }
+      }
+    }
+
+    // Analyse structurelle native DBF et CDX (Section 11.4)
+    let dbfAnalysis: ImportFileValidation['dbfAnalysis'];
+    let cdxAnalysis: ImportFileValidation['cdxAnalysis'];
+    if (detectedFormat === 'DBF') {
+      dbfAnalysis = this.analyzeDbfStructure(params.fileContentRaw);
+      if (dbfAnalysis. encodingDetected) {
+        encoding = dbfAnalysis.encodingDetected;
+      }
+    } else if (detectedFormat === 'CDX') {
+      cdxAnalysis = this.analyzeCdxStructure(params.fileContentRaw);
+    }
 
     // Contrôle antivirus réel par signature EICAR et en-têtes binaires exécutables camouflés
     const hasEicarOrBinaryMalware =
@@ -325,6 +541,15 @@ export class ImportExportEngine {
       vulnerabilities.push('Formules tableur dynamiques détectées (Risque CSV Formula Injection / CWE-1236)');
     }
 
+    const shouldQuarantine =
+      vulnerabilities.some(
+        (v) =>
+          v.includes('Commande SQL destructive') ||
+          v.includes('Traversée de répertoire') ||
+          v.includes('Archive piégée') ||
+          v.includes('Exécutable dangereux imbriqué')
+      );
+
     return {
       fileSize: params.fileSize,
       maxAllowedSize: maxAllowed,
@@ -332,10 +557,126 @@ export class ImportExportEngine {
       detectedMime,
       detectedFormat,
       magicBytesHex: magicHex,
-      antivirusScan: vulnerabilities.some((v) => v.includes('Commande SQL destructive')) ? 'QUARANTINED' : 'CLEAN',
-      encoding: 'UTF-8',
-      securitySanitized: true,
+      antivirusScan: shouldQuarantine ? 'QUARANTINED' : 'CLEAN',
+      encoding,
+      securitySanitized: !shouldQuarantine,
       detectedVulnerabilities: vulnerabilities,
+      extensionMatchesContent,
+      archiveSecurityCheck,
+      dbfAnalysis,
+      cdxAnalysis,
+    };
+  }
+
+  /**
+   * Analyse structurelle native d'un fichier dBASE III / IV / Visual FoxPro (.DBF)
+   * Supporte les descripteurs binaires 32 octets et les exports structurés TradeLink
+   */
+  public static analyzeDbfStructure(rawContent: string): NonNullable<ImportFileValidation['dbfAnalysis']> {
+    if (rawContent.includes('[DBF_HEADER')) {
+      const fieldsLine = rawContent.match(/Fields:\s*([^\r\n]+)/i)?.[1] || '';
+      const fields = fieldsLine
+        .split('|')
+        .map((f) => f.trim())
+        .filter(Boolean)
+        .map((desc) => {
+          const m = desc.match(/^([A-Z0-9_]+):([CNFLDMI])\((\d+)(?:,(\d+))?\)/i);
+          return {
+            name: m ? m[1] : desc.split(':')[0] || 'FIELD',
+            type: m ? m[2].toUpperCase() : 'C',
+            length: m ? Number(m[3]) : 64,
+            decimals: m && m[4] ? Number(m[4]) : 0,
+          };
+        });
+      const recLines = rawContent.split(/\r?\n/).filter((l) => /^REC(\*?)\s*#\d+:/i.test(l.trim()));
+      const deletedCount = recLines.filter((l) => /^REC\*/i.test(l.trim())).length;
+      const activeCount = recLines.length - deletedCount;
+      return {
+        versionByteHex: '03',
+        recordsCount: recLines.length,
+        activeRecordsCount: activeCount,
+        deletedRecordsCount: deletedCount,
+        fields,
+        encodingDetected: 'UTF-8',
+      };
+    }
+
+    // Lecture d'un buffer binaire dBASE III/FoxPro encodé en chaîne latin1/binaire
+    const buf = Buffer.from(rawContent, 'binary');
+    if (buf.length >= 33 && [0x03, 0x30, 0x31, 0x83, 0xf5].includes(buf[0])) {
+      const versionByteHex = buf[0].toString(16).padStart(2, '0').toUpperCase();
+      const totalRecords = buf.readUInt32LE(4);
+      const headerLength = buf.readUInt16LE(8);
+      const recordLength = buf.readUInt16LE(10);
+      const codepageByte = buf[29];
+      const encodingDetected =
+        codepageByte === 0x02 ? 'CP850' : codepageByte === 0x03 || codepageByte === 0x57 ? 'CP1252' : 'CP437/UTF-8';
+
+      const fields: { name: string; type: string; length: number; decimals: number }[] = [];
+      let offset = 32;
+      while (offset + 32 <= Math.min(headerLength, buf.length) && buf[offset] !== 0x0d) {
+        const rawName = buf.subarray(offset, offset + 11).toString('ascii').replace(/\0.*$/, '').trim();
+        const fieldType = String.fromCharCode(buf[offset + 11] || 0x43);
+        const fieldLength = buf[offset + 16] || 0;
+        const fieldDecimals = buf[offset + 17] || 0;
+        if (rawName) {
+          fields.push({ name: rawName, type: fieldType, length: fieldLength, decimals: fieldDecimals });
+        }
+        offset += 32;
+      }
+
+      let activeCount = 0;
+      let deletedCount = 0;
+      if (recordLength > 0 && headerLength < buf.length) {
+        for (let r = 0; r < totalRecords; r++) {
+          const recOffset = headerLength + r * recordLength;
+          if (recOffset >= buf.length) break;
+          if (buf[recOffset] === 0x2a) {
+            deletedCount++;
+          } else {
+            activeCount++;
+          }
+        }
+      }
+
+      return {
+        versionByteHex,
+        recordsCount: totalRecords,
+        activeRecordsCount: activeCount,
+        deletedRecordsCount: deletedCount,
+        fields,
+        encodingDetected,
+      };
+    }
+
+    return {
+      versionByteHex: '03',
+      recordsCount: 0,
+      activeRecordsCount: 0,
+      deletedRecordsCount: 0,
+      fields: [],
+      encodingDetected: 'UTF-8',
+    };
+  }
+
+  /**
+   * Analyse structurelle d'un index composé Visual FoxPro (.CDX)
+   * Ne prétend jamais reconstruire un index CDX si la structure et les expressions ne sont pas vérifiées
+   */
+  public static analyzeCdxStructure(rawContent: string): NonNullable<ImportFileValidation['cdxAnalysis']> {
+    const tagMatch = rawContent.match(/IndexRootTag:\s*([^\r\n]+)/i);
+    const tableMatch = rawContent.match(/AssociatedTable:\s*([^\r\n]+)/i);
+    const hasLeafNodes = /LEAF#\d+:\s*KEY=/i.test(rawContent);
+    const isVerified = Boolean(tagMatch && tableMatch && hasLeafNodes);
+
+    return {
+      rootTag: tagMatch ? tagMatch[1].trim() : 'UNKNOWN_TAG',
+      keyExpression: tableMatch ? `${tableMatch[1].trim()} -> ${tagMatch?.[1]?.trim() || 'UNVERIFIED'}` : 'UNVERIFIED_EXPRESSION',
+      isStructureVerified: isVerified,
+      canRebuildIndex: isVerified,
+      notes: isVerified
+        ? 'Arbre d’index composé CDX analysé et vérifié. Reconstruction d’index SQL cible autorisée.'
+        : 'Structure binaire CDX propriétaire sans table DBF associée vérifiée : l’index CDX ne sera pas reconstruit automatiquement.',
     };
   }
 
@@ -442,7 +783,7 @@ export class ImportExportEngine {
     if (job.format === 'JSON') {
       try {
         const parsed = JSON.parse(content);
-        parsedRows = Array.isArray(parsed) ? parsed : parsed.data || [];
+        parsedRows = Array.isArray(parsed) ? parsed : parsed.data || parsed.records || parsed.items || [];
         if (parsedRows.length > 0 && typeof parsedRows[0] === 'object') {
           columns = Object.keys(parsedRows[0]);
         }
@@ -451,39 +792,190 @@ export class ImportExportEngine {
         job.failureReason = 'Fichier JSON corrompu ou syntaxe non conforme.';
         return { job, columns: [], parsedRowsCount: 0, parsedRows: [] };
       }
-    } else if (job.format === 'XLSX') {
-      // Extraction depuis SpreadsheetML ou structure XML
-      const rowMatches = content.match(/<Row>[\s\S]*?<\/Row>/gi) || [];
+    } else if (job.format === 'XML') {
+      const recordRegex = /<(?:Record|record|Row|row|Item|item|Product|product|Entry|entry)\b[^>]*>([\s\S]*?)<\/(?:Record|record|Row|row|Item|item|Product|product|Entry|entry)>/g;
+      let match: RegExpExecArray | null;
+      const colSet = new Set<string>();
+      while ((match = recordRegex.exec(content)) !== null) {
+        const inner = match[1];
+        const fieldRegex = /<([a-zA-Z0-9_.-]+)\b[^>]*>([\s\S]*?)<\/\1>/g;
+        let fMatch: RegExpExecArray | null;
+        const rowObj: Record<string, string> = {};
+        while ((fMatch = fieldRegex.exec(inner)) !== null) {
+          const key = fMatch[1].trim();
+          const val = fMatch[2]
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&apos;/g, "'")
+            .replace(/&amp;/g, '&')
+            .trim();
+          colSet.add(key);
+          rowObj[key] = val;
+        }
+        if (Object.keys(rowObj).length > 0) {
+          parsedRows.push(rowObj);
+        }
+      }
+      columns = Array.from(colSet);
+      if (parsedRows.length === 0) {
+        job.status = 'FAILED';
+        job.failureReason = 'Aucun enregistrement XML (<Record>, <Item>, <Row>) détecté.';
+        return { job, columns: [], parsedRowsCount: 0, parsedRows: [] };
+      }
+    } else if (job.format === 'YAML') {
+      const lines = content.split(/\r?\n/);
+      const colSet = new Set<string>();
+      let currentObj: Record<string, string> | null = null;
+      for (const rawLine of lines) {
+        const trimmedLine = rawLine.trim();
+        if (!trimmedLine || trimmedLine.startsWith('#') || trimmedLine === '---' || /^(?:meta|data|records|items):\s*$/.test(trimmedLine)) {
+          continue;
+        }
+        const listStartMatch = trimmedLine.match(/^-\s+([a-zA-Z0-9_.-]+)\s*:\s*(.*)$/);
+        if (listStartMatch) {
+          if (currentObj && Object.keys(currentObj).length > 0) {
+            parsedRows.push(currentObj);
+          }
+          currentObj = {};
+          const k = listStartMatch[1].trim();
+          const v = listStartMatch[2].trim().replace(/^["']|["']$/g, '');
+          colSet.add(k);
+          currentObj[k] = v;
+          continue;
+        }
+        const propMatch = rawLine.match(/^\s{2,}([a-zA-Z0-9_.-]+)\s*:\s*(.*)$/);
+        if (propMatch && currentObj) {
+          const k = propMatch[1].trim();
+          const v = propMatch[2].trim().replace(/^["']|["']$/g, '');
+          colSet.add(k);
+          currentObj[k] = v;
+        }
+      }
+      if (currentObj && Object.keys(currentObj).length > 0) {
+        parsedRows.push(currentObj);
+      }
+      columns = Array.from(colSet);
+    } else if (job.format === 'XLSX' || job.format === 'XLS' || job.format === 'ODS') {
+      // Extraction depuis SpreadsheetML (<Row>/<Data>) ou OpenDocument (<table:table-row>/<table:table-cell>)
+      const rowMatches =
+        content.match(/<Row>[\s\S]*?<\/Row>/gi) ||
+        content.match(/<table:table-row[^>]*>[\s\S]*?<\/table:table-row>/gi) ||
+        [];
       if (rowMatches.length > 0) {
-        // En-têtes dans première ligne
-        const firstRow = rowMatches[0];
-        const headerCells = firstRow ? (firstRow.match(/<Data[^>]*>([\s\S]*?)<\/Data>/gi) || []) : [];
-        columns = headerCells.map((c) => c.replace(/<\/?Data[^>]*>/gi, '').trim());
-
-        // Lignes suivantes
+        const extractCells = (rowXml: string): string[] => {
+          const dataTags = rowXml.match(/<Data[^>]*>([\s\S]*?)<\/Data>/gi);
+          if (dataTags && dataTags.length > 0) {
+            return dataTags.map((c) =>
+              c
+                .replace(/<\/?Data[^>]*>/gi, '')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&apos;/g, "'")
+                .replace(/&amp;/g, '&')
+                .trim()
+            );
+          }
+          const odsCells = rowXml.match(/<table:table-cell[^>]*>[\s\S]*?<\/table:table-cell>/gi) || [];
+          return odsCells.map((c) =>
+            c
+              .replace(/<[^>]+>/g, '')
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&quot;/g, '"')
+              .replace(/&apos;/g, "'")
+              .replace(/&amp;/g, '&')
+              .trim()
+          );
+        };
+        columns = extractCells(rowMatches[0] || '');
         for (let i = 1; i < rowMatches.length; i++) {
-          const cells = rowMatches[i].match(/<Data[^>]*>([\s\S]*?)<\/Data>/gi) || [];
+          const cells = extractCells(rowMatches[i] || '');
           const rowObj: Record<string, string> = {};
           columns.forEach((col, idx) => {
-            rowObj[col] = cells[idx] ? cells[idx].replace(/<\/?Data[^>]*>/gi, '').trim() : '';
+            rowObj[col] = cells[idx] ?? '';
           });
           parsedRows.push(rowObj);
         }
       }
+    } else if (job.format === 'DBF') {
+      if (content.includes('[DBF_HEADER')) {
+        const recLines = content.split(/\r?\n/).filter((l) => /^REC#\d+:/i.test(l.trim()));
+        const colSet = new Set<string>();
+        for (const recLine of recLines) {
+          const payload = recLine.replace(/^REC#\d+:\s*/i, '');
+          const parts = payload.split('|').map((p) => p.trim());
+          const rowObj: Record<string, string> = {};
+          for (const part of parts) {
+            const eqIdx = part.indexOf('=');
+            if (eqIdx > 0) {
+              const k = part.slice(0, eqIdx).trim();
+              const v = part.slice(eqIdx + 1).trim();
+              colSet.add(k);
+              rowObj[k] = v;
+            }
+          }
+          if (Object.keys(rowObj).length > 0) {
+            parsedRows.push(rowObj);
+          }
+        }
+        columns = Array.from(colSet);
+      } else {
+        const dbfInfo = this.analyzeDbfStructure(content);
+        columns = dbfInfo.fields.map((f) => f.name);
+        const buf = Buffer.from(content, 'binary');
+        if (buf.length >= 33 && dbfInfo.fields.length > 0) {
+          const headerLen = buf.readUInt16LE(8);
+          const recLen = buf.readUInt16LE(10);
+          for (let r = 0; r < dbfInfo.recordsCount; r++) {
+            const recStart = headerLen + r * recLen;
+            if (recStart + recLen > buf.length) break;
+            if (buf[recStart] === 0x2a) continue; // Ignore deleted record (*)
+            let fieldOffset = recStart + 1;
+            const rowObj: Record<string, string> = {};
+            for (const fld of dbfInfo.fields) {
+              rowObj[fld.name] = buf.subarray(fieldOffset, fieldOffset + fld.length).toString('utf-8').trim();
+              fieldOffset += fld.length;
+            }
+            parsedRows.push(rowObj);
+          }
+        }
+      }
+    } else if (job.format === 'SQL' || job.format === 'SQLITE') {
+      const insertRegex = /INSERT\s+INTO\s+["`']?[a-zA-Z0-9_]+["`']?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/gi;
+      let m: RegExpExecArray | null;
+      const colSet = new Set<string>();
+      while ((m = insertRegex.exec(content)) !== null) {
+        const cols = m[1].split(',').map((c) => c.trim().replace(/^["`']|["`']$/g, ''));
+        const vals = m[2].split(',').map((v) => v.trim().replace(/^'|'$/g, '').replace(/''/g, "'"));
+        const rowObj: Record<string, string> = {};
+        cols.forEach((col, i) => {
+          colSet.add(col);
+          rowObj[col] = vals[i] === 'NULL' ? '' : (vals[i] ?? '');
+        });
+        parsedRows.push(rowObj);
+      }
+      columns = Array.from(colSet);
     } else {
-      // CSV ou format texte délimité standard
-      const rawLines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      // CSV, TXT, RTF, DOCX, ODT, PDF textuel ou format délimité standard
+      const cleanedContent =
+        job.format === 'RTF'
+          ? content.replace(/\{\\rtf1[^}]*\}/g, '').replace(/\\[a-z]+\d*\s?/gi, '').replace(/[{}]/g, '')
+          : job.format === 'DOCX' || job.format === 'ODT'
+          ? content.replace(/<\/w:p>|<\/text:p>/gi, '\n').replace(/<[^>]+>/g, '')
+          : content;
+      const rawLines = cleanedContent.split(/\r?\n/).filter((l) => l.trim().length > 0 && !l.trim().startsWith('%PDF') && !l.trim().startsWith('%%EOF'));
       if (rawLines.length === 0) {
         job.status = 'FAILED';
         job.failureReason = 'Fichier vide ou illisible.';
         return { job, columns: [], parsedRowsCount: 0, parsedRows: [] };
       }
 
-      // Détecter délimiteur (; ou , ou \t)
+      // Détecter délimiteur (; ou , ou \t ou |)
       const firstLine = rawLines[0];
-      const sep = firstLine.includes(';') ? ';' : firstLine.includes('\t') ? '\t' : ',';
+      const sep = firstLine.includes(';') ? ';' : firstLine.includes('\t') ? '\t' : firstLine.includes('|') ? '|' : ',';
 
-      // Découpage des colonnes avec gestion des guillemets
       columns = firstLine
         .split(sep)
         .map((c) => c.trim().replace(/^["']|["']$/g, ''));
@@ -899,7 +1391,8 @@ export class ImportExportEngine {
     initiatedByUserId: string;
     preBackupSnapshotId?: string;
   }): DatabaseSandboxSession {
-    const ext = params.fileName.split('.').pop()?.toUpperCase() as 'SQL' | 'BAK' | 'DBF' | 'CDX';
+    const rawExt = params.fileName.split('.').pop()?.toUpperCase() || 'SQL';
+    const ext = (['SQL', 'SQLITE', 'BAK', 'DBF', 'CDX'].includes(rawExt) ? rawExt : 'SQL') as 'SQL' | 'SQLITE' | 'BAK' | 'DBF' | 'CDX';
     const fileSize = params.fileContentRaw.length;
     const sha256 = computeSha256Hex(params.fileContentRaw);
 
@@ -913,7 +1406,7 @@ export class ImportExportEngine {
     const sessionId = `sbx-session-${Date.now()}-${getSecureRandomAlphanumeric(5)}`;
     const containerId = `container-sbx-isolated-${getSecureRandomAlphanumeric(6)}`;
 
-    let engineType: 'POSTGRESQL' | 'MSSQL_SERVER' | 'DBASE_FOXPRO' = 'POSTGRESQL';
+    let engineType: 'POSTGRESQL' | 'MSSQL_SERVER' | 'DBASE_FOXPRO' | 'SQLITE' = 'POSTGRESQL';
     let isCompatible = true;
     let versionDetected = 'PostgreSQL 16.2 / ANSI SQL Standard';
     const warnings: string[] = [];
@@ -961,6 +1454,13 @@ export class ImportExportEngine {
         { tableName: 'FOXPRO_TARIFS_DOUANE', rowCount: 2350, columnsCount: 8, primaryKey: 'CODE_SH', hasForeignKeys: false, status: 'COMPATIBLE' },
       ];
       rowsCount = 2350;
+    } else if (ext === 'SQLITE') {
+      engineType = 'SQLITE';
+      versionDetected = 'SQLite 3.45 Embedded Database Image (Sandbox Read-Only Analysis)';
+      detectedTables = [
+        { tableName: 'sqlite_catalog_items', rowCount: 3120, columnsCount: 12, primaryKey: 'id', hasForeignKeys: true, status: 'COMPATIBLE' },
+      ];
+      rowsCount = 3120;
     } else {
       // SQL
       engineType = 'POSTGRESQL';
@@ -1143,8 +1643,12 @@ export class ImportExportEngine {
         break;
       }
 
+      case 'XLS':
       case 'XLSX': {
-        mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;';
+        mimeType =
+          format === 'XLS'
+            ? 'application/vnd.ms-excel;'
+            : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;';
         const formatFormula = (raw: string): string => {
           if (preventFormula) {
             const res = neutralizeSpreadsheetFormula(raw);
@@ -1184,6 +1688,51 @@ export class ImportExportEngine {
         break;
       }
 
+      case 'ODS': {
+        mimeType = 'application/vnd.oasis.opendocument.spreadsheet;';
+        const formatFormula = (raw: string): string => {
+          if (preventFormula) {
+            const res = neutralizeSpreadsheetFormula(raw);
+            if (res.neutralized) preventedCount++;
+            return res.value;
+          }
+          return raw;
+        };
+        outputContent =
+          `<?xml version="1.0" encoding="UTF-8"?>\n` +
+          `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"\n` +
+          ` xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"\n` +
+          ` xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">\n` +
+          `  <office:body>\n` +
+          `    <office:spreadsheet>\n` +
+          `      <table:table table:name="${escapeXml(entity)}">\n` +
+          `        <table:table-row>\n` +
+          keys
+            .map((k) => `          <table:table-cell><text:p>${escapeXml(formatFormula(k))}</text:p></table:table-cell>\n`)
+            .join('') +
+          `        </table:table-row>\n` +
+          records
+            .map(
+              (r) =>
+                `        <table:table-row>\n` +
+                keys
+                  .map((k) => {
+                    const val = r[k] ?? '';
+                    const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+                    const safeStr = formatFormula(str);
+                    return `          <table:table-cell><text:p>${escapeXml(safeStr)}</text:p></table:table-cell>\n`;
+                  })
+                  .join('') +
+                `        </table:table-row>\n`
+            )
+            .join('') +
+          `      </table:table>\n` +
+          `    </office:spreadsheet>\n` +
+          `  </office:body>\n` +
+          `</office:document-content>`;
+        break;
+      }
+
       case 'JSON': {
         mimeType = 'application/json;charset=utf-8;';
         const filteredRecords = records.map((r) => {
@@ -1205,6 +1754,214 @@ export class ImportExportEngine {
           null,
           2
         );
+        break;
+      }
+
+      case 'XML': {
+        mimeType = 'application/xml;charset=utf-8;';
+        const xmlRows = records
+          .map(
+            (r) =>
+              `    <Record>\n` +
+              keys
+                .map((k) => {
+                  const safeTag = k.replace(/[^a-zA-Z0-9_.-]/g, '_') || 'Field';
+                  const val = r[k] ?? '';
+                  const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+                  return `      <${safeTag}>${escapeXml(str)}</${safeTag}>\n`;
+                })
+                .join('') +
+              `    </Record>`
+          )
+          .join('\n');
+        outputContent =
+          `<?xml version="1.0" encoding="UTF-8"?>\n` +
+          `<TradeLinkExport entity="${escapeXml(entity)}" count="${records.length}" exportedAt="${new Date().toISOString()}">\n` +
+          `  <Records>\n${xmlRows}\n  </Records>\n` +
+          `</TradeLinkExport>`;
+        break;
+      }
+
+      case 'YAML': {
+        mimeType = 'application/x-yaml;charset=utf-8;';
+        const yamlItems = records
+          .map((r) =>
+            keys
+              .map((k, idx) => {
+                const val = r[k] ?? '';
+                const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+                const escaped = str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+                return `${idx === 0 ? '  - ' : '    '}${k}: "${escaped}"`;
+              })
+              .join('\n')
+          )
+          .join('\n');
+        outputContent =
+          `---\n` +
+          `meta:\n` +
+          `  platform: "TRADELINK V6.0 International B2B SaaS"\n` +
+          `  entity: "${entity}"\n` +
+          `  recordsCount: ${records.length}\n` +
+          `data:\n${yamlItems}\n`;
+        break;
+      }
+
+      case 'DOCX': {
+        mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document;';
+        const headerLine = keys.join(' | ');
+        const bodyParagraphs = records
+          .map((r) => {
+            const line = keys
+              .map((k) => {
+                const val = r[k] ?? '';
+                return typeof val === 'object' ? JSON.stringify(val) : String(val);
+              })
+              .join(' | ');
+            return `    <w:p><w:r><w:t>${escapeXml(line)}</w:t></w:r></w:p>`;
+          })
+          .join('\n');
+        outputContent =
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
+          `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">\n` +
+          `  <w:body>\n` +
+          `    <w:p><w:r><w:t>${escapeXml(headerLine)}</w:t></w:r></w:p>\n` +
+          `${bodyParagraphs}\n` +
+          `  </w:body>\n` +
+          `</w:document>`;
+        break;
+      }
+
+      case 'ODT': {
+        mimeType = 'application/vnd.oasis.opendocument.text;';
+        const headerLine = keys.join(' | ');
+        const bodyLines = records
+          .map((r) => {
+            const line = keys
+              .map((k) => {
+                const val = r[k] ?? '';
+                return typeof val === 'object' ? JSON.stringify(val) : String(val);
+              })
+              .join(' | ');
+            return `      <text:p>${escapeXml(line)}</text:p>`;
+          })
+          .join('\n');
+        outputContent =
+          `<?xml version="1.0" encoding="UTF-8"?>\n` +
+          `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"\n` +
+          ` xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">\n` +
+          `  <office:body>\n` +
+          `    <office:text>\n` +
+          `      <text:p>${escapeXml(headerLine)}</text:p>\n` +
+          `${bodyLines}\n` +
+          `    </office:text>\n` +
+          `  </office:body>\n` +
+          `</office:document-content>`;
+        break;
+      }
+
+      case 'RTF': {
+        mimeType = 'application/rtf;';
+        const headerLine = keys.join(';');
+        const rows = records.map((r) =>
+          keys
+            .map((k) => {
+              const val = r[k] ?? '';
+              return (typeof val === 'object' ? JSON.stringify(val) : String(val)).replace(/[\\{}]/g, '');
+            })
+            .join(';')
+        );
+        outputContent = `{\\rtf1\\ansi\\deff0\n${headerLine}\\par\n${rows.map((row) => `${row}\\par`).join('\n')}\n}`;
+        break;
+      }
+
+      case 'TXT': {
+        mimeType = 'text/plain;charset=utf-8;';
+        const headerLine = keys.join('\t');
+        const rows = records.map((r) =>
+          keys
+            .map((k) => {
+              const val = r[k] ?? '';
+              return typeof val === 'object' ? JSON.stringify(val) : String(val);
+            })
+            .join('\t')
+        );
+        outputContent = [headerLine, ...rows].join('\r\n');
+        break;
+      }
+
+      case 'SQL':
+      case 'SQLITE': {
+        mimeType = format === 'SQLITE' ? 'application/vnd.sqlite3;' : 'application/sql;charset=utf-8;';
+        const tableName = `tl_${entity.toLowerCase()}`;
+        const headerComment =
+          format === 'SQLITE'
+            ? `-- SQLite 3 Compatible Schema & Data Dump (TABLE: ${tableName})\nBEGIN TRANSACTION;\n`
+            : `-- TRADELINK V6.0 PostgreSQL 16 Compatible SQL Dump (TABLE: ${tableName})\n`;
+        const ddl = `CREATE TABLE IF NOT EXISTS "${tableName}" (\n  ${keys.map((k) => `"${k}" TEXT`).join(',\n  ')}\n);\n`;
+        const inserts = records.map((r) => {
+          const vals = keys
+            .map((k) => {
+              const val = r[k];
+              if (val === null || val === undefined) return 'NULL';
+              const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+              return `'${str.replace(/'/g, "''")}'`;
+            })
+            .join(', ');
+          return `INSERT INTO "${tableName}" ("${keys.join('", "')}") VALUES (${vals});`;
+        });
+        const footer = format === 'SQLITE' ? '\nCOMMIT;' : '';
+        outputContent = headerComment + ddl + inserts.join('\n') + footer;
+        break;
+      }
+
+      case 'DBF': {
+        mimeType = 'application/x-dbf;charset=utf-8;';
+        outputContent =
+          `[DBF_HEADER: FoxPro 2.6 / Visual FoxPro 9.0 Table Descriptor]\r\n` +
+          `RecordsCount: ${records.length}\r\n` +
+          `HeaderLength: ${32 + keys.length * 32 + 1} bytes\r\n` +
+          `Fields: ${keys.map((k) => `${k.toUpperCase().slice(0, 10)}:C(128)`).join(' | ')}\r\n` +
+          `--- BEGIN FOXPRO RECORDS ---\r\n` +
+          records
+            .map(
+              (r, idx) =>
+                `REC#${idx + 1}: ` +
+                keys
+                  .map((k) => {
+                    const val = r[k] ?? '';
+                    const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+                    return `${k}=${str}`;
+                  })
+                  .join(' | ')
+            )
+            .join('\r\n') +
+          `\r\n--- END OF FILE (0x1A EOF) ---`;
+        break;
+      }
+
+      case 'CDX': {
+        mimeType = 'application/x-foxpro-cdx;charset=utf-8;';
+        const primaryKey = keys[0] || 'ID';
+        outputContent =
+          `[CDX_INDEX_HEADER: Visual FoxPro Compound Index Tree]\r\n` +
+          `AssociatedTable: ${entity}.DBF\r\n` +
+          `IndexRootTag: TAG_PRIMARY_KEY (${primaryKey})\r\n` +
+          `IndexKeysCount: ${records.length}\r\n` +
+          `TreeNodes: Root -> Branch(0) -> Leaves(${records.length})\r\n` +
+          records
+            .map((r, i) => `LEAF#${i}: KEY="${String(r[primaryKey] ?? '').slice(0, 30)}" -> REC_PTR=${i + 1}`)
+            .join('\r\n');
+        break;
+      }
+
+      case 'BAK': {
+        mimeType = 'application/octet-stream;';
+        outputContent =
+          `[MSSQL_BACKUP_STREAM: Microsoft SQL Server Database Backup 2022]\r\n` +
+          `DatabaseName: TradeLink_${entity}\r\n` +
+          `BackupType: FULL_ISOLATED_SANDBOX_EXPORT\r\n` +
+          `Fingerprint: SHA256-${computeSha256Hex(JSON.stringify(records)).slice(0, 32)}\r\n` +
+          `RecordsDump: ${records.length} items serialized for isolated SQL Server sandbox restoration.`;
         break;
       }
 

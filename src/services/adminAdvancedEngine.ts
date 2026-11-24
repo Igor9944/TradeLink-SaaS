@@ -49,7 +49,33 @@ export function neutralizeSpreadsheetFormula(value: unknown): { value: string; n
 // 1. TYPES & CONSTANTES : FORMATS D'IMPORT / EXPORT
 // ============================================================================
 
-export type ImportExportFormat = 'CSV' | 'XLSX' | 'JSON' | 'SQL' | 'BAK' | 'DBF' | 'CDX';
+export type ImportExportFormat =
+  | 'CSV'
+  | 'XLS'
+  | 'XLSX'
+  | 'ODS'
+  | 'DOC'
+  | 'DOCX'
+  | 'PDF'
+  | 'ODT'
+  | 'RTF'
+  | 'TXT'
+  | 'JPG'
+  | 'JPEG'
+  | 'PNG'
+  | 'TIFF'
+  | 'BMP'
+  | 'JSON'
+  | 'XML'
+  | 'YAML'
+  | 'SQL'
+  | 'SQLITE'
+  | 'BAK'
+  | 'DBF'
+  | 'CDX'
+  | 'ZIP'
+  | 'TAR'
+  | 'GZ';
 
 export interface FieldMappingDetail {
   sourceColumn: string;

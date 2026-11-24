@@ -105,15 +105,20 @@ export const TranslationGlossaryAdminView: React.FC<TranslationGlossaryAdminView
   };
 
   const handleExportCsv = () => {
+    const safeCell = (val: string) => {
+      const str = String(val ?? '');
+      const neutralized = /^[=+@|%\t\r-]/.test(str.trimStart()) ? `'${str}` : str;
+      return `"${neutralized.replace(/"/g, '""')}"`;
+    };
     const headers = ['Cle', 'Categorie', 'Francais', 'Anglais', 'Arabe', 'Statut', 'Notes'];
     const rows = filteredTerms.map((t) => [
-      `"${t.termKey}"`,
-      `"${t.category}"`,
-      `"${t.sourceTextFr.replace(/"/g, '""')}"`,
-      `"${t.targetTextEn.replace(/"/g, '""')}"`,
-      `"${t.targetTextAr.replace(/"/g, '""')}"`,
-      `"${t.status || 'VALIDATED'}"`,
-      `"${(t.contextNotes || '').replace(/"/g, '""')}"`,
+      safeCell(t.termKey),
+      safeCell(t.category),
+      safeCell(t.sourceTextFr),
+      safeCell(t.targetTextEn),
+      safeCell(t.targetTextAr),
+      safeCell(t.status || 'VALIDATED'),
+      safeCell(t.contextNotes || ''),
     ]);
     const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);

@@ -1337,14 +1337,19 @@ export class AccountingEngine {
   }
 
   /**
-   * Export CSV formaté pour la Balance générale
+   * Export CSV formaté pour la Balance générale avec protection anti-injection de formules (CWE-1236)
    */
   public static exportTrialBalanceToCsv(items: TrialBalanceItem[]): string {
+    const safeCsvField = (raw: string): string => {
+      const str = String(raw ?? '');
+      const neutralized = /^[=+@|%\t\r]/.test(str.trimStart()) || (/^-[^\d]/.test(str.trimStart())) ? `'${str}` : str;
+      return `"${neutralized.replace(/"/g, '""')}"`;
+    };
     const headers = ['Compte', 'Intitulé', 'Catégorie', 'Débit', 'Crédit', 'Solde Débiteur', 'Solde Créditeur'];
     const rows = items.map((i) => [
-      `"${i.accountCode}"`,
-      `"${i.accountName.replace(/"/g, '""')}"`,
-      `"${i.category}"`,
+      safeCsvField(i.accountCode),
+      safeCsvField(i.accountName),
+      safeCsvField(i.category),
       i.totalDebit,
       i.totalCredit,
       i.soldeDebiteur,

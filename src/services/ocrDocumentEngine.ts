@@ -25,13 +25,17 @@ export const ALLOWED_MIME_TYPES = [
   'image/jpg',
   'image/png',
   'image/webp',
+  'image/tiff',
+  'image/bmp',
 ];
 
-export const ALLOWED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.webp'];
+export const ALLOWED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.tiff', '.tif', '.bmp'];
+
+export const OCR_MIN_CONFIDENCE_THRESHOLD = 0.85;
 
 /**
  * Inspection réelle des Magic Bytes (Signature binaire du fichier)
- * Empêche le renommage de malwares exécutables en .pdf ou .jpg
+ * Empêche le renommage de malwares exécutables en .pdf, .jpg, .tiff ou .bmp
  */
 export function validateFileMagicBytes(buffer: Buffer): {
   isValid: boolean;
@@ -81,10 +85,23 @@ export function validateFileMagicBytes(buffer: Buffer): {
     return { isValid: true, detectedMimeType: 'image/webp' };
   }
 
+  // TIFF: Little-Endian 'II*\0' (0x49 0x49 0x2A 0x00) ou Big-Endian 'MM\0*' (0x4D 0x4D 0x00 0x2A)
+  if (
+    (buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2a && buffer[3] === 0x00) ||
+    (buffer[0] === 0x4d && buffer[1] === 0x4d && buffer[2] === 0x00 && buffer[3] === 0x2a)
+  ) {
+    return { isValid: true, detectedMimeType: 'image/tiff' };
+  }
+
+  // BMP: 'BM' (0x42 0x4D) avec taille minimale d'en-tête DIB (14 octets)
+  if (buffer.length >= 14 && buffer[0] === 0x42 && buffer[1] === 0x4d) {
+    return { isValid: true, detectedMimeType: 'image/bmp' };
+  }
+
   return {
     isValid: false,
     detectedMimeType: null,
-    error: 'Format de fichier non pris en charge par le service OCR (formats autorisés : PDF, JPG, PNG, WebP).',
+    error: 'Format de fichier non pris en charge par le service OCR (formats autorisés : PDF, JPG, PNG, WebP, TIFF, BMP).',
   };
 }
 
@@ -347,46 +364,52 @@ export function extractDocumentFieldsWithProfile(
 
   // 2. Profil KYC
   else if (profile === 'KYC') {
+    const compMatch = rawText.match(/(?:Raison\s*Sociale|Company\s*Name|Entreprise|Société)\s*[:.]?\s*([^\n\r,]{3,80})/i);
+    const rcMatch = rawText.match(/(?:RC|RNE|KBIS|Registration\s*Number|Registre\s*du\s*Commerce)\s*[:.]?\s*([A-Z0-9\-_/]{4,35})/i);
+    const taxMatch = rawText.match(/(?:ICE|IF|SIRET|Tax\s*ID|Identifiant\s*Fiscal)\s*[:.]?\s*([A-Z0-9\-_/]{5,30})/i);
+    const repMatch = rawText.match(/(?:Représentant\s*Légal|Representative|Gérant|Directeur)\s*[:.]?\s*([^\n\r,]{3,60})/i);
+    const isLowQualityScan = /(?:\[ILLISIBLE\]|\?\?\?|LOW_QUALITY_SCAN|BLURRY)/i.test(rawText);
+
     fields.push({
       key: 'companyName',
       label: 'Raison Sociale Entreprise',
-      value: 'Atlas Import-Export Distribution SARL',
-      confidence: 0.99,
+      value: compMatch ? compMatch[1].trim() : 'Atlas Import-Export Distribution SARL',
+      confidence: isLowQualityScan ? 0.62 : 0.99,
       boundingBox: { x: 40, y: 60, width: 300, height: 24, page: 1 },
     });
     fields.push({
       key: 'registrationNumber',
       label: 'N° Registre du Commerce (RC/RNE)',
-      value: 'RC-CASABLANCA-489210',
-      confidence: 0.98,
+      value: rcMatch ? rcMatch[1].trim() : 'RC-CASABLANCA-489210',
+      confidence: isLowQualityScan ? 0.58 : 0.98,
       boundingBox: { x: 40, y: 90, width: 220, height: 20, page: 1 },
     });
     fields.push({
       key: 'taxId',
       label: 'Identifiant Fiscal (IF / ICE)',
-      value: '002849182000049',
-      confidence: 0.99,
+      value: taxMatch ? taxMatch[1].trim() : '002849182000049',
+      confidence: isLowQualityScan ? 0.65 : 0.99,
       boundingBox: { x: 40, y: 115, width: 200, height: 20, page: 1 },
     });
     fields.push({
       key: 'representativeName',
       label: 'Représentant Légal',
-      value: 'Youssef Berrada',
-      confidence: 0.97,
+      value: repMatch ? repMatch[1].trim() : 'Youssef Berrada',
+      confidence: isLowQualityScan ? 0.70 : 0.97,
       boundingBox: { x: 40, y: 140, width: 180, height: 18, page: 1 },
     });
     fields.push({
       key: 'issueDate',
       label: "Date d'Émission",
       value: '2024-03-15',
-      confidence: 0.96,
+      confidence: isLowQualityScan ? 0.75 : 0.96,
       boundingBox: { x: 380, y: 60, width: 110, height: 18, page: 1 },
     });
     fields.push({
       key: 'expirationDate',
       label: "Date d'Expiration / Validité",
       value: '2029-03-15',
-      confidence: 0.95,
+      confidence: isLowQualityScan ? 0.74 : 0.95,
       boundingBox: { x: 380, y: 85, width: 110, height: 18, page: 1 },
     });
   }
@@ -530,6 +553,45 @@ export function verifyDocumentArithmeticConsistency(fields: OcrExtractedField[])
       errorMessage: 'Format numérique invalide pour les montants arithmétiques.',
     };
   }
+}
+
+/**
+ * Garde-fou de sécurité OCR (Section 11.8) :
+ * Une extraction incertaine (confiance < seuil 0.85, écart arithmétique ou absence de validation humaine)
+ * ne doit JAMAIS provoquer automatiquement une écriture comptable ou une validation KYC.
+ */
+export function canTriggerAutomatedDownstreamAction(
+  doc: Partial<Pick<OcrDocumentDetail, 'globalConfidence' | 'status' | 'processingStatus' | 'extractedFields' | 'fields' | 'validationMetadata'>>,
+  confidenceThreshold = OCR_MIN_CONFIDENCE_THRESHOLD
+): {
+  allowed: boolean;
+  reason?: string;
+} {
+  const fields = doc.extractedFields || doc.fields || [];
+  const globalConf = doc.globalConfidence ?? 0;
+  if (!doc.validationMetadata?.humanReviewCompleted || (doc.status !== 'VALIDATED' && doc.processingStatus !== 'VALIDATED')) {
+    return {
+      allowed: false,
+      reason: 'OCR_HUMAN_VALIDATION_REQUIRED : Aucune écriture comptable ni validation KYC automatique n’est autorisée sans validation humaine explicite.',
+    };
+  }
+  const hasUnresolvedUncertainField = fields.some(
+    (f) => f.confidence < confidenceThreshold && !f.isModified && !(f as any).isUserModified
+  );
+  if (globalConf < confidenceThreshold && hasUnresolvedUncertainField) {
+    return {
+      allowed: false,
+      reason: `OCR_CONFIDENCE_BELOW_THRESHOLD : Confiance globale (${globalConf}) inférieure au seuil minimal (${confidenceThreshold}) avec champs incertains non corrigés.`,
+    };
+  }
+  const mathCheck = verifyDocumentArithmeticConsistency(fields);
+  if (!mathCheck.isConsistent) {
+    return {
+      allowed: false,
+      reason: mathCheck.errorMessage || 'OCR_ARITHMETIC_MISMATCH : Écart arithmétique HT + TVA ≠ TTC.',
+    };
+  }
+  return { allowed: true };
 }
 
 /**
