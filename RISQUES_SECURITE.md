@@ -33,5 +33,7 @@
 - Quarantaine.
 - ClamAV zINSTREAM.
 - SHA-256.
+- HMAC-SHA256 standardisé via la primitive cryptographique centrale.
+- HMAC-SHA1 RFC utilisé uniquement pour les jetons TOTP RFC 6238.
 - KMS/enveloppe.
 - Transactions ACID.

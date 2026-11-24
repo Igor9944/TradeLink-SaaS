@@ -51,3 +51,12 @@ L'audit distingue la présence du code, les tests exécutés et les dépendances
 3. Traiter les lacunes documentaires en priorité.
 4. Classer les intégrations externes comme bloquées tant que les secrets et autorisations ne sont pas fournis.
 5. Ne pas effectuer de déploiement payant ou de push.
+
+## Durcissement Lot 1
+
+- Commit `3b6e1ce`.
+- Les HMAC-SHA256 sont centralisés dans `hmacSha256Hex`.
+- Les fallback navigateur utilisent HMAC RFC avec `@noble/hashes`, sans approximation par chaîne SHA-256.
+- Les signatures TOTP utilisent HMAC-SHA1 RFC dans le fallback navigateur.
+- Les webhooks commerciaux et les jetons de documents utilisent les primitives centralisées.
+- Vérifications passées : `typecheck`, LOT 1.1, facturation/documents et cycle commercial.
