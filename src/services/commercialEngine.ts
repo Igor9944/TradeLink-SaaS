@@ -6,9 +6,14 @@
 // Remboursements, Webhooks HMAC-SHA256, Idempotence & Sécurité Financière
 // ============================================================================
 
-import crypto from 'crypto';
 import Decimal from 'decimal.js';
-import { getSecureRandomAlphanumeric, getSecureRandomInt } from './securityCrypto';
+import {
+  generateSha256Hash,
+  hmacSha256Hex,
+  constantTimeEqual,
+  getSecureRandomAlphanumeric,
+  getSecureRandomInt,
+} from './securityCrypto';
 import {
   CartValidationResult,
   CommercialDisputeRecord,
@@ -1193,7 +1198,7 @@ export class CommercialEngine {
     const issuedAt = new Date().toISOString();
 
     const rawPayload = `${receiptNumber}|${payment.id}|${payment.paymentReference}|${order.orderNumber}|${invoice.invoiceNumber}|${payment.amount}|${payment.currency}|${issuedAt}`;
-    const digitalSignatureSha256 = crypto.createHash('sha256').update(rawPayload).digest('hex');
+    const digitalSignatureSha256 = generateSha256Hash(rawPayload);
 
     return {
       receiptNumber,
@@ -1274,7 +1279,7 @@ export class CommercialEngine {
 
     // Calcul du HMAC-SHA256 (format Stripe : `${timestamp}.${payload}`)
     const payloadToSign = `${timestampStr}.${payloadString}`;
-    const expectedHmac = crypto.createHmac('sha256', secretKey).update(payloadToSign).digest('hex');
+    const expectedHmac = hmacSha256Hex(secretKey, payloadToSign);
 
     // Extraction des signatures candidates (supporte la rotation multi-v1 Stripe: t=...,v1=...,v1=...)
     const candidateSigs: string[] = [];
@@ -1297,7 +1302,7 @@ export class CommercialEngine {
           continue;
         }
         const bufA = Buffer.from(sig, 'hex');
-        if (bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB)) {
+        if (bufA.length === bufB.length && constantTimeEqual(sig, expectedHmac)) {
           return { valid: true };
         }
       }

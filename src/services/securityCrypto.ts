@@ -13,6 +13,9 @@ import { UserRoleCode } from '../types';
 
 import * as nodeCryptoModule from 'crypto';
 import { argon2id as nobleArgon2id } from '@noble/hashes/argon2.js';
+import { hmac } from '@noble/hashes/hmac.js';
+import { sha1 } from '@noble/hashes/legacy.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 
 const nodeCrypto: any = nodeCryptoModule;
 
@@ -212,7 +215,17 @@ export function hmacSha256Hex(secret: string, data: string): string {
   if (nodeCrypto && typeof nodeCrypto.createHmac === 'function') {
     return nodeCrypto.createHmac('sha256', secret).update(data, 'utf-8').digest('hex');
   }
-  return pureSha256Hex(`${secret}:${data}:${secret}`);
+  return pureHmacSha256Hex(secret, data);
+}
+
+function pureHmacSha256Hex(secret: string, data: string): string {
+  const keyBytes = new TextEncoder().encode(secret);
+  const messageBytes = new TextEncoder().encode(data);
+  return bytesToHex(hmac(sha256, keyBytes, messageBytes));
+}
+
+function pureHmacSha1Bytes(keyBytes: Uint8Array, messageBytes: Uint8Array): Uint8Array {
+  return hmac(sha1, keyBytes, messageBytes);
 }
 
 // ============================================================================
@@ -751,8 +764,7 @@ function hmacSha256Base64Url(data: string, secret: string): string {
   if (nodeCrypto && typeof nodeCrypto.createHmac === 'function') {
     return nodeCrypto.createHmac('sha256', secret).update(data, 'utf-8').digest('base64url');
   }
-  const hashHex = pureSha256Hex(`${secret}:${data}:${secret}`);
-  return toBase64Url(hashHex);
+  return toBase64Url(pureHmacSha256Hex(secret, data));
 }
 
 /**
@@ -901,10 +913,7 @@ export function computeCurrentTotpCode(
     hmac.update(Buffer.from(counterBuffer));
     hmacBytes = new Uint8Array(hmac.digest());
   } else {
-    // Pure fallback SHA-1 HMAC
-    const hashHex = pureSha256Hex(bytesToHex(keyBytes) + ':' + timeStep);
-    const parsed = parseInt(hashHex.slice(0, 8), 16) % 1000000;
-    return parsed.toString().padStart(6, '0');
+    hmacBytes = pureHmacSha1Bytes(keyBytes, counterBuffer);
   }
 
   // Dynamic Truncation (RFC 4226 section 5.4)

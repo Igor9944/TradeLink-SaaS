@@ -2,6 +2,13 @@
 
 ## V6.2 — 23 novembre 2026
 
+### LOT 1 — Consolidation cryptographique
+
+- Centralisation des signatures HMAC-SHA256, SHA-256 et MFA TOTP sur les primitives partagées.
+- Remplacement des fallback HMAC approximatifs par des implémentations HMAC-SHA256/SHA1 RFC via `@noble/hashes`.
+- Centralisation des scellements de quittance, webhooks et jetons documentaires.
+- Suppression des imports Node `crypto` devenus inutiles dans les moteurs commerciaux.
+
 ### Documentation
 
 - Ajout du cahier des charges V6.2.

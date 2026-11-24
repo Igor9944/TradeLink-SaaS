@@ -6,9 +6,13 @@
 // Générateur PDF standard %PDF-1.4, Scellement SHA-256 & Téléchargements temporaires
 // ============================================================================
 
-import crypto from 'crypto';
 import Decimal from 'decimal.js';
-import { generateSha256Hash, constantTimeEqual, getSecureRandomAlphanumeric } from './securityCrypto';
+import {
+  generateSha256Hash,
+  hmacSha256Hex,
+  constantTimeEqual,
+  getSecureRandomAlphanumeric,
+} from './securityCrypto';
 import {
   CommercialDocumentRecord,
   CommercialDocumentType,
@@ -566,11 +570,6 @@ export class BillingDocumentEngine {
       linesDigest,
     ].join('||');
 
-    try {
-      if (typeof crypto !== 'undefined' && typeof crypto.createHash === 'function') {
-        return crypto.createHash('sha256').update(rawPayload, 'utf8').digest('hex');
-      }
-    } catch {}
     return generateSha256Hash(`seal:${rawPayload}`);
   }
 
@@ -1086,13 +1085,9 @@ export class BillingDocumentEngine {
     const rawPayload = `${documentId}|${documentNumber}|${userId}|${expiresAt}`;
     let hmacSignature: string;
     try {
-      if (typeof crypto !== 'undefined' && typeof crypto.createHmac === 'function') {
-        hmacSignature = crypto.createHmac('sha256', secretKey).update(rawPayload).digest('hex');
-      } else {
-        hmacSignature = generateSha256Hash(`hmac:${secretKey}:${rawPayload}`);
-      }
+      hmacSignature = hmacSha256Hex(secretKey, rawPayload);
     } catch {
-      hmacSignature = generateSha256Hash(`hmac:${secretKey}:${rawPayload}`);
+      throw new Error('DOWNLOAD_TOKEN_SIGNING_FAILED');
     }
 
     return {
@@ -1123,26 +1118,10 @@ export class BillingDocumentEngine {
     const rawPayload = `${documentId}|${documentNumber}|${userId}|${expiresAt}`;
     let expectedSignature: string;
     try {
-      if (typeof crypto !== 'undefined' && typeof crypto.createHmac === 'function') {
-        expectedSignature = crypto.createHmac('sha256', secretKey).update(rawPayload).digest('hex');
-      } else {
-        expectedSignature = generateSha256Hash(`hmac:${secretKey}:${rawPayload}`);
-      }
+      expectedSignature = hmacSha256Hex(secretKey, rawPayload);
     } catch {
-      expectedSignature = generateSha256Hash(`hmac:${secretKey}:${rawPayload}`);
+      return { valid: false, reason: 'SIGNATURE_INVALID' };
     }
-
-    try {
-      if (typeof crypto !== 'undefined' && typeof crypto.timingSafeEqual === 'function' && typeof Buffer !== 'undefined') {
-        const bufA = Buffer.from(hmacSignature, 'hex');
-        const bufB = Buffer.from(expectedSignature, 'hex');
-        if (bufA.length !== bufB.length) {
-          return { valid: false, reason: 'SIGNATURE_INVALID' };
-        }
-        const isMatch = crypto.timingSafeEqual(bufA, bufB);
-        return isMatch ? { valid: true } : { valid: false, reason: 'SIGNATURE_INVALID' };
-      }
-    } catch {}
 
     const isMatch = constantTimeEqual(hmacSignature, expectedSignature);
     return isMatch ? { valid: true } : { valid: false, reason: 'SIGNATURE_INVALID' };
